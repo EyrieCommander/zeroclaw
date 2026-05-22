@@ -529,6 +529,20 @@ fn render_conversation(f: &mut Frame, state: &ChatState, area: Rect) {
         }
     }
 
+    if !state.current_thought_text().is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "(thinking) ",
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+            Span::styled(
+                state.current_thought_text(),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    }
     if !state.current_agent_text().is_empty() {
         lines.push(Line::from(vec![
             Span::styled(
@@ -746,6 +760,10 @@ impl ChatState {
 
     pub fn current_agent_text(&self) -> &str {
         &self.streaming_text
+    }
+
+    pub fn current_thought_text(&self) -> &str {
+        &self.streaming_thought
     }
 
     pub fn pending_approval(&self) -> Option<&PendingApproval> {
@@ -1172,6 +1190,18 @@ mod tests {
         let result = open_editor_for_content(&original).await;
         // `true` writes nothing, so the original is returned unchanged.
         assert_eq!(result, original);
+    }
+
+    #[test]
+    fn thought_chunk_visible_before_commit() {
+        let mut s = state();
+        s.turn_in_flight = true;
+        s.apply_update(SessionUpdate::AgentThoughtChunk {
+            session_id: "sess-1".to_string(),
+            text: "reasoning...".to_string(),
+        });
+        assert_eq!(s.current_thought_text(), "reasoning...");
+        assert!(s.entries().is_empty(), "thought must not become an entry mid-turn");
     }
 
     #[test]
