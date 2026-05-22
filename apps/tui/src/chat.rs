@@ -774,6 +774,16 @@ impl ChatState {
         self.pending_approval.take()
     }
 
+    /// Commit any accumulated streaming thought as an entry. Called at the two
+    /// natural flush points: when a tool call interrupts thinking, and when the
+    /// first response text chunk arrives after a thinking phase.
+    fn flush_streaming_thought(&mut self) {
+        let thought = std::mem::take(&mut self.streaming_thought);
+        if !thought.is_empty() {
+            self.entries.push(ChatEntry::AgentThought(thought));
+        }
+    }
+
     pub fn apply_update(&mut self, update: SessionUpdate) {
         // Ignore notifications that belong to a different session.
         let update_sid = match &update {
@@ -789,6 +799,11 @@ impl ChatState {
 
         match update {
             SessionUpdate::AgentMessageChunk { text, .. } => {
+                // Flush any accumulated thought before the response text begins
+                // so it appears inline at the right position, not piled at the end.
+                if self.streaming_text.is_empty() {
+                    self.flush_streaming_thought();
+                }
                 self.streaming_text.push_str(&text);
             }
             SessionUpdate::AgentThoughtChunk { text, .. } => {
@@ -800,6 +815,9 @@ impl ChatState {
                 raw_input,
                 ..
             } => {
+                // Flush any accumulated thought before the tool call so thinking
+                // and tool output interleave in conversation order.
+                self.flush_streaming_thought();
                 self.entries.push(ChatEntry::Tool {
                     tool_call_id,
                     name,
@@ -845,10 +863,8 @@ impl ChatState {
 
     pub fn commit_turn(&mut self, full_text: String) {
         self.streaming_text.clear();
-        let thought = std::mem::take(&mut self.streaming_thought);
-        if !thought.is_empty() {
-            self.entries.push(ChatEntry::AgentThought(thought));
-        }
+        // Flush any trailing thought not yet committed (e.g. thinking-only turn).
+        self.flush_streaming_thought();
         if !full_text.is_empty() {
             self.entries.push(ChatEntry::AgentMessage(full_text));
         }
@@ -1202,6 +1218,68 @@ mod tests {
         });
         assert_eq!(s.current_thought_text(), "reasoning...");
         assert!(s.entries().is_empty(), "thought must not become an entry mid-turn");
+    }
+
+    #[test]
+    fn thought_flushed_as_entry_before_tool_call() {
+        let mut s = state();
+        s.turn_in_flight = true;
+        s.apply_update(SessionUpdate::AgentThoughtChunk {
+            session_id: "sess-1".to_string(),
+            text: "plan: run ls".to_string(),
+        });
+        s.apply_update(SessionUpdate::ToolCall {
+            session_id: "sess-1".to_string(),
+            tool_call_id: "tc1".to_string(),
+            name: "shell".to_string(),
+            raw_input: serde_json::json!({"command": "ls"}),
+        });
+        // Thought must be committed as an entry before the tool entry.
+        assert_eq!(s.entries().len(), 2);
+        assert!(matches!(&s.entries()[0], ChatEntry::AgentThought(t) if t == "plan: run ls"));
+        assert!(matches!(&s.entries()[1], ChatEntry::Tool { .. }));
+        // streaming_thought is now clear.
+        assert!(s.current_thought_text().is_empty());
+    }
+
+    #[test]
+    fn thought_flushed_as_entry_before_first_response_chunk() {
+        let mut s = state();
+        s.turn_in_flight = true;
+        s.apply_update(SessionUpdate::AgentThoughtChunk {
+            session_id: "sess-1".to_string(),
+            text: "thinking".to_string(),
+        });
+        s.apply_update(SessionUpdate::AgentMessageChunk {
+            session_id: "sess-1".to_string(),
+            text: "Here is".to_string(),
+        });
+        // Thought entry committed before streaming text starts.
+        assert_eq!(s.entries().len(), 1);
+        assert!(matches!(&s.entries()[0], ChatEntry::AgentThought(t) if t == "thinking"));
+        assert_eq!(s.current_agent_text(), "Here is");
+        assert!(s.current_thought_text().is_empty());
+    }
+
+    #[test]
+    fn subsequent_message_chunks_do_not_re_flush_thought() {
+        let mut s = state();
+        s.turn_in_flight = true;
+        s.apply_update(SessionUpdate::AgentThoughtChunk {
+            session_id: "sess-1".to_string(),
+            text: "thinking".to_string(),
+        });
+        s.apply_update(SessionUpdate::AgentMessageChunk {
+            session_id: "sess-1".to_string(),
+            text: "Hello".to_string(),
+        });
+        s.apply_update(SessionUpdate::AgentMessageChunk {
+            session_id: "sess-1".to_string(),
+            text: " world".to_string(),
+        });
+        // Only one AgentThought entry, not two.
+        assert_eq!(s.entries().len(), 1);
+        assert_eq!(s.current_agent_text(), "Hello world");
     }
 
     #[test]
