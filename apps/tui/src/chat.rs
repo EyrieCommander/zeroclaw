@@ -1064,11 +1064,13 @@ mod tests {
 
     #[tokio::test]
     async fn launch_editor_returns_original_on_empty_write() {
-        // Without a real $EDITOR in CI, we expect the original to be returned.
-        // The function must not panic.
+        // Use `true` as the editor — it exits immediately without modifying the file.
+        // SAFETY: test-only, single-threaded context.
+        unsafe { std::env::set_var("EDITOR", "true") };
         let original = "let x = 1;".to_string();
         let result = open_editor_for_content(&original).await;
-        assert!(!result.is_empty());
+        // `true` writes nothing, so the original is returned unchanged.
+        assert_eq!(result, original);
     }
 
     #[test]
