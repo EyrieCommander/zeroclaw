@@ -767,6 +767,7 @@ fn render(f: &mut Frame, state: &mut ChatState, area: Rect) {
         .render(f, area, state.turn_in_flight, show_cursor);
 
     render_conversation(f, state, conv_area);
+    state.input_bar.render_autocomplete_popup(f);
 
     if state.pending_approval().is_some() {
         render_approval_overlay(f, state, area);

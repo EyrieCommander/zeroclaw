@@ -5,19 +5,33 @@
 //! `InputBarState` instance with independent state.
 
 use std::path::PathBuf;
+use std::time::Instant;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
 use crate::attachment::PendingAttachment;
 use crate::clipboard;
 use crate::file_explorer::{ExplorerAction, FileExplorerState};
+use crate::mouse;
+use crate::theme;
+
+// ── Constants ────────────────────────────────────────────────────
+
+/// Maximum number of visible content rows before the input bar scrolls.
+const MAX_INPUT_ROWS: u16 = 5;
+
+/// Cursor blink interval in milliseconds.
+const CURSOR_BLINK_MS: u128 = 500;
+
+/// Slash commands available for auto-complete.
+const SLASH_COMMANDS: &[&str] = &["/attach", "/attachments", "/detach"];
 
 // ── Action type ──────────────────────────────────────────────────
 
@@ -62,6 +76,91 @@ fn parse_slash_command(input: &str) -> SlashCommand<'_> {
     }
 }
 
+// ── Wrap geometry helpers ────────────────────────────────────────
+
+/// Count the number of visual rows `text` occupies when soft-wrapped at `width` columns.
+/// Each `\n` starts a new visual line. Empty input returns 1 (cursor needs a row).
+fn wrapped_line_count(text: &str, width: u16) -> u16 {
+    if width == 0 || text.is_empty() {
+        return 1;
+    }
+    let w = width as usize;
+    let mut total: u16 = 0;
+    for line in text.split('\n') {
+        let chars = line.chars().count();
+        if chars == 0 {
+            total += 1;
+        } else {
+            total += chars.div_ceil(w) as u16;
+        }
+    }
+    total
+}
+
+/// Map a byte offset within `text` to `(row, col)` in wrapped coordinates.
+/// `width` is the inner area width (excluding borders).
+fn cursor_to_visual(text: &str, cursor: usize, width: u16) -> (u16, u16) {
+    if width == 0 {
+        return (0, 0);
+    }
+    let before = &text[..cursor];
+    let mut row: u16 = 0;
+    let mut col: u16 = 0;
+    for ch in before.chars() {
+        if ch == '\n' {
+            row += 1;
+            col = 0;
+        } else {
+            if col == width {
+                row += 1;
+                col = 0;
+            }
+            col += 1;
+        }
+    }
+    // If col landed exactly at width, the cursor is at the start of the next row.
+    if col == width && cursor < text.len() && text[cursor..].starts_with(|c: char| c != '\n') {
+        row += 1;
+        col = 0;
+    }
+    (row, col)
+}
+
+/// Map a visual `(row, col)` position back to a byte offset in `text`.
+/// Clamps to valid positions. Returns `text.len()` if past end.
+fn visual_to_cursor(text: &str, target_row: u16, target_col: u16, width: u16) -> usize {
+    if width == 0 {
+        return 0;
+    }
+    let mut row: u16 = 0;
+    let mut col: u16 = 0;
+    for (byte_idx, ch) in text.char_indices() {
+        if row == target_row && col >= target_col {
+            return byte_idx;
+        }
+        if ch == '\n' {
+            if row == target_row {
+                return byte_idx;
+            }
+            row += 1;
+            col = 0;
+        } else {
+            if col == width {
+                row += 1;
+                col = 0;
+                if row == target_row && col >= target_col {
+                    return byte_idx;
+                }
+            }
+            col += 1;
+        }
+        if row > target_row {
+            return byte_idx;
+        }
+    }
+    text.len()
+}
+
 // ── State ────────────────────────────────────────────────────────
 
 /// Input bar state. Each pane (Chat, ACP) owns its own instance.
@@ -73,6 +172,34 @@ pub(crate) struct InputBarState {
     pending_attachments: Vec<PendingAttachment>,
     file_explorer: Option<FileExplorerState>,
     clipboard_temps: Vec<PathBuf>,
+
+    // Phase 1: Soft-wrap / dynamic height
+    /// Vertical scroll offset within the input bar (0-based row index of first visible line).
+    scroll_offset: u16,
+    /// Cached Rect of the last rendered input area (for mouse hit-testing).
+    last_input_area: Rect,
+    /// Cached inner width from the most recent render.
+    last_inner_width: u16,
+
+    // Phase 2: Cursor blink
+    /// Whether the cursor is currently in the visible phase of the blink cycle.
+    cursor_visible: bool,
+    /// Instant of the last blink toggle.
+    last_blink: Instant,
+
+    // Phase 4: Text selection
+    /// Text selection range as byte offsets (start, end) where start <= end.
+    selection: Option<(usize, usize)>,
+    /// Anchor point of the selection (byte offset where drag started).
+    selection_anchor: Option<usize>,
+
+    // Phase 6: Auto-complete
+    /// Filtered list of matching slash commands.
+    autocomplete_matches: Vec<&'static str>,
+    /// Index of the currently highlighted match in the popup.
+    autocomplete_index: Option<usize>,
+    /// Whether the autocomplete popup is visible.
+    autocomplete_active: bool,
 }
 
 impl InputBarState {
@@ -83,6 +210,16 @@ impl InputBarState {
             pending_attachments: Vec::new(),
             file_explorer: None,
             clipboard_temps: Vec::new(),
+            scroll_offset: 0,
+            last_input_area: Rect::default(),
+            last_inner_width: 0,
+            cursor_visible: true,
+            last_blink: Instant::now(),
+            selection: None,
+            selection_anchor: None,
+            autocomplete_matches: Vec::new(),
+            autocomplete_index: None,
+            autocomplete_active: false,
         }
     }
 
@@ -113,16 +250,85 @@ impl InputBarState {
         !self.input.is_empty() || self.file_explorer.is_some()
     }
 
+    // ── Blink helpers ────────────────────────────────────────
+
+    /// Reset the blink cycle so the cursor is immediately visible.
+    fn reset_blink(&mut self) {
+        self.cursor_visible = true;
+        self.last_blink = Instant::now();
+    }
+
+    // ── Selection helpers ────────────────────────────────────
+
+    fn clear_selection(&mut self) {
+        self.selection = None;
+        self.selection_anchor = None;
+    }
+
+    /// Delete the selected range and return the deleted text.
+    /// Moves cursor to the start of the selection.
+    fn delete_selection(&mut self) -> Option<String> {
+        if let Some((start, end)) = self.selection.take() {
+            let deleted = self.input[start..end].to_string();
+            self.input.replace_range(start..end, "");
+            self.cursor = start;
+            self.selection_anchor = None;
+            Some(deleted)
+        } else {
+            None
+        }
+    }
+
+    // ── Auto-complete helpers ────────────────────────────────
+
+    fn update_autocomplete(&mut self) {
+        let text = self.input.trim();
+        if text.starts_with('/') && !text.contains(' ') {
+            let prefix = text;
+            self.autocomplete_matches = SLASH_COMMANDS
+                .iter()
+                .filter(|cmd| cmd.starts_with(prefix) && **cmd != prefix)
+                .copied()
+                .collect();
+            self.autocomplete_active = !self.autocomplete_matches.is_empty();
+            if self.autocomplete_active && self.autocomplete_index.is_none() {
+                self.autocomplete_index = Some(0);
+            }
+            if let Some(idx) = self.autocomplete_index
+                && idx >= self.autocomplete_matches.len()
+            {
+                self.autocomplete_index = Some(self.autocomplete_matches.len().saturating_sub(1));
+            }
+        } else {
+            self.autocomplete_active = false;
+            self.autocomplete_matches.clear();
+            self.autocomplete_index = None;
+        }
+    }
+
+    fn dismiss_autocomplete(&mut self) {
+        self.autocomplete_active = false;
+        self.autocomplete_matches.clear();
+        self.autocomplete_index = None;
+    }
+
     // ── Text editing ─────────────────────────────────────────
 
     /// Insert `c` at the cursor position and advance the cursor.
     pub fn push_input_char(&mut self, c: char) {
+        self.delete_selection();
         self.input.insert(self.cursor, c);
         self.cursor += c.len_utf8();
+        self.update_autocomplete();
     }
 
     /// Delete the character immediately before the cursor (backspace).
     pub fn pop_input_char(&mut self) {
+        if self.selection.is_some() {
+            self.delete_selection();
+            self.update_autocomplete();
+            return;
+        }
         if self.cursor > 0 {
             let prev = self.input[..self.cursor]
                 .char_indices()
@@ -131,10 +337,12 @@ impl InputBarState {
                 .unwrap_or(0);
             self.input.remove(prev);
             self.cursor = prev;
+            self.update_autocomplete();
         }
     }
 
     pub fn move_cursor_left(&mut self) {
+        self.clear_selection();
         if self.cursor > 0 {
             self.cursor = self.input[..self.cursor]
                 .char_indices()
@@ -145,22 +353,59 @@ impl InputBarState {
     }
 
     pub fn move_cursor_right(&mut self) {
+        self.clear_selection();
         if self.cursor < self.input.len() {
             let c = self.input[self.cursor..].chars().next().unwrap();
             self.cursor += c.len_utf8();
         }
     }
 
+    /// Move cursor up one visual row. Returns false if already on row 0.
+    fn move_cursor_up(&mut self) -> bool {
+        self.clear_selection();
+        let width = self.last_inner_width;
+        if width == 0 {
+            return false;
+        }
+        let (row, col) = cursor_to_visual(&self.input, self.cursor, width);
+        if row == 0 {
+            return false;
+        }
+        self.cursor = visual_to_cursor(&self.input, row - 1, col, width);
+        true
+    }
+
+    /// Move cursor down one visual row. Returns false if already on last row.
+    fn move_cursor_down(&mut self) -> bool {
+        self.clear_selection();
+        let width = self.last_inner_width;
+        if width == 0 {
+            return false;
+        }
+        let (row, col) = cursor_to_visual(&self.input, self.cursor, width);
+        let total = wrapped_line_count(&self.input, width);
+        if row + 1 >= total {
+            return false;
+        }
+        self.cursor = visual_to_cursor(&self.input, row + 1, col, width);
+        true
+    }
+
     /// Extract the input text and reset the cursor.
     pub fn take_input(&mut self) -> String {
         self.cursor = 0;
+        self.scroll_offset = 0;
+        self.clear_selection();
+        self.dismiss_autocomplete();
         std::mem::take(&mut self.input)
     }
 
     /// Insert a string at the cursor position (bulk paste).
     pub fn insert_text(&mut self, text: &str) {
+        self.delete_selection();
         self.input.insert_str(self.cursor, text);
         self.cursor += text.len();
+        self.update_autocomplete();
     }
 
     // ── Attachment management ────────────────────────────────
@@ -185,8 +430,11 @@ impl InputBarState {
     pub fn reset(&mut self) {
         self.input.clear();
         self.cursor = 0;
+        self.scroll_offset = 0;
         self.pending_attachments.clear();
         self.file_explorer = None;
+        self.clear_selection();
+        self.dismiss_autocomplete();
         self.cleanup_temps();
     }
 
@@ -239,7 +487,20 @@ impl InputBarState {
             return InputBarAction::NotHandled;
         }
 
+        // Reset blink on any keystroke.
+        self.reset_blink();
+
         match key.code {
+            // ── Ctrl+C: copy selection or pass through ───────
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some((start, end)) = self.selection {
+                    let selected = &self.input[start..end];
+                    mouse::copy_osc52(selected);
+                    return InputBarAction::Consumed;
+                }
+                InputBarAction::NotHandled
+            }
+
             // ── Ctrl+A: open file explorer ───────────────────
             KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 let start = std::env::var("HOME")
@@ -254,8 +515,88 @@ impl InputBarState {
                 self.handle_clipboard_image()
             }
 
+            // ── Esc: dismiss autocomplete or pass through ────
+            KeyCode::Esc if self.autocomplete_active => {
+                self.dismiss_autocomplete();
+                InputBarAction::Consumed
+            }
+
+            // ── Tab: accept autocomplete match ───────────────
+            KeyCode::Tab if self.autocomplete_active => {
+                if let Some(idx) = self.autocomplete_index
+                    && idx < self.autocomplete_matches.len()
+                {
+                    let cmd = self.autocomplete_matches[idx].to_string();
+                    self.input = cmd;
+                    self.cursor = self.input.len();
+                    self.dismiss_autocomplete();
+                }
+                InputBarAction::Consumed
+            }
+
+            // ── Up/Down in autocomplete mode ─────────────────
+            KeyCode::Up if self.autocomplete_active => {
+                if let Some(idx) = self.autocomplete_index {
+                    self.autocomplete_index = Some(idx.saturating_sub(1));
+                }
+                InputBarAction::Consumed
+            }
+            KeyCode::Down if self.autocomplete_active => {
+                if let Some(idx) = self.autocomplete_index {
+                    let max = self.autocomplete_matches.len().saturating_sub(1);
+                    self.autocomplete_index = Some((idx + 1).min(max));
+                }
+                InputBarAction::Consumed
+            }
+
+            // ── Shift/Alt+Enter: insert literal newline ──────
+            KeyCode::Enter
+                if key.modifiers.contains(KeyModifiers::SHIFT)
+                    || key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.push_input_char('\n');
+                InputBarAction::Consumed
+            }
+
             // ── Enter: submit or slash command ───────────────
             KeyCode::Enter => self.handle_enter(),
+
+            // ── Up/Down: move cursor in wrapped text ─────────
+            KeyCode::Up => {
+                if self.move_cursor_up() {
+                    InputBarAction::Consumed
+                } else {
+                    InputBarAction::NotHandled
+                }
+            }
+            KeyCode::Down => {
+                if self.move_cursor_down() {
+                    InputBarAction::Consumed
+                } else {
+                    InputBarAction::NotHandled
+                }
+            }
+
+            // ── Home/End: start/end of visual line ───────────
+            KeyCode::Home => {
+                let width = self.last_inner_width;
+                if width > 0 {
+                    let (row, _) = cursor_to_visual(&self.input, self.cursor, width);
+                    self.cursor = visual_to_cursor(&self.input, row, 0, width);
+                    self.clear_selection();
+                }
+                InputBarAction::Consumed
+            }
+            KeyCode::End => {
+                let width = self.last_inner_width;
+                if width > 0 {
+                    let (row, _) = cursor_to_visual(&self.input, self.cursor, width);
+                    // Move to the end of this visual row by targeting max col.
+                    self.cursor = visual_to_cursor(&self.input, row, width, width);
+                    self.clear_selection();
+                }
+                InputBarAction::Consumed
+            }
 
             // ── Cursor movement ──────────────────────────────
             KeyCode::Left => {
@@ -285,6 +626,7 @@ impl InputBarState {
 
     /// Handle bracketed paste event.
     pub fn handle_paste(&mut self, text: &str) -> InputBarAction {
+        self.reset_blink();
         let trimmed = text.trim();
         if clipboard::looks_like_file_path(trimmed)
             && let Ok(att) = PendingAttachment::from_path(trimmed)
@@ -297,9 +639,10 @@ impl InputBarState {
         InputBarAction::Consumed
     }
 
-    /// Forward mouse events to the file explorer when open.
+    /// Handle mouse events for the input bar.
     /// Returns `true` if the event was consumed.
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> bool {
+        // File explorer overlay takes priority.
         if let Some(explorer) = &mut self.file_explorer {
             let action = explorer.handle_mouse(mouse);
             match action {
@@ -316,9 +659,67 @@ impl InputBarState {
                 }
                 ExplorerAction::None => {}
             }
-            true
-        } else {
-            false
+            return true;
+        }
+
+        // Input bar interactions.
+        if !mouse::in_rect(mouse.column, mouse.row, self.last_input_area) {
+            return false;
+        }
+
+        let inner_x = mouse.column.saturating_sub(self.last_input_area.x + 1);
+        let inner_y = mouse.row.saturating_sub(self.last_input_area.y + 1);
+        let width = self.last_inner_width;
+
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if width > 0 {
+                    let target_row = self.scroll_offset + inner_y;
+                    self.cursor = visual_to_cursor(&self.input, target_row, inner_x, width);
+                    self.selection_anchor = Some(self.cursor);
+                    self.selection = None;
+                    self.reset_blink();
+                }
+                true
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(anchor) = self.selection_anchor
+                    && width > 0
+                {
+                    let target_row = self.scroll_offset + inner_y;
+                    let target = visual_to_cursor(&self.input, target_row, inner_x, width);
+                    self.cursor = target;
+                    let (start, end) = if anchor <= target {
+                        (anchor, target)
+                    } else {
+                        (target, anchor)
+                    };
+                    self.selection = if start == end {
+                        None
+                    } else {
+                        Some((start, end))
+                    };
+                    self.reset_blink();
+                }
+                true
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                // Selection finalized — keep selection as-is.
+                true
+            }
+            MouseEventKind::ScrollUp => {
+                self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                true
+            }
+            MouseEventKind::ScrollDown => {
+                if width > 0 {
+                    let total = wrapped_line_count(&self.input, width);
+                    let max_scroll = total.saturating_sub(MAX_INPUT_ROWS);
+                    self.scroll_offset = (self.scroll_offset + 1).min(max_scroll);
+                }
+                true
+            }
+            _ => false,
         }
     }
 
@@ -421,6 +822,31 @@ impl InputBarState {
         }
     }
 
+    // ── Selection rendering helper ───────────────────────────
+
+    /// Build styled spans for the input text, highlighting any selection.
+    fn build_input_spans(&self) -> Vec<Span<'_>> {
+        match self.selection {
+            None => vec![Span::raw(&self.input)],
+            Some((start, end)) => {
+                let mut spans = Vec::new();
+                if start > 0 {
+                    spans.push(Span::raw(&self.input[..start]));
+                }
+                spans.push(Span::styled(
+                    &self.input[start..end],
+                    Style::default()
+                        .bg(theme::SELECTION_BG)
+                        .fg(theme::ICY_WHITE),
+                ));
+                if end < self.input.len() {
+                    spans.push(Span::raw(&self.input[end..]));
+                }
+                spans
+            }
+        }
+    }
+
     // ── Rendering ────────────────────────────────────────────
 
     /// Render the input bar (attachment bar + input box) at the bottom of `area`.
@@ -431,18 +857,30 @@ impl InputBarState {
     /// `show_cursor` controls whether the terminal cursor is positioned in the
     /// input box (false when an approval overlay is active).
     pub fn render(
-        &self,
+        &mut self,
         f: &mut Frame,
         area: Rect,
         turn_in_flight: bool,
         show_cursor: bool,
     ) -> Rect {
         let has_attachments = !self.pending_attachments.is_empty();
+
+        // Compute dynamic input height.
+        let inner_width = area.width.saturating_sub(2);
+        self.last_inner_width = inner_width;
+        let content_rows = if self.input.is_empty() {
+            1
+        } else {
+            wrapped_line_count(&self.input, inner_width)
+        };
+        let visible_rows = content_rows.min(MAX_INPUT_ROWS);
+        let input_height = visible_rows + 2; // +2 for top/bottom border
+
         let mut constraints = vec![Constraint::Min(3)];
         if has_attachments {
             constraints.push(Constraint::Length(1));
         }
-        constraints.push(Constraint::Length(3));
+        constraints.push(Constraint::Length(input_height));
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
@@ -453,6 +891,8 @@ impl InputBarState {
         } else {
             (chunks[0], None, chunks[1])
         };
+
+        self.last_input_area = input_area;
 
         // Attachment bar.
         if let Some(att_rect) = att_area {
@@ -475,7 +915,8 @@ impl InputBarState {
         };
         let block = Block::default().borders(Borders::ALL).title(label);
 
-        let content: Line = if self.input.is_empty() && !turn_in_flight {
+        if self.input.is_empty() && !turn_in_flight {
+            // Placeholder help text.
             let mut spans = Vec::new();
             if self.file_explorer.is_none() {
                 spans.push(Span::styled(
@@ -494,23 +935,100 @@ impl InputBarState {
                     Style::default().fg(Color::DarkGray),
                 ));
             }
-            Line::from(spans)
+            let p = Paragraph::new(Line::from(spans)).block(block);
+            f.render_widget(p, input_area);
         } else {
-            Line::from(Span::raw(&self.input))
-        };
+            // Wrapped input content with optional selection highlighting.
+            let input_spans = self.build_input_spans();
+            let p = Paragraph::new(Line::from(input_spans))
+                .block(block)
+                .wrap(Wrap { trim: false })
+                .scroll((self.scroll_offset, 0));
+            f.render_widget(p, input_area);
+        }
 
-        let p = Paragraph::new(content).block(block);
-        f.render_widget(p, input_area);
+        // Cursor blink logic.
+        let now = Instant::now();
+        if now.duration_since(self.last_blink).as_millis() >= CURSOR_BLINK_MS {
+            self.cursor_visible = !self.cursor_visible;
+            self.last_blink = now;
+        }
 
         // Cursor positioning.
-        if show_cursor && !turn_in_flight {
-            let visual = self.input[..self.cursor].chars().count() as u16;
-            let cx =
-                (input_area.x + 1 + visual).min(input_area.x + input_area.width.saturating_sub(2));
-            f.set_cursor_position((cx, input_area.y + 1));
+        if show_cursor && !turn_in_flight && inner_width > 0 {
+            let (cursor_row, cursor_col) = cursor_to_visual(&self.input, self.cursor, inner_width);
+
+            // Auto-scroll to keep cursor visible.
+            if cursor_row < self.scroll_offset {
+                self.scroll_offset = cursor_row;
+            }
+            if cursor_row >= self.scroll_offset + visible_rows {
+                self.scroll_offset = cursor_row - visible_rows + 1;
+            }
+
+            if self.cursor_visible {
+                let screen_row = cursor_row - self.scroll_offset;
+                let cx = input_area.x + 1 + cursor_col;
+                let cy = input_area.y + 1 + screen_row;
+                f.set_cursor_position((cx, cy));
+            }
         }
 
         conv_area
+    }
+
+    /// Render the auto-complete popup above the input bar if active.
+    pub fn render_autocomplete_popup(&self, f: &mut Frame) {
+        if !self.autocomplete_active || self.autocomplete_matches.is_empty() {
+            return;
+        }
+
+        let popup_height = self.autocomplete_matches.len() as u16 + 2; // +2 borders
+        let popup_width = self
+            .autocomplete_matches
+            .iter()
+            .map(|s| s.len())
+            .max()
+            .unwrap_or(10) as u16
+            + 4; // padding
+
+        let popup_y = self.last_input_area.y.saturating_sub(popup_height);
+        let popup_x = self.last_input_area.x + 1;
+
+        let popup_rect = Rect::new(
+            popup_x,
+            popup_y,
+            popup_width.min(self.last_input_area.width),
+            popup_height.min(self.last_input_area.y),
+        );
+
+        if popup_rect.width == 0 || popup_rect.height == 0 {
+            return;
+        }
+
+        f.render_widget(Clear, popup_rect);
+
+        let items: Vec<ListItem> = self
+            .autocomplete_matches
+            .iter()
+            .enumerate()
+            .map(|(i, cmd)| {
+                let style = if Some(i) == self.autocomplete_index {
+                    theme::selected_style()
+                } else {
+                    theme::body_style()
+                };
+                ListItem::new(Span::styled(*cmd, style))
+            })
+            .collect();
+
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme::dim_style())
+                .title(" Commands "),
+        );
+        f.render_widget(list, popup_rect);
     }
 
     /// Render the file explorer overlay on top of everything.
@@ -629,8 +1147,8 @@ mod tests {
 
     #[test]
     fn empty_enter_with_no_attachments_consumed() {
-        let bar = InputBarState::new();
-        // Empty input, no attachments → Consumed (nothing to do)
+        let _bar = InputBarState::new();
+        // Empty input, no attachments -> Consumed (nothing to do)
         // Can't easily test handle_enter directly without take_input side effects,
         // but we test the handle_key path.
     }
@@ -683,5 +1201,236 @@ mod tests {
         let action = bar.handle_paste("some pasted text");
         assert!(matches!(action, InputBarAction::Consumed));
         assert_eq!(bar.input(), "some pasted text");
+    }
+
+    // ── Wrap geometry tests ──────────────────────────────────
+
+    #[test]
+    fn wrapped_line_count_empty() {
+        assert_eq!(wrapped_line_count("", 20), 1);
+    }
+
+    #[test]
+    fn wrapped_line_count_short() {
+        assert_eq!(wrapped_line_count("hello", 20), 1);
+    }
+
+    #[test]
+    fn wrapped_line_count_exact_width() {
+        assert_eq!(wrapped_line_count("12345", 5), 1);
+    }
+
+    #[test]
+    fn wrapped_line_count_overflow() {
+        assert_eq!(wrapped_line_count("123456", 5), 2);
+        assert_eq!(wrapped_line_count("1234567890", 5), 2);
+        assert_eq!(wrapped_line_count("12345678901", 5), 3);
+    }
+
+    #[test]
+    fn wrapped_line_count_with_newlines() {
+        assert_eq!(wrapped_line_count("abc\ndef", 20), 2);
+        assert_eq!(wrapped_line_count("abc\n\ndef", 20), 3);
+        assert_eq!(wrapped_line_count("12345\n678901", 5), 3); // 1 + 2
+    }
+
+    #[test]
+    fn wrapped_line_count_zero_width() {
+        assert_eq!(wrapped_line_count("hello", 0), 1);
+    }
+
+    #[test]
+    fn cursor_to_visual_basic() {
+        // "hello" with width 10 — cursor at end is (0, 5).
+        assert_eq!(cursor_to_visual("hello", 5, 10), (0, 5));
+        // Cursor at start.
+        assert_eq!(cursor_to_visual("hello", 0, 10), (0, 0));
+        // Cursor in middle.
+        assert_eq!(cursor_to_visual("hello", 3, 10), (0, 3));
+    }
+
+    #[test]
+    fn cursor_to_visual_wrap() {
+        // "1234567890" with width 5 — wraps at col 5.
+        // Cursor at byte 5 (char '6') should be row 1, col 0.
+        assert_eq!(cursor_to_visual("1234567890", 5, 5), (1, 0));
+        // Cursor at byte 7 should be row 1, col 2.
+        assert_eq!(cursor_to_visual("1234567890", 7, 5), (1, 2));
+    }
+
+    #[test]
+    fn cursor_to_visual_newline() {
+        // "abc\ndef" — cursor after \n (byte 4, char 'd') is (1, 0).
+        assert_eq!(cursor_to_visual("abc\ndef", 4, 20), (1, 0));
+        // Cursor at 'f' (byte 6) is (1, 2).
+        assert_eq!(cursor_to_visual("abc\ndef", 6, 20), (1, 2));
+    }
+
+    #[test]
+    fn visual_to_cursor_basic() {
+        assert_eq!(visual_to_cursor("hello", 0, 0, 10), 0);
+        assert_eq!(visual_to_cursor("hello", 0, 3, 10), 3);
+        assert_eq!(visual_to_cursor("hello", 0, 5, 10), 5);
+    }
+
+    #[test]
+    fn visual_to_cursor_wrap() {
+        // "1234567890" width 5 — row 1, col 0 = byte 5.
+        assert_eq!(visual_to_cursor("1234567890", 1, 0, 5), 5);
+        assert_eq!(visual_to_cursor("1234567890", 1, 2, 5), 7);
+    }
+
+    #[test]
+    fn visual_to_cursor_newline() {
+        // "abc\ndef" — row 1, col 0 = byte 4 ('d').
+        assert_eq!(visual_to_cursor("abc\ndef", 1, 0, 20), 4);
+        assert_eq!(visual_to_cursor("abc\ndef", 1, 2, 20), 6);
+    }
+
+    #[test]
+    fn cursor_visual_round_trip() {
+        let text = "hello world this is a test";
+        let width: u16 = 10;
+        for cursor in 0..=text.len() {
+            if !text.is_char_boundary(cursor) {
+                continue;
+            }
+            let (row, col) = cursor_to_visual(text, cursor, width);
+            let recovered = visual_to_cursor(text, row, col, width);
+            assert_eq!(
+                recovered, cursor,
+                "round-trip failed for cursor={cursor} -> ({row},{col}) -> {recovered}"
+            );
+        }
+    }
+
+    #[test]
+    fn cursor_visual_round_trip_with_newlines() {
+        let text = "abc\ndefgh\nij";
+        let width: u16 = 4;
+        for cursor in 0..=text.len() {
+            if !text.is_char_boundary(cursor) {
+                continue;
+            }
+            let (row, col) = cursor_to_visual(text, cursor, width);
+            let recovered = visual_to_cursor(text, row, col, width);
+            assert_eq!(
+                recovered, cursor,
+                "round-trip failed for cursor={cursor} -> ({row},{col}) -> {recovered}"
+            );
+        }
+    }
+
+    // ── Auto-complete tests ──────────────────────────────────
+
+    #[test]
+    fn autocomplete_triggers_on_slash() {
+        let mut bar = InputBarState::new();
+        bar.insert_text("/a");
+        assert!(bar.autocomplete_active);
+        assert!(!bar.autocomplete_matches.is_empty());
+    }
+
+    #[test]
+    fn autocomplete_partial_prefix_matches() {
+        let mut bar = InputBarState::new();
+        bar.insert_text("/attach");
+        // "/attach" is a prefix of "/attachments", so popup shows.
+        assert!(bar.autocomplete_active);
+        assert!(bar.autocomplete_matches.contains(&"/attachments"));
+        // "/attach" itself is excluded (exact match).
+        assert!(!bar.autocomplete_matches.contains(&"/attach"));
+    }
+
+    #[test]
+    fn autocomplete_exact_no_popup() {
+        let mut bar = InputBarState::new();
+        bar.insert_text("/attachments");
+        // Exact match with no further completions — no popup.
+        assert!(!bar.autocomplete_active);
+    }
+
+    #[test]
+    fn autocomplete_off_with_space() {
+        let mut bar = InputBarState::new();
+        bar.insert_text("/attach foo");
+        // Space present — autocomplete disabled.
+        assert!(!bar.autocomplete_active);
+    }
+
+    #[test]
+    fn autocomplete_off_for_non_slash() {
+        let mut bar = InputBarState::new();
+        bar.insert_text("hello");
+        assert!(!bar.autocomplete_active);
+    }
+
+    // ── Selection tests ──────────────────────────────────────
+
+    #[test]
+    fn build_input_spans_no_selection() {
+        let mut bar = InputBarState::new();
+        bar.insert_text("hello");
+        let spans = bar.build_input_spans();
+        assert_eq!(spans.len(), 1);
+    }
+
+    #[test]
+    fn build_input_spans_with_selection() {
+        let mut bar = InputBarState::new();
+        bar.insert_text("hello world");
+        bar.selection = Some((2, 7));
+        let spans = bar.build_input_spans();
+        // before "he" + selected "llo w" + after "orld"
+        assert_eq!(spans.len(), 3);
+    }
+
+    #[test]
+    fn delete_selection_removes_range() {
+        let mut bar = InputBarState::new();
+        bar.insert_text("hello world");
+        bar.selection = Some((2, 7));
+        bar.delete_selection();
+        assert_eq!(bar.input(), "heorld");
+        assert_eq!(bar.cursor(), 2);
+    }
+
+    #[test]
+    fn backspace_with_selection_deletes_selection() {
+        let mut bar = InputBarState::new();
+        bar.insert_text("hello");
+        bar.selection = Some((1, 4));
+        bar.pop_input_char();
+        assert_eq!(bar.input(), "ho");
+        assert_eq!(bar.cursor(), 1);
+    }
+
+    #[test]
+    fn typing_with_selection_replaces() {
+        let mut bar = InputBarState::new();
+        bar.insert_text("hello");
+        bar.selection = Some((1, 4));
+        bar.push_input_char('X');
+        assert_eq!(bar.input(), "hXo");
+        assert_eq!(bar.cursor(), 2);
+    }
+
+    // ── Dynamic height tests ─────────────────────────────────
+
+    #[test]
+    fn dynamic_height_single_line() {
+        let content_rows = wrapped_line_count("hello", 40);
+        let visible = content_rows.min(MAX_INPUT_ROWS);
+        assert_eq!(visible + 2, 3); // 1 content row + 2 borders
+    }
+
+    #[test]
+    fn dynamic_height_capped() {
+        // 100 chars at width 10 = 10 rows, capped to MAX_INPUT_ROWS.
+        let text = "a".repeat(100);
+        let content_rows = wrapped_line_count(&text, 10);
+        assert_eq!(content_rows, 10);
+        let visible = content_rows.min(MAX_INPUT_ROWS);
+        assert_eq!(visible + 2, 7); // 5 content rows + 2 borders
     }
 }

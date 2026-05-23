@@ -4,11 +4,11 @@ use ratatui::style::{Color, Modifier, Style};
 /// helper below are kept — add more when a new widget needs them.
 const ICY_BLUE: Color = Color::Rgb(100, 200, 255);
 const ICY_CYAN: Color = Color::Rgb(140, 230, 255);
-const ICY_WHITE: Color = Color::Rgb(220, 240, 255);
+pub(crate) const ICY_WHITE: Color = Color::Rgb(220, 240, 255);
 const FROST_DIM: Color = Color::Rgb(80, 130, 170);
 const CRAB_ACCENT: Color = Color::Rgb(255, 100, 80);
 const WARN_YELLOW: Color = Color::Rgb(255, 220, 80);
-const SELECTION_BG: Color = Color::Rgb(30, 60, 100);
+pub(crate) const SELECTION_BG: Color = Color::Rgb(30, 60, 100);
 
 pub fn title_style() -> Style {
     Style::default().fg(ICY_BLUE).add_modifier(Modifier::BOLD)
