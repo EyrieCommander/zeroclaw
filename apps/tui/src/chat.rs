@@ -317,6 +317,7 @@ impl<'a> Chat<'a> {
                                         _ => {}
                                     }
                                 }
+                                state.lines_dirty = true;
                             }
                         }
                     }
@@ -402,6 +403,7 @@ impl<'a> Chat<'a> {
                 }
                 InputBarAction::StatusMessage(msg) => {
                     state.entries.push(ChatEntry::SystemMessage(msg));
+                    state.lines_dirty = true;
                     return false;
                 }
                 InputBarAction::Consumed => return false,
@@ -422,6 +424,7 @@ impl<'a> Chat<'a> {
             KeyCode::Esc => {
                 if state.selected_entry.is_some() {
                     state.selected_entry = None;
+                    state.lines_dirty = true;
                 } else if state.turn_in_flight {
                     let _ = self.rpc.session_cancel(&state.session_id).await;
                     state.turn_in_flight = false;
@@ -535,6 +538,7 @@ impl<'a> Chat<'a> {
                     && state.selected_entry.is_none() =>
             {
                 state.show_thoughts = !state.show_thoughts;
+                state.lines_dirty = true;
             }
             // ── Entry selection & yank ───────────────────────────
             KeyCode::Char('y') if state.selected_entry.is_some() => {
@@ -555,6 +559,7 @@ impl<'a> Chat<'a> {
                         Some(i) => i.saturating_sub(1),
                         None => len - 1,
                     });
+                    state.lines_dirty = true;
                 }
             }
             // ── Shift+Up/Down: scroll conversation ───────────
@@ -573,6 +578,7 @@ impl<'a> Chat<'a> {
                         Some(_) => len - 1,
                         None => 0,
                     });
+                    state.lines_dirty = true;
                 }
             }
             KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -608,6 +614,7 @@ impl<'a> Chat<'a> {
         let action = state.input_bar.handle_paste(text);
         if let InputBarAction::StatusMessage(msg) = action {
             state.entries.push(ChatEntry::SystemMessage(msg));
+            state.lines_dirty = true;
         }
     }
 
@@ -863,11 +870,11 @@ fn file_ext(input: &serde_json::Value) -> Option<&str> {
     std::path::Path::new(path).extension()?.to_str()
 }
 
-fn render_tool_entry<'a>(
-    lines: &mut Vec<Line<'a>>,
-    name: &'a str,
-    input: &'a serde_json::Value,
-    result: Option<&'a str>,
+fn render_tool_entry(
+    lines: &mut Vec<Line<'static>>,
+    name: &str,
+    input: &serde_json::Value,
+    result: Option<&str>,
 ) {
     const TOOL_FG: Color = Color::Rgb(180, 140, 255);
     const RESULT_FG: Color = Color::Rgb(130, 130, 130);
@@ -929,104 +936,16 @@ fn render_tool_entry<'a>(
 }
 
 fn render_conversation(f: &mut Frame, state: &mut ChatState, area: Rect) {
-    let mut lines: Vec<Line> = Vec::new();
-    let selected = state.selected_entry;
-
-    for (idx, entry) in state.entries().iter().enumerate() {
-        let is_selected = selected == Some(idx);
-        let sel_mod = if is_selected {
-            Modifier::REVERSED
-        } else {
-            Modifier::empty()
-        };
-
-        match entry {
-            ChatEntry::UserMessage { text, attachments } => {
-                let mut spans = vec![Span::styled(
-                    "You: ",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD | sel_mod),
-                )];
-                if let Some(t) = text {
-                    spans.push(Span::styled(
-                        t.as_str(),
-                        Style::default().add_modifier(sel_mod),
-                    ));
-                }
-                if !attachments.is_empty() {
-                    let label = attachments.join(", ");
-                    spans.push(Span::styled(
-                        format!(" [{label}]"),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::ITALIC | sel_mod),
-                    ));
-                }
-                lines.push(Line::from(spans));
-            }
-            ChatEntry::AgentMessage(text) => {
-                let prefix = Line::from(vec![Span::styled(
-                    "Agent: ",
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD | sel_mod),
-                )]);
-                lines.push(prefix);
-                let md_lines = markdown_to_lines(text);
-                for mut line in md_lines {
-                    if is_selected {
-                        line = Line::from(
-                            line.spans
-                                .into_iter()
-                                .map(|s| {
-                                    s.patch_style(Style::default().add_modifier(Modifier::REVERSED))
-                                })
-                                .collect::<Vec<_>>(),
-                        );
-                    }
-                    lines.push(line);
-                }
-            }
-            ChatEntry::AgentThought(text) => {
-                if state.show_thoughts {
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            "(thinking) ",
-                            Style::default()
-                                .fg(Color::DarkGray)
-                                .add_modifier(Modifier::ITALIC | sel_mod),
-                        ),
-                        Span::styled(
-                            text.as_str(),
-                            Style::default().fg(Color::DarkGray).add_modifier(sel_mod),
-                        ),
-                    ]));
-                }
-            }
-            ChatEntry::SystemMessage(text) => {
-                for line_text in text.lines() {
-                    lines.push(Line::from(Span::styled(
-                        line_text.to_string(),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::ITALIC | sel_mod),
-                    )));
-                }
-            }
-            ChatEntry::Tool {
-                name,
-                input,
-                result,
-                ..
-            } => {
-                render_tool_entry(&mut lines, name, input, result.as_deref());
-            }
-        }
+    // ── Rebuild cached lines only when entries changed ────────
+    if state.lines_dirty {
+        state.rebuild_lines();
     }
 
+    // ── Assemble final lines: cached + streaming ─────────────
+    let mut lines: Vec<Line> = state.cached_lines.clone();
+
     // Streaming text (in-flight agent response).
-    if !state.current_agent_text().is_empty() {
+    if !state.streaming_text.is_empty() {
         let prefix = Line::from(vec![Span::styled(
             "Agent: ",
             Style::default()
@@ -1034,7 +953,7 @@ fn render_conversation(f: &mut Frame, state: &mut ChatState, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         )]);
         lines.push(prefix);
-        lines.extend(markdown_to_lines(state.current_agent_text()));
+        lines.extend(markdown_to_lines(&state.streaming_text));
     }
 
     // Streaming thought (in-flight).
@@ -1047,7 +966,7 @@ fn render_conversation(f: &mut Frame, state: &mut ChatState, area: Rect) {
                     .add_modifier(Modifier::ITALIC),
             ),
             Span::styled(
-                &state.streaming_thought,
+                state.streaming_thought.clone(),
                 Style::default().fg(Color::DarkGray),
             ),
         ]));
@@ -1055,17 +974,17 @@ fn render_conversation(f: &mut Frame, state: &mut ChatState, area: Rect) {
 
     let inner_width = area.width.saturating_sub(2);
     let inner_height = area.height.saturating_sub(2);
-    let total_rows: u16 = lines
-        .iter()
-        .map(|line| {
-            let w = line.width() as u16;
-            if inner_width == 0 {
-                1
-            } else {
-                w.div_ceil(inner_width).max(1)
-            }
-        })
-        .sum();
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", state.title()));
+
+    let p = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
+
+    // Use ratatui's own line_count for accurate wrapped row total.
+    let total_rows = p.line_count(inner_width) as u16;
     let max_scroll = total_rows.saturating_sub(inner_height);
     let scroll = if state.pinned_to_bottom {
         max_scroll
@@ -1073,14 +992,7 @@ fn render_conversation(f: &mut Frame, state: &mut ChatState, area: Rect) {
         state.scroll_offset.min(max_scroll)
     };
 
-    let p = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" {} ", state.title())),
-        )
-        .wrap(Wrap { trim: false })
-        .scroll((scroll, 0));
+    let p = p.scroll((scroll, 0));
     f.render_widget(p, area);
 
     state.last_total_rows = total_rows;
@@ -1422,6 +1334,10 @@ pub struct ChatState {
     pinned_to_bottom: bool,
     last_total_rows: u16,
     last_inner_height: u16,
+    /// Cached rendered lines from committed entries.  Rebuilt only when
+    /// `lines_dirty` is set, avoiding markdown re-parsing every frame.
+    cached_lines: Vec<Line<'static>>,
+    lines_dirty: bool,
 }
 
 impl ChatState {
@@ -1444,7 +1360,112 @@ impl ChatState {
             pinned_to_bottom: true,
             last_total_rows: 0,
             last_inner_height: 0,
+            cached_lines: Vec::new(),
+            lines_dirty: true,
         }
+    }
+
+    /// Rebuild the cached rendered lines from committed entries.
+    fn rebuild_lines(&mut self) {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        let selected = self.selected_entry;
+
+        for (idx, entry) in self.entries.iter().enumerate() {
+            let is_selected = selected == Some(idx);
+            let sel_mod = if is_selected {
+                Modifier::REVERSED
+            } else {
+                Modifier::empty()
+            };
+
+            match entry {
+                ChatEntry::UserMessage { text, attachments } => {
+                    let mut spans = vec![Span::styled(
+                        "You: ",
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD | sel_mod),
+                    )];
+                    if let Some(t) = text {
+                        spans.push(Span::styled(
+                            t.clone(),
+                            Style::default().add_modifier(sel_mod),
+                        ));
+                    }
+                    if !attachments.is_empty() {
+                        let label = attachments.join(", ");
+                        spans.push(Span::styled(
+                            format!(" [{label}]"),
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::ITALIC | sel_mod),
+                        ));
+                    }
+                    lines.push(Line::from(spans));
+                }
+                ChatEntry::AgentMessage(text) => {
+                    let prefix = Line::from(vec![Span::styled(
+                        "Agent: ",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD | sel_mod),
+                    )]);
+                    lines.push(prefix);
+                    let md_lines = markdown_to_lines(text);
+                    for mut line in md_lines {
+                        if is_selected {
+                            line = Line::from(
+                                line.spans
+                                    .into_iter()
+                                    .map(|s| {
+                                        s.patch_style(
+                                            Style::default().add_modifier(Modifier::REVERSED),
+                                        )
+                                    })
+                                    .collect::<Vec<_>>(),
+                            );
+                        }
+                        lines.push(line);
+                    }
+                }
+                ChatEntry::AgentThought(text) => {
+                    if self.show_thoughts {
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                "(thinking) ",
+                                Style::default()
+                                    .fg(Color::DarkGray)
+                                    .add_modifier(Modifier::ITALIC | sel_mod),
+                            ),
+                            Span::styled(
+                                text.clone(),
+                                Style::default().fg(Color::DarkGray).add_modifier(sel_mod),
+                            ),
+                        ]));
+                    }
+                }
+                ChatEntry::SystemMessage(text) => {
+                    for line_text in text.lines() {
+                        lines.push(Line::from(Span::styled(
+                            line_text.to_string(),
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::ITALIC | sel_mod),
+                        )));
+                    }
+                }
+                ChatEntry::Tool {
+                    name,
+                    input,
+                    result,
+                    ..
+                } => {
+                    render_tool_entry(&mut lines, name, input, result.as_deref());
+                }
+            }
+        }
+        self.cached_lines = lines;
+        self.lines_dirty = false;
     }
 
     pub fn scroll_up(&mut self, lines: u16) {
@@ -1468,10 +1489,12 @@ impl ChatState {
         }
     }
 
+    #[cfg(test)]
     pub fn entries(&self) -> &[ChatEntry] {
         &self.entries
     }
 
+    #[cfg(test)]
     pub fn current_agent_text(&self) -> &str {
         &self.streaming_text
     }
@@ -1496,6 +1519,7 @@ impl ChatState {
         let thought = std::mem::take(&mut self.streaming_thought);
         if !thought.is_empty() {
             self.entries.push(ChatEntry::AgentThought(thought));
+            self.lines_dirty = true;
         }
     }
 
@@ -1539,6 +1563,7 @@ impl ChatState {
                     input: raw_input,
                     result: None,
                 });
+                self.lines_dirty = true;
             }
             SessionUpdate::ToolResult {
                 tool_call_id,
@@ -1554,6 +1579,7 @@ impl ChatState {
                         && id == &tool_call_id
                     {
                         *result = Some(raw_output);
+                        self.lines_dirty = true;
                         break;
                     }
                 }
@@ -1582,6 +1608,7 @@ impl ChatState {
         if !full_text.is_empty() {
             self.entries.push(ChatEntry::AgentMessage(full_text));
         }
+        self.lines_dirty = true;
         self.turn_in_flight = false;
         self.input_bar.cleanup_temps();
     }
@@ -1589,6 +1616,7 @@ impl ChatState {
     pub fn push_user_message(&mut self, text: Option<String>, attachments: Vec<String>) {
         self.entries
             .push(ChatEntry::UserMessage { text, attachments });
+        self.lines_dirty = true;
         self.turn_in_flight = true;
     }
 
@@ -1600,6 +1628,8 @@ impl ChatState {
         self.entries.clear();
         self.streaming_text.clear();
         self.streaming_thought.clear();
+        self.cached_lines.clear();
+        self.lines_dirty = true;
         self.pending_approval = None;
         self.turn_in_flight = false;
         self.selected_entry = None;
