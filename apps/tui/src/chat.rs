@@ -312,9 +312,9 @@ impl<'a> Chat<'a> {
         // ── Normal active-chat key handling ──────────────────────
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if state.turn_in_flight {
+                if state.is_cancellable() {
                     let _ = self.rpc.session_cancel(&state.session_id).await;
-                    state.turn_in_flight = false;
+                    state.cancel_streaming();
                 } else {
                     return true;
                 }
@@ -322,9 +322,9 @@ impl<'a> Chat<'a> {
             KeyCode::Esc => {
                 if state.selected_entry.is_some() {
                     state.selected_entry = None;
-                } else if state.turn_in_flight {
+                } else if state.is_cancellable() {
                     let _ = self.rpc.session_cancel(&state.session_id).await;
-                    state.turn_in_flight = false;
+                    state.cancel_streaming();
                 } else {
                     return true;
                 }
@@ -576,7 +576,7 @@ impl<'a> Chat<'a> {
                         ("y", "Yank to clipboard"),
                         ("Esc", "Deselect"),
                     ]
-                } else if state.turn_in_flight {
+                } else if state.is_cancellable() {
                     vec![("Ctrl+C / Esc", "Cancel turn")]
                 } else {
                     vec![
@@ -1494,6 +1494,26 @@ impl ChatState {
                 });
             }
         }
+    }
+
+    /// True when there is active agent work that ESC/Ctrl+C can cancel.
+    ///
+    /// Covers both user-initiated interactive turns (`turn_in_flight`) and
+    /// autonomous ACP turns that stream notifications without being submitted
+    /// by this client.
+    pub fn is_cancellable(&self) -> bool {
+        self.turn_in_flight
+            || !self.streaming_thought.is_empty()
+            || !self.streaming_text.is_empty()
+    }
+
+    /// Cancel in-progress streaming state immediately (called after session_cancel RPC).
+    pub fn cancel_streaming(&mut self) {
+        self.turn_in_flight = false;
+        // Preserve any partial thought as a committed entry so history is intact.
+        self.flush_streaming_thought();
+        // Drop the incomplete text chunk — the turn was cancelled mid-response.
+        self.streaming_text.clear();
     }
 
     pub fn commit_turn(&mut self, full_text: String) {
