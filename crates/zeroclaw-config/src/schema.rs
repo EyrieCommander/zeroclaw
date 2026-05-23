@@ -13091,7 +13091,7 @@ fn prune_default_values(actual: &mut toml::Table, defaults: &toml::Table) {
     }
 }
 
-fn is_local_ollama_endpoint(api_url: Option<&str>) -> bool {
+pub fn is_local_ollama_endpoint(api_url: Option<&str>) -> bool {
     let Some(raw) = api_url.map(str::trim).filter(|value| !value.is_empty()) else {
         return true;
     };
@@ -13100,6 +13100,17 @@ fn is_local_ollama_endpoint(api_url: Option<&str>) -> bool {
         .ok()
         .and_then(|url| url.host_str().map(|host| host.to_ascii_lowercase()))
         .is_some_and(|host| matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1" | "0.0.0.0"))
+}
+
+pub fn is_official_ollama_cloud_endpoint(api_url: Option<&str>) -> bool {
+    let Some(raw) = api_url.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+
+    reqwest::Url::parse(raw)
+        .ok()
+        .and_then(|url| url.host_str().map(|host| host.to_ascii_lowercase()))
+        .is_some_and(|host| matches!(host.as_str(), "ollama.com" | "api.ollama.com"))
 }
 
 fn has_ollama_cloud_credential(config_api_key: Option<&str>) -> bool {
@@ -14005,7 +14016,9 @@ impl Config {
                     "default_model uses ':cloud' with model_provider 'ollama', but uri is local or unset. Set uri to a remote Ollama endpoint (for example https://ollama.com)."
                 );
             }
-            if !has_ollama_cloud_credential(entry.api_key.as_deref()) {
+            if is_official_ollama_cloud_endpoint(entry.uri.as_deref())
+                && !has_ollama_cloud_credential(entry.api_key.as_deref())
+            {
                 anyhow::bail!(
                     "default_model uses ':cloud' with model_provider 'ollama', but no API key is configured. Set api_key on [providers.models.ollama.<alias>] (or via the schema-mirror grammar: ZEROCLAW_providers__models__ollama__<alias>__api_key=<value>)."
                 );
@@ -18233,6 +18246,50 @@ model = "primary-model"
 
         let result = config.validate();
         assert!(result.is_ok(), "expected validation to pass: {result:?}");
+    }
+
+    #[test]
+    async fn validate_ollama_cloud_model_accepts_private_remote_without_api_key() {
+        let _env_guard = env_override_lock().await;
+        let mut config = Config::default();
+        config.providers.models.ollama.insert(
+            "default".to_string(),
+            OllamaModelProviderConfig {
+                base: ModelProviderConfig {
+                    model: Some("glm-5:cloud".to_string()),
+                    uri: Some("http://100.126.1.2:11434".to_string()),
+                    api_key: None,
+                    ..Default::default()
+                },
+                ..OllamaModelProviderConfig::default()
+            },
+        );
+
+        let result = config.validate();
+        assert!(result.is_ok(), "expected validation to pass: {result:?}");
+    }
+
+    #[test]
+    async fn validate_ollama_cloud_model_rejects_official_remote_without_api_key() {
+        let _env_guard = env_override_lock().await;
+        let mut config = Config::default();
+        config.providers.models.ollama.insert(
+            "default".to_string(),
+            OllamaModelProviderConfig {
+                base: ModelProviderConfig {
+                    model: Some("glm-5:cloud".to_string()),
+                    uri: Some("https://api.ollama.com".to_string()),
+                    api_key: None,
+                    ..Default::default()
+                },
+                ..OllamaModelProviderConfig::default()
+            },
+        );
+
+        let error = config.validate().expect_err("expected validation to fail");
+        assert!(error.to_string().contains(
+            "default_model uses ':cloud' with model_provider 'ollama', but no API key is configured"
+        ));
     }
 
     #[test]

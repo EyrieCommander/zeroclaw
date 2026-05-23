@@ -65,6 +65,13 @@ pub struct OpenAiCompatibleModelProvider {
     /// non-string `default` quirks crash the tool-call parser). The check
     /// runs at tool conversion time against the runtime model id.
     local_model_tool_sanitize: bool,
+    model_request_policy: ModelRequestPolicy,
+}
+
+#[derive(Clone, Copy)]
+enum ModelRequestPolicy {
+    Default,
+    OllamaCloud,
 }
 
 /// How the model_provider expects the API key to be sent.
@@ -279,6 +286,7 @@ impl OpenAiCompatibleModelProvider {
             models_dev_key: None,
             openrouter_vendor_prefix: None,
             local_model_tool_sanitize: false,
+            model_request_policy: ModelRequestPolicy::Default,
         }
     }
     /// Opt this provider into per-model conservative tool-schema sanitization.
@@ -289,6 +297,11 @@ impl OpenAiCompatibleModelProvider {
     /// happily serves llama, qwen, etc. without sanitization.
     pub fn with_local_model_tool_sanitize(mut self) -> Self {
         self.local_model_tool_sanitize = true;
+        self
+    }
+
+    pub fn with_ollama_cloud_model_routing(mut self) -> Self {
+        self.model_request_policy = ModelRequestPolicy::OllamaCloud;
         self
     }
 
@@ -616,6 +629,41 @@ impl OpenAiCompatibleModelProvider {
         let is_likely_codex_supported = id.contains("codex") && id.starts_with("gpt-");
 
         (is_openai_reasoning_model || is_likely_codex_supported).then(|| effort.clone())
+    }
+
+    pub(crate) fn resolve_model_request<'a>(
+        &'a self,
+        model: &str,
+    ) -> anyhow::Result<(String, Option<&'a str>)> {
+        let credential = self.credential.as_deref();
+        if !matches!(self.model_request_policy, ModelRequestPolicy::OllamaCloud) {
+            return Ok((model.to_string(), credential));
+        }
+
+        let requests_cloud = model.ends_with(":cloud");
+        if requests_cloud && zeroclaw_config::schema::is_local_ollama_endpoint(Some(&self.base_url))
+        {
+            anyhow::bail!(
+                "Model '{}' requested cloud routing, but Ollama endpoint is local. Configure api_url with a remote Ollama endpoint.",
+                model
+            );
+        }
+
+        let official_cloud =
+            zeroclaw_config::schema::is_official_ollama_cloud_endpoint(Some(&self.base_url));
+        if requests_cloud && official_cloud && credential.is_none() {
+            anyhow::bail!(
+                "Model '{}' requested cloud routing, but no API key is configured. Set api_key on [providers.models.ollama.<alias>].",
+                model
+            );
+        }
+
+        let request_model = if requests_cloud && official_cloud {
+            model.strip_suffix(":cloud").unwrap_or(model).to_string()
+        } else {
+            model.to_string()
+        };
+        Ok((request_model, credential))
     }
 }
 
@@ -1978,11 +2026,15 @@ impl ModelProvider for OpenAiCompatibleModelProvider {
 
     async fn list_models(&self) -> anyhow::Result<Vec<String>> {
         // When a credential is present, hit the model_provider's native /models endpoint
-        // (OpenAI-compatible: GET {base_url}/models).
-        if let Some(credential) = self.credential.as_deref() {
+        // (OpenAI-compatible: GET {base_url}/models). Keyless Ollama remotes
+        // expose the same endpoint and should not fall back to static catalogs.
+        if self.credential.is_some()
+            || matches!(self.model_request_policy, ModelRequestPolicy::OllamaCloud)
+        {
+            let credential = self.credential.as_deref();
             let url = format!("{}/models", self.base_url);
             let response = self
-                .apply_auth_header(self.http_client().get(&url), Some(credential))
+                .apply_auth_header(self.http_client().get(&url), credential)
                 .send()
                 .await
                 .map_err(|e| {
@@ -2053,7 +2105,7 @@ impl ModelProvider for OpenAiCompatibleModelProvider {
         temperature: Option<f64>,
     ) -> anyhow::Result<String> {
         let temperature = temperature.unwrap_or(self.default_temperature());
-        let credential = self.credential.as_deref();
+        let (request_model, credential) = self.resolve_model_request(model)?;
 
         // Normalize image markers (e.g. local file paths from channel
         // attachments) into base64 data URIs before this message reaches the
@@ -2095,7 +2147,7 @@ impl ModelProvider for OpenAiCompatibleModelProvider {
         }
 
         let request = ApiChatRequest {
-            model: model.to_string(),
+            model: request_model,
             messages,
             temperature,
             stream: Some(false),
@@ -2166,7 +2218,7 @@ impl ModelProvider for OpenAiCompatibleModelProvider {
         temperature: Option<f64>,
     ) -> anyhow::Result<String> {
         let temperature = temperature.unwrap_or(self.default_temperature());
-        let credential = self.credential.as_deref();
+        let (request_model, credential) = self.resolve_model_request(model)?;
 
         let normalized = Self::normalize_messages_for_upstream(messages).await?;
         let merge = self.effective_merge_system(model);
@@ -2182,7 +2234,7 @@ impl ModelProvider for OpenAiCompatibleModelProvider {
             .collect();
 
         let request = ApiChatRequest {
-            model: model.to_string(),
+            model: request_model,
             messages: api_messages,
             temperature,
             stream: Some(false),
@@ -2248,7 +2300,7 @@ impl ModelProvider for OpenAiCompatibleModelProvider {
         temperature: Option<f64>,
     ) -> anyhow::Result<ProviderChatResponse> {
         let temperature = temperature.unwrap_or(self.default_temperature());
-        let credential = self.credential.as_deref();
+        let (request_model, credential) = self.resolve_model_request(model)?;
 
         let normalized = Self::normalize_messages_for_upstream(messages).await?;
         let merge = self.effective_merge_system(model);
@@ -2263,7 +2315,7 @@ impl ModelProvider for OpenAiCompatibleModelProvider {
             .collect();
 
         let request = ApiChatRequest {
-            model: model.to_string(),
+            model: request_model,
             messages: api_messages,
             temperature,
             stream: Some(false),
@@ -2370,7 +2422,7 @@ impl ModelProvider for OpenAiCompatibleModelProvider {
         temperature: Option<f64>,
     ) -> anyhow::Result<ProviderChatResponse> {
         let temperature = temperature.unwrap_or(self.default_temperature());
-        let credential = self.credential.as_deref();
+        let (request_model, credential) = self.resolve_model_request(model)?;
 
         let normalized = Self::normalize_messages_for_upstream(request.messages).await?;
         let merge = self.effective_merge_system(model);
@@ -2381,7 +2433,7 @@ impl ModelProvider for OpenAiCompatibleModelProvider {
 
         let tools = self.convert_tool_specs_for_model(request.tools, model);
         let native_request = NativeChatRequest {
-            model: model.to_string(),
+            model: request_model,
             messages: self.convert_messages_for_native(&effective_messages, !merge),
             temperature,
             stream: Some(false),
@@ -2505,6 +2557,15 @@ impl ModelProvider for OpenAiCompatibleModelProvider {
             };
 
             let merge = provider.effective_merge_system(&model);
+            let (request_model, credential) = match provider.resolve_model_request(&model) {
+                Ok(details) => details,
+                Err(err) => {
+                    let _ = tx
+                        .send(Err(StreamError::ModelProvider(err.to_string())))
+                        .await;
+                    return;
+                }
+            };
             let has_tools = tools_owned.as_ref().is_some_and(|tools| !tools.is_empty());
             let effective_messages = Self::flatten_system_messages(&normalized, merge);
             let effective_messages = provider.strip_native_tool_messages(&effective_messages);
@@ -2512,7 +2573,7 @@ impl ModelProvider for OpenAiCompatibleModelProvider {
 
             let payload_result = if has_tools {
                 serde_json::to_value(NativeChatRequest {
-                    model: model.clone(),
+                    model: request_model.clone(),
                     messages: provider.convert_messages_for_native(&effective_messages, !merge),
                     temperature,
                     reasoning_effort: provider.reasoning_effort_for_model(&model),
@@ -2542,7 +2603,7 @@ impl ModelProvider for OpenAiCompatibleModelProvider {
                     .collect();
 
                 serde_json::to_value(ApiChatRequest {
-                    model: model.clone(),
+                    model: request_model.clone(),
                     messages,
                     temperature,
                     reasoning_effort: provider.reasoning_effort_for_model(&model),
@@ -2572,11 +2633,10 @@ impl ModelProvider for OpenAiCompatibleModelProvider {
             let url = provider.chat_completions_url();
             let client = provider.streaming_http_client();
             let auth_header = provider.auth_header.clone();
-            let credential = provider.credential.clone();
             let targets_mistral_tool_call_contract = provider.targets_mistral_tool_call_contract();
 
             let mut req_builder = client.post(&url).json(&payload);
-            req_builder = apply_auth_to_request(req_builder, &auth_header, credential.as_deref());
+            req_builder = apply_auth_to_request(req_builder, &auth_header, credential);
             req_builder = req_builder.header("Accept", "text/event-stream");
 
             let response = match req_builder.send().await {
@@ -2663,6 +2723,15 @@ impl ModelProvider for OpenAiCompatibleModelProvider {
             let normalized_message_content = normalized_user.content;
 
             let merge = provider.effective_merge_system(&model);
+            let (request_model, credential) = match provider.resolve_model_request(&model) {
+                Ok(details) => details,
+                Err(err) => {
+                    let _ = tx
+                        .send(Err(StreamError::ModelProvider(err.to_string())))
+                        .await;
+                    return;
+                }
+            };
             let mut messages = Vec::new();
             if merge {
                 let content = match system_prompt_owned.as_deref() {
@@ -2687,7 +2756,7 @@ impl ModelProvider for OpenAiCompatibleModelProvider {
             }
 
             let request = ApiChatRequest {
-                model: model.clone(),
+                model: request_model,
                 messages,
                 temperature,
                 stream: Some(options_enabled),
@@ -2704,13 +2773,12 @@ impl ModelProvider for OpenAiCompatibleModelProvider {
             let url = provider.chat_completions_url();
             let client = provider.streaming_http_client();
             let auth_header = provider.auth_header.clone();
-            let credential = provider.credential.clone();
 
             // Build request with auth
             let mut req_builder = client.post(&url).json(&request);
 
             // Apply auth header
-            req_builder = apply_auth_to_request(req_builder, &auth_header, credential.as_deref());
+            req_builder = apply_auth_to_request(req_builder, &auth_header, credential);
 
             // Set accept header for streaming
             req_builder = req_builder.header("Accept", "text/event-stream");
@@ -2784,6 +2852,15 @@ impl ModelProvider for OpenAiCompatibleModelProvider {
             };
 
             let merge = provider.effective_merge_system(&model);
+            let (request_model, credential) = match provider.resolve_model_request(&model) {
+                Ok(details) => details,
+                Err(err) => {
+                    let _ = tx
+                        .send(Err(StreamError::ModelProvider(err.to_string())))
+                        .await;
+                    return;
+                }
+            };
             let effective_messages = Self::flatten_system_messages(&normalized, merge);
             let effective_messages = provider.strip_native_tool_messages(&effective_messages);
             let api_messages: Vec<Message> = effective_messages
@@ -2795,7 +2872,7 @@ impl ModelProvider for OpenAiCompatibleModelProvider {
                 .collect();
 
             let request = ApiChatRequest {
-                model: model.clone(),
+                model: request_model,
                 messages: api_messages,
                 temperature,
                 stream: Some(options_enabled),
@@ -2812,10 +2889,9 @@ impl ModelProvider for OpenAiCompatibleModelProvider {
             let url = provider.chat_completions_url();
             let client = provider.streaming_http_client();
             let auth_header = provider.auth_header.clone();
-            let credential = provider.credential.clone();
 
             let mut req_builder = client.post(&url).json(&request);
-            req_builder = apply_auth_to_request(req_builder, &auth_header, credential.as_deref());
+            req_builder = apply_auth_to_request(req_builder, &auth_header, credential);
             req_builder = req_builder.header("Accept", "text/event-stream");
 
             let response = match req_builder.send().await {
@@ -2914,6 +2990,47 @@ mod tests {
     fn strips_trailing_slash() {
         let p = make_model_provider("test", "https://example.com/", None);
         assert_eq!(p.base_url, "https://example.com");
+    }
+
+    #[test]
+    fn ollama_cloud_routing_strips_model_for_official_endpoint() {
+        let p = make_model_provider("Ollama", "https://api.ollama.com/v1", Some("ollama-key"))
+            .with_ollama_cloud_model_routing();
+        let (model, credential) = p.resolve_model_request("qwen3:cloud").unwrap();
+        assert_eq!(model, "qwen3");
+        assert_eq!(credential, Some("ollama-key"));
+    }
+
+    #[test]
+    fn ollama_cloud_routing_preserves_private_remote_without_api_key() {
+        let p = make_model_provider("Ollama", "http://100.126.1.2:11434/v1", None)
+            .with_ollama_cloud_model_routing();
+        let (model, credential) = p.resolve_model_request("qwen3:cloud").unwrap();
+        assert_eq!(model, "qwen3:cloud");
+        assert_eq!(credential, None);
+    }
+
+    #[test]
+    fn ollama_cloud_routing_preserves_private_remote_with_api_key() {
+        let p = make_model_provider("Ollama", "http://100.126.1.2:11434/v1", Some("private-key"))
+            .with_ollama_cloud_model_routing();
+        let (model, credential) = p.resolve_model_request("qwen3:cloud").unwrap();
+        assert_eq!(model, "qwen3:cloud");
+        assert_eq!(credential, Some("private-key"));
+    }
+
+    #[test]
+    fn ollama_cloud_routing_rejects_official_endpoint_without_api_key() {
+        let p = make_model_provider("Ollama", "https://ollama.com/v1", None)
+            .with_ollama_cloud_model_routing();
+        let error = p
+            .resolve_model_request("qwen3:cloud")
+            .expect_err("official Ollama Cloud should require a key");
+        assert!(
+            error
+                .to_string()
+                .contains("requested cloud routing, but no API key is configured")
+        );
     }
 
     #[tokio::test]
