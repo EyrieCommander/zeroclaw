@@ -727,16 +727,21 @@ impl Agent {
             ::zeroclaw_log::record!(WARN, ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_outcome(::zeroclaw_log::EventOutcome::Unknown).with_attrs(::serde_json::json!({"agent": agent_alias, "workspace": agent_workspace.display().to_string(), "e": e.to_string()})), "Failed to ensure per-agent bootstrap files (continuing with whatever exists): ");
         }
         let security = Arc::new({
-            let mut policy = SecurityPolicy::from_risk_profile(
-                risk_profile,
-                session_cwd.unwrap_or(&agent_workspace),
-            );
+            // Use for_agent so the runtime profile (max_actions_per_hour,
+            // shell_timeout_secs, etc.) is applied — from_risk_profile passes
+            // None for the runtime profile and silently falls back to the
+            // schema default of 20 actions/hour regardless of config.
+            let mut policy = SecurityPolicy::for_agent(&config, agent_alias)
+                .with_context(|| {
+                    format!("agents.{agent_alias}: failed to build security policy")
+                })?;
             // When a per-session cwd overrides the sandbox root, ensure
             // the per-agent workspace (where skills, identity, and config
             // data live) remains readable. Without this, file_read and
             // search tools are locked out of the agent's workspace the
             // moment the session cwd differs.
-            if session_cwd.is_some() {
+            if let Some(cwd) = session_cwd {
+                policy.workspace_dir = cwd.to_path_buf();
                 policy.allowed_roots.push(agent_workspace.clone());
             }
             policy
