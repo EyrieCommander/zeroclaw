@@ -555,13 +555,29 @@ fn render_conversation(f: &mut Frame, state: &ChatState, area: Rect) {
         ]));
     }
 
+    let inner_width = area.width.saturating_sub(2);
+    let inner_height = area.height.saturating_sub(2);
+    let total_rows: u16 = lines
+        .iter()
+        .map(|line| {
+            let w = line.width() as u16;
+            if inner_width == 0 {
+                1
+            } else {
+                w.div_ceil(inner_width).max(1)
+            }
+        })
+        .sum();
+    let scroll = total_rows.saturating_sub(inner_height);
+
     let p = Paragraph::new(lines)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(format!(" {} ", state.agent_alias)),
         )
-        .wrap(Wrap { trim: false });
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
     f.render_widget(p, area);
 }
 
