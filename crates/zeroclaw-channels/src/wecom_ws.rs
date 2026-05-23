@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use zeroclaw_api::channel::{Channel, ChannelMessage, SendMessage};
 use zeroclaw_config::schema::{StreamMode, WeComWsConfig};
+use zeroclaw_runtime::i18n;
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -44,8 +45,55 @@ const WECOM_EMOJIS: &[&str] = &[
     "\u{1F44C}",
 ];
 const WECOM_FILE_CLEANUP_INTERVAL_SECS: u64 = 1800;
-const WECOM_STREAM_BOOTSTRAP_CONTENT: &str =
-    "\u{6b63}\u{5728}\u{5904}\u{7406}\u{4e2d}\u{ff0c}\u{8bf7}\u{7a0d}\u{5019}\u{3002}";
+macro_rules! wecom_log_debug {
+    ($($arg:tt)*) => {
+        ::zeroclaw_log::record!(
+            DEBUG,
+            ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note),
+            format!($($arg)*),
+        )
+    };
+}
+
+fn wecom_ws_cli_string(key: &str) -> String {
+    i18n::get_required_cli_string(key)
+}
+
+fn wecom_ws_cli_string_with_args(key: &str, args: &[(&str, &str)]) -> String {
+    i18n::get_required_cli_string_with_args(key, args)
+}
+
+macro_rules! wecom_log_info {
+    ($($arg:tt)*) => {
+        ::zeroclaw_log::record!(
+            INFO,
+            ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note),
+            format!($($arg)*),
+        )
+    };
+}
+
+macro_rules! wecom_log_warn {
+    ($($arg:tt)*) => {
+        ::zeroclaw_log::record!(
+            WARN,
+            ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                .with_outcome(::zeroclaw_log::EventOutcome::Unknown),
+            format!($($arg)*),
+        )
+    };
+}
+
+macro_rules! wecom_log_error {
+    ($($arg:tt)*) => {
+        ::zeroclaw_log::record!(
+            ERROR,
+            ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                .with_outcome(::zeroclaw_log::EventOutcome::Failure),
+            format!($($arg)*),
+        )
+    };
+}
 
 // ── WebSocket outbound command ───────────────────────────────────────
 
@@ -132,7 +180,6 @@ impl SimpleIdempotencyStore {
 #[derive(Clone)]
 struct WeComRuntimeConfig {
     workspace_dir: PathBuf,
-    allowed_users: Vec<String>,
     allowed_groups: Vec<String>,
     bot_name: Option<String>,
     file_retention_days: u32,
@@ -185,6 +232,8 @@ impl MediaDecryptor {
 pub struct WeComWsChannel {
     bot_id: String,
     secret: String,
+    alias: String,
+    peer_resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
     cfg: WeComRuntimeConfig,
     client: reqwest::Client,
     ws_tx: Arc<tokio::sync::Mutex<Option<mpsc::Sender<WsOutbound>>>>,
@@ -200,6 +249,21 @@ pub struct WeComWsChannel {
 
 impl WeComWsChannel {
     pub fn new(config: &WeComWsConfig, workspace_dir: &Path) -> Result<Self> {
+        let allowed_users = normalize_wecom_allowlist(config.allowed_users.clone());
+        Self::new_with_alias(
+            config,
+            "default",
+            Arc::new(move || allowed_users.clone()),
+            workspace_dir,
+        )
+    }
+
+    pub fn new_with_alias(
+        config: &WeComWsConfig,
+        alias: impl Into<String>,
+        peer_resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
+        workspace_dir: &Path,
+    ) -> Result<Self> {
         if config.stream_mode == StreamMode::MultiMessage {
             anyhow::bail!(
                 "WeCom WebSocket stream_mode=multi_message is not supported; use partial or off"
@@ -216,9 +280,10 @@ impl WeComWsChannel {
         Ok(Self {
             bot_id: config.bot_id.clone(),
             secret: config.secret.clone(),
+            alias: alias.into(),
+            peer_resolver,
             cfg: WeComRuntimeConfig {
                 workspace_dir: workspace_dir.to_path_buf(),
-                allowed_users: normalize_wecom_allowlist(config.allowed_users.clone()),
                 allowed_groups: normalize_wecom_allowlist(config.allowed_groups.clone()),
                 bot_name: normalize_optional_wecom_identity(config.bot_name.as_deref()),
                 file_retention_days: config.file_retention_days,
@@ -323,18 +388,12 @@ impl WeComWsChannel {
         }
 
         if errcode == 0 {
-            tracing::debug!(
-                req_id,
-                errcode,
-                errmsg,
-                "[wecom_ws] unsolicited command response"
+            wecom_log_debug!(
+                "[wecom_ws] unsolicited command response req_id={req_id} errcode={errcode} errmsg={errmsg}"
             );
         } else {
-            tracing::warn!(
-                req_id,
-                errcode,
-                errmsg,
-                "[wecom_ws] command response failed without a waiter"
+            wecom_log_warn!(
+                "[wecom_ws] command response failed without a waiter req_id={req_id} errcode={errcode} errmsg={errmsg}"
             );
         }
 
@@ -368,7 +427,8 @@ impl WeComWsChannel {
     }
 
     fn access_decision(&self, inbound: &ParsedInbound) -> AccessDecision {
-        evaluate_access_decision(&self.cfg.allowed_users, &self.cfg.allowed_groups, inbound)
+        let allowed_users = normalize_wecom_allowlist((self.peer_resolver)());
+        evaluate_access_decision(&allowed_users, &self.cfg.allowed_groups, inbound)
     }
 
     fn compose_content_for_framework_with_bot_hint(
@@ -385,18 +445,17 @@ impl WeComWsChannel {
         inbound: &ParsedInbound,
         decision: AccessDecision,
     ) {
-        let message = build_access_denied_message(inbound, decision);
+        let message = build_access_denied_message(inbound, decision, &self.alias);
         let stream_id = next_stream_id();
         if let Err(err) = self
             .ws_queue_respond_msg(req_id, &stream_id, &message, true)
             .await
         {
-            tracing::warn!(
-                sender_userid = %inbound.sender_userid,
-                chat_type = %inbound.chat_type,
-                chat_id = %inbound.chat_id.as_deref().unwrap_or("-"),
-                error = %format_args!("{err:#}"),
-                "[wecom_ws] failed to send access-denied response"
+            wecom_log_warn!(
+                "[wecom_ws] failed to send access-denied response sender_userid={} chat_type={} chat_id={} error={err:#}",
+                inbound.sender_userid,
+                inbound.chat_type,
+                inbound.chat_id.as_deref().unwrap_or("-")
             );
         }
     }
@@ -463,12 +522,8 @@ impl WeComWsChannel {
                     let retry_in_ms =
                         WECOM_STREAM_CONFLICT_RETRY_BASE_MILLIS.saturating_mul(1u64 << attempt);
                     attempt += 1;
-                    tracing::warn!(
-                        req_id,
-                        stream_id,
-                        attempt,
-                        retry_in_ms,
-                        "WeCom stream reply hit data-version conflict; retrying"
+                    wecom_log_warn!(
+                        "WeCom stream reply hit data-version conflict; retrying req_id={req_id} stream_id={stream_id} attempt={attempt} retry_in_ms={retry_in_ms}"
                     );
                     tokio::time::sleep(Duration::from_millis(retry_in_ms)).await;
                 }
@@ -523,7 +578,7 @@ impl WeComWsChannel {
             }
             "aibot_event_callback" => self.handle_event_callback(frame).await,
             _ => {
-                tracing::debug!("[wecom_ws] ignoring WS frame cmd={cmd}");
+                wecom_log_debug!("[wecom_ws] ignoring WS frame cmd={cmd}");
                 false
             }
         }
@@ -542,7 +597,7 @@ impl WeComWsChannel {
         let body = match frame.get("body") {
             Some(b) => b.clone(),
             None => {
-                tracing::warn!("[wecom_ws] msg_callback missing body");
+                wecom_log_warn!("[wecom_ws] msg_callback missing body");
                 return;
             }
         };
@@ -550,7 +605,7 @@ impl WeComWsChannel {
         let parsed = match parse_inbound_payload(body) {
             Ok(p) => p,
             Err(err) => {
-                tracing::warn!("[wecom_ws] msg_callback parse failed: {err:#}");
+                wecom_log_warn!("[wecom_ws] msg_callback parse failed: {err:#}");
                 return;
             }
         };
@@ -572,7 +627,7 @@ impl WeComWsChannel {
         } else {
             parsed.msg_id.as_str()
         };
-        tracing::info!(
+        wecom_log_info!(
             "[wecom_ws] from {} in {}: {} (msg_type={}, msg_id={}, aibot_id={})",
             parsed.sender_userid,
             scopes.conversation_scope,
@@ -585,22 +640,22 @@ impl WeComWsChannel {
         match self.access_decision(&parsed) {
             AccessDecision::Allowed => {}
             AccessDecision::AllowlistMissing => {
-                tracing::warn!(
-                    sender_userid = %parsed.sender_userid,
-                    chat_type = %parsed.chat_type,
-                    chat_id = %parsed.chat_id.as_deref().unwrap_or("-"),
-                    "[wecom_ws] inbound denied because allowlist is not configured"
+                wecom_log_warn!(
+                    "[wecom_ws] inbound denied because allowlist is not configured sender_userid={} chat_type={} chat_id={}",
+                    parsed.sender_userid,
+                    parsed.chat_type,
+                    parsed.chat_id.as_deref().unwrap_or("-")
                 );
                 self.respond_access_denied(&req_id, &parsed, AccessDecision::AllowlistMissing)
                     .await;
                 return;
             }
             AccessDecision::Denied => {
-                tracing::warn!(
-                    sender_userid = %parsed.sender_userid,
-                    chat_type = %parsed.chat_type,
-                    chat_id = %parsed.chat_id.as_deref().unwrap_or("-"),
-                    "[wecom_ws] inbound denied by allowlist"
+                wecom_log_warn!(
+                    "[wecom_ws] inbound denied by allowlist sender_userid={} chat_type={} chat_id={}",
+                    parsed.sender_userid,
+                    parsed.chat_type,
+                    parsed.chat_id.as_deref().unwrap_or("-")
                 );
                 self.respond_access_denied(&req_id, &parsed, AccessDecision::Denied)
                     .await;
@@ -616,7 +671,7 @@ impl WeComWsChannel {
 
         // Clear session
         if is_clear_session_command(&stop_text) {
-            tracing::info!(
+            wecom_log_info!(
                 "WeCom session cleared: scope={} msg_id={}",
                 scopes.conversation_scope,
                 parsed.msg_id
@@ -628,6 +683,7 @@ impl WeComWsChannel {
                     reply_target: scopes.conversation_scope.clone(),
                     content: "/new".to_string(),
                     channel: "wecom_ws".to_string(),
+                    channel_alias: Some(self.alias.clone()),
                     timestamp: bytes_timestamp_now(),
                     thread_ts: Some(req_id),
                     interruption_scope_id: None,
@@ -639,19 +695,19 @@ impl WeComWsChannel {
 
         // Stop command
         if contains_stop_command(&stop_text) {
-            let msg =
-                "\u{5df2}\u{505c}\u{6b62}\u{5f53}\u{524d}\u{6d88}\u{606f}\u{5904}\u{7406}\u{3002}";
+            let msg = wecom_ws_cli_string("channel-wecom-ws-stop-ack");
             let stream_id = next_stream_id();
             let _ = self
-                .ws_queue_respond_msg(&req_id, &stream_id, msg, true)
+                .ws_queue_respond_msg(&req_id, &stream_id, &msg, true)
                 .await;
             let _ = tx
                 .send(ChannelMessage {
                     id: parsed.msg_id.clone(),
                     sender: parsed.sender_userid.clone(),
                     reply_target: scopes.conversation_scope.clone(),
-                    content: "/new".to_string(),
+                    content: "/stop".to_string(),
                     channel: "wecom_ws".to_string(),
+                    channel_alias: Some(self.alias.clone()),
                     timestamp: bytes_timestamp_now(),
                     thread_ts: None,
                     interruption_scope_id: None,
@@ -662,7 +718,7 @@ impl WeComWsChannel {
         }
 
         if let Some(runtime_command) = extract_runtime_model_switch_command(&stop_text) {
-            tracing::info!(
+            wecom_log_info!(
                 "WeCom runtime command forwarded: scope={} msg_id={} command={}",
                 scopes.conversation_scope,
                 parsed.msg_id,
@@ -675,6 +731,7 @@ impl WeComWsChannel {
                     reply_target: scopes.conversation_scope.clone(),
                     content: runtime_command,
                     channel: "wecom_ws".to_string(),
+                    channel_alias: Some(self.alias.clone()),
                     timestamp: bytes_timestamp_now(),
                     thread_ts: Some(req_id),
                     interruption_scope_id: None,
@@ -686,9 +743,9 @@ impl WeComWsChannel {
 
         // Voice without transcript
         if is_voice_without_transcript(&parsed) {
-            let msg = format!(
-                "\u{6211}\u{73b0}\u{5728}\u{65e0}\u{6cd5}\u{5904}\u{7406}\u{8bed}\u{97f3}\u{6d88}\u{606f} {}",
-                random_emoji()
+            let msg = wecom_ws_cli_string_with_args(
+                "channel-wecom-ws-voice-unavailable",
+                &[("emoji", random_emoji())],
             );
             let stream_id = next_stream_id();
             let _ = self
@@ -699,7 +756,7 @@ impl WeComWsChannel {
 
         // Unsupported message type
         if !is_model_supported_msgtype(&parsed.msg_type) {
-            tracing::info!(
+            wecom_log_info!(
                 "WeCom unsupported message ignored: msg_type={} msg_id={}",
                 parsed.msg_type,
                 parsed.msg_id
@@ -720,9 +777,9 @@ impl WeComWsChannel {
 
             let content = match normalized {
                 NormalizedMessage::VoiceMissingTranscript => {
-                    let msg = format!(
-                        "\u{6211}\u{73b0}\u{5728}\u{65e0}\u{6cd5}\u{5904}\u{7406}\u{8bed}\u{97f3}\u{6d88}\u{606f} {}",
-                        random_emoji()
+                    let msg = wecom_ws_cli_string_with_args(
+                        "channel-wecom-ws-voice-unavailable",
+                        &[("emoji", random_emoji())],
                     );
                     let stream_id = next_stream_id();
                     let _ = channel_self
@@ -731,10 +788,10 @@ impl WeComWsChannel {
                     return;
                 }
                 NormalizedMessage::Unsupported => {
-                    let msg = "\u{6682}\u{4e0d}\u{652f}\u{6301}\u{8be5}\u{6d88}\u{606f}\u{7c7b}\u{578b}\u{3002}";
+                    let msg = wecom_ws_cli_string("channel-wecom-ws-unsupported-message");
                     let stream_id = next_stream_id();
                     let _ = channel_self
-                        .ws_queue_respond_msg(&req_id, &stream_id, msg, true)
+                        .ws_queue_respond_msg(&req_id, &stream_id, &msg, true)
                         .await;
                     return;
                 }
@@ -744,7 +801,7 @@ impl WeComWsChannel {
             let composed =
                 channel_self.compose_content_for_framework_with_bot_hint(&inbound, &content);
 
-            tracing::info!(
+            wecom_log_info!(
                 "WeCom: forwarding to framework: msg_id={} req_id={} scope={}",
                 inbound.msg_id,
                 req_id,
@@ -758,6 +815,7 @@ impl WeComWsChannel {
                     reply_target: scopes.conversation_scope.clone(),
                     content: composed,
                     channel: "wecom_ws".to_string(),
+                    channel_alias: Some(channel_self.alias.clone()),
                     timestamp: bytes_timestamp_now(),
                     thread_ts: Some(req_id),
                     interruption_scope_id: None,
@@ -783,9 +841,9 @@ impl WeComWsChannel {
 
         match event_type.as_str() {
             "enter_chat" => {
-                let content = format!(
-                    "\u{4f60}\u{597d}\u{ff0c}\u{6b22}\u{8fce}\u{6765}\u{627e}\u{6211}\u{804a}\u{5929} {}",
-                    random_emoji()
+                let content = wecom_ws_cli_string_with_args(
+                    "channel-wecom-ws-welcome",
+                    &[("emoji", random_emoji())],
                 );
                 let welcome = serde_json::json!({
                     "cmd": "aibot_respond_welcome_msg",
@@ -801,21 +859,21 @@ impl WeComWsChannel {
             "template_card_event" => {
                 let event_key =
                     extract_template_card_event_key(&body).unwrap_or_else(|| "-".to_string());
-                tracing::info!("WeCom template_card_event received: event_key={event_key}");
+                wecom_log_info!("WeCom template_card_event received: event_key={event_key}");
                 false
             }
             "feedback_event" => {
                 let summary = extract_feedback_event_summary(&body)
                     .unwrap_or_else(|| "feedback=invalid-payload".to_string());
-                tracing::info!("WeCom feedback_event received: {summary}");
+                wecom_log_info!("WeCom feedback_event received: {summary}");
                 false
             }
             "disconnected_event" => {
-                tracing::warn!("[wecom_ws] received disconnected_event, triggering reconnect");
+                wecom_log_warn!("[wecom_ws] received disconnected_event, triggering reconnect");
                 true
             }
             other => {
-                tracing::debug!("[wecom_ws] ignoring event_type={other}");
+                wecom_log_debug!("[wecom_ws] ignoring event_type={other}");
                 false
             }
         }
@@ -1158,7 +1216,7 @@ impl WeComWsChannel {
                 }
             }
             other => {
-                tracing::info!(
+                wecom_log_info!(
                     "[wecom_ws] unsupported msg_type={other}, raw_payload={}",
                     inbound.raw_payload
                 );
@@ -1181,17 +1239,17 @@ impl WeComWsChannel {
         let started = Instant::now();
         let chat_id = inbound.chat_id.as_deref().unwrap_or("single");
         let url_target = summarize_attachment_url_for_log(url);
-        tracing::info!(
-            msg_id = %inbound.msg_id,
-            msg_type = %inbound.msg_type,
-            chat_type = %inbound.chat_type,
-            chat_id = %chat_id,
-            sender_userid = %inbound.sender_userid,
-            attachment_kind = %kind.as_str(),
-            url_target = %url_target,
-            has_aeskey = aeskey.is_some(),
-            timeout_secs = WECOM_HTTP_TIMEOUT_SECS,
-            "WeCom attachment download started"
+        wecom_log_info!(
+            "WeCom attachment download started msg_id={} msg_type={} chat_type={} chat_id={} sender_userid={} attachment_kind={} url_target={} has_aeskey={} timeout_secs={}",
+            inbound.msg_id,
+            inbound.msg_type,
+            inbound.chat_type,
+            chat_id,
+            inbound.sender_userid,
+            kind.as_str(),
+            url_target,
+            aeskey.is_some(),
+            WECOM_HTTP_TIMEOUT_SECS
         );
 
         let response = self
@@ -1225,12 +1283,12 @@ impl WeComWsChannel {
         if let Some(len) = response.content_length()
             && len > self.cfg.max_file_size_bytes
         {
-            tracing::warn!(
-                msg_id = %inbound.msg_id,
-                attachment_kind = %kind.as_str(),
-                declared_bytes = len,
-                max_file_size_bytes = self.cfg.max_file_size_bytes,
-                "WeCom attachment skipped: declared size exceeds configured limit"
+            wecom_log_warn!(
+                "WeCom attachment skipped: declared size exceeds configured limit msg_id={} attachment_kind={} declared_bytes={} max_file_size_bytes={}",
+                inbound.msg_id,
+                kind.as_str(),
+                len,
+                self.cfg.max_file_size_bytes
             );
             return Ok(format!(
                 "[AttachmentTooLarge kind={:?} size={}B limit={}B]",
@@ -1252,12 +1310,12 @@ impl WeComWsChannel {
             })?;
 
         if bytes.len() as u64 > self.cfg.max_file_size_bytes {
-            tracing::warn!(
-                msg_id = %inbound.msg_id,
-                attachment_kind = %kind.as_str(),
-                actual_bytes = bytes.len(),
-                max_file_size_bytes = self.cfg.max_file_size_bytes,
-                "WeCom attachment skipped: payload exceeds configured limit"
+            wecom_log_warn!(
+                "WeCom attachment skipped: payload exceeds configured limit msg_id={} attachment_kind={} actual_bytes={} max_file_size_bytes={}",
+                inbound.msg_id,
+                kind.as_str(),
+                bytes.len(),
+                self.cfg.max_file_size_bytes
             );
             return Ok(format!(
                 "[AttachmentTooLarge kind={:?} size={}B limit={}B]",
@@ -1323,15 +1381,15 @@ impl WeComWsChannel {
         self.maybe_cleanup_files();
 
         let abs = path.canonicalize().unwrap_or(path);
-        tracing::info!(
-            msg_id = %inbound.msg_id,
-            attachment_kind = %kind.as_str(),
-            url_target = %url_target,
-            encrypted_bytes = bytes.len(),
-            stored_bytes = stored_len,
-            local_path = %abs.display(),
-            elapsed_ms = started.elapsed().as_millis(),
-            "WeCom attachment download completed"
+        wecom_log_info!(
+            "WeCom attachment download completed msg_id={} attachment_kind={} url_target={} encrypted_bytes={} stored_bytes={} local_path={} elapsed_ms={}",
+            inbound.msg_id,
+            kind.as_str(),
+            url_target,
+            bytes.len(),
+            stored_len,
+            abs.display(),
+            started.elapsed().as_millis()
         );
         match kind {
             AttachmentKind::Image => Ok(format!("[IMAGE:{}]", abs.display())),
@@ -1343,7 +1401,7 @@ impl WeComWsChannel {
         let (chat_type, chatid) = parse_scope(scope)?;
         let chunks = split_markdown_chunks(content);
 
-        tracing::info!(
+        wecom_log_info!(
             "WeCom: sending message to scope={}, len={}, chunks={}",
             scope,
             content.len(),
@@ -1366,13 +1424,9 @@ impl WeComWsChannel {
             });
             self.ws_send_frame_and_wait_for_response(frame, &req_id, "aibot_send_msg")
                 .await?;
-            tracing::info!(
-                scope = %scope,
-                req_id = %req_id,
-                chunk_index = idx + 1,
-                chunk_count = total_chunks,
-                chunk_len,
-                "WeCom send ack received"
+            wecom_log_info!(
+                "WeCom send ack received scope={scope} req_id={req_id} chunk_index={} chunk_count={total_chunks} chunk_len={chunk_len}",
+                idx + 1
             );
         }
 
@@ -1381,6 +1435,18 @@ impl WeComWsChannel {
 }
 
 // ── Channel trait impl ───────────────────────────────────────────────
+
+impl ::zeroclaw_api::attribution::Attributable for WeComWsChannel {
+    fn role(&self) -> ::zeroclaw_api::attribution::Role {
+        ::zeroclaw_api::attribution::Role::Channel(
+            ::zeroclaw_api::attribution::ChannelKind::WeComWs,
+        )
+    }
+
+    fn alias(&self) -> &str {
+        &self.alias
+    }
+}
 
 #[async_trait]
 impl Channel for WeComWsChannel {
@@ -1401,7 +1467,10 @@ impl Channel for WeComWsChannel {
                 .await?;
 
             if let Some(extra) = overflow {
-                let extra_msg = format!("[补充消息]\n{extra}");
+                let extra_msg = wecom_ws_cli_string_with_args(
+                    "channel-wecom-ws-supplemental-message",
+                    &[("extra", &extra)],
+                );
                 self.send_markdown_chunks_to_scope(&message.recipient, &extra_msg)
                     .await?;
             }
@@ -1414,7 +1483,7 @@ impl Channel for WeComWsChannel {
     }
 
     async fn listen(&self, tx: tokio::sync::mpsc::Sender<ChannelMessage>) -> Result<()> {
-        tracing::info!(
+        wecom_log_info!(
             "[wecom_ws] starting WebSocket listener (bot_id={})",
             self.bot_id
         );
@@ -1422,7 +1491,7 @@ impl Channel for WeComWsChannel {
         let mut backoff = WECOM_BACKOFF_INITIAL_SECS;
 
         loop {
-            tracing::info!("[wecom_ws] connecting to {WECOM_WS_URL}");
+            wecom_log_info!("[wecom_ws] connecting to {WECOM_WS_URL}");
 
             let ws_stream = match zeroclaw_config::schema::ws_connect_with_proxy(
                 WECOM_WS_URL,
@@ -1432,11 +1501,11 @@ impl Channel for WeComWsChannel {
             .await
             {
                 Ok((stream, _)) => {
-                    tracing::info!("[wecom_ws] WebSocket connected");
+                    wecom_log_info!("[wecom_ws] WebSocket connected");
                     stream
                 }
                 Err(err) => {
-                    tracing::warn!(
+                    wecom_log_warn!(
                         "[wecom_ws] WebSocket connect failed: {err:#}, retrying in {backoff}s"
                     );
                     tokio::time::sleep(Duration::from_secs(backoff)).await;
@@ -1461,7 +1530,9 @@ impl Channel for WeComWsChannel {
                 .send(WsMessage::Text(subscribe.to_string().into()))
                 .await
             {
-                tracing::warn!("[wecom_ws] subscribe send failed: {err:#}, retrying in {backoff}s");
+                wecom_log_warn!(
+                    "[wecom_ws] subscribe send failed: {err:#}, retrying in {backoff}s"
+                );
                 tokio::time::sleep(Duration::from_secs(backoff)).await;
                 backoff = (backoff * 2).min(WECOM_BACKOFF_MAX_SECS);
                 continue;
@@ -1482,46 +1553,44 @@ impl Channel for WeComWsChannel {
                             .and_then(Value::as_str)
                             && resp_req_id != subscribe_req_id
                         {
-                            tracing::warn!(
-                                expected_req_id = %subscribe_req_id,
-                                got_req_id = %resp_req_id,
-                                "[wecom_ws] subscribe response req_id mismatch"
+                            wecom_log_warn!(
+                                "[wecom_ws] subscribe response req_id mismatch expected_req_id={subscribe_req_id} got_req_id={resp_req_id}"
                             );
                         }
                         let errcode = val.get("errcode").and_then(Value::as_i64).unwrap_or(-1);
                         if errcode == 0 {
-                            tracing::info!("[wecom_ws] subscribe succeeded");
+                            wecom_log_info!("[wecom_ws] subscribe succeeded");
                             true
                         } else {
                             let errmsg = val
                                 .get("errmsg")
                                 .and_then(Value::as_str)
                                 .unwrap_or("unknown");
-                            tracing::error!(
+                            wecom_log_error!(
                                 "[wecom_ws] subscribe rejected: errcode={errcode} errmsg={errmsg}"
                             );
                             false
                         }
                     }
                     Err(err) => {
-                        tracing::warn!("[wecom_ws] subscribe response parse failed: {err:#}");
+                        wecom_log_warn!("[wecom_ws] subscribe response parse failed: {err:#}");
                         false
                     }
                 },
                 Ok(Some(Ok(_))) => {
-                    tracing::warn!("[wecom_ws] unexpected subscribe response frame type");
+                    wecom_log_warn!("[wecom_ws] unexpected subscribe response frame type");
                     false
                 }
                 Ok(Some(Err(err))) => {
-                    tracing::warn!("[wecom_ws] subscribe response read error: {err:#}");
+                    wecom_log_warn!("[wecom_ws] subscribe response read error: {err:#}");
                     false
                 }
                 Ok(None) => {
-                    tracing::warn!("[wecom_ws] WebSocket closed before subscribe response");
+                    wecom_log_warn!("[wecom_ws] WebSocket closed before subscribe response");
                     false
                 }
                 Err(_) => {
-                    tracing::warn!("[wecom_ws] subscribe response timeout");
+                    wecom_log_warn!("[wecom_ws] subscribe response timeout");
                     false
                 }
             };
@@ -1555,7 +1624,7 @@ impl Channel for WeComWsChannel {
                             .send(WsMessage::Text(ping.to_string().into()))
                             .await
                         {
-                            tracing::warn!("[wecom_ws] ping send failed: {err:#}");
+                            wecom_log_warn!("[wecom_ws] ping send failed: {err:#}");
                             break;
                         }
                     }
@@ -1566,7 +1635,7 @@ impl Channel for WeComWsChannel {
                                     .send(WsMessage::Text(value.to_string().into()))
                                     .await
                                 {
-                                    tracing::warn!(
+                                    wecom_log_warn!(
                                         "[wecom_ws] outbound frame send failed: {err:#}"
                                     );
                                     break;
@@ -1586,23 +1655,23 @@ impl Channel for WeComWsChannel {
                                         }
                                     }
                                     Err(err) => {
-                                        tracing::warn!(
+                                        wecom_log_warn!(
                                             "[wecom_ws] WS frame parse error: {err:#}"
                                         );
                                     }
                                 }
                             }
                             Some(Ok(WsMessage::Close(_))) => {
-                                tracing::info!("[wecom_ws] WebSocket closed by server");
+                                wecom_log_info!("[wecom_ws] WebSocket closed by server");
                                 break;
                             }
                             Some(Ok(WsMessage::Pong(_) | _)) => {}
                             Some(Err(err)) => {
-                                tracing::warn!("[wecom_ws] WS read error: {err:#}");
+                                wecom_log_warn!("[wecom_ws] WS read error: {err:#}");
                                 break;
                             }
                             None => {
-                                tracing::info!("[wecom_ws] WebSocket stream ended");
+                                wecom_log_info!("[wecom_ws] WebSocket stream ended");
                                 break;
                             }
                         }
@@ -1616,10 +1685,10 @@ impl Channel for WeComWsChannel {
 
             if should_reconnect {
                 // Server-initiated disconnect — reconnect quickly
-                tracing::info!("[wecom_ws] disconnected (server event), reconnecting immediately");
+                wecom_log_info!("[wecom_ws] disconnected (server event), reconnecting immediately");
                 backoff = WECOM_BACKOFF_INITIAL_SECS;
             } else {
-                tracing::info!("[wecom_ws] disconnected, will reconnect in {backoff}s");
+                wecom_log_info!("[wecom_ws] disconnected, will reconnect in {backoff}s");
                 tokio::time::sleep(Duration::from_secs(backoff)).await;
                 backoff = (backoff * 2).min(WECOM_BACKOFF_MAX_SECS);
             }
@@ -1646,7 +1715,8 @@ impl Channel for WeComWsChannel {
         }
         let stream_id = next_stream_id();
 
-        self.ws_send_respond_msg(req_id, &stream_id, WECOM_STREAM_BOOTSTRAP_CONTENT, false)
+        let bootstrap = wecom_ws_cli_string("channel-wecom-ws-stream-bootstrap");
+        self.ws_send_respond_msg(req_id, &stream_id, &bootstrap, false)
             .await?;
         self.req_id_map
             .lock()
@@ -1859,7 +1929,11 @@ fn evaluate_access_decision(
     AccessDecision::Denied
 }
 
-fn build_access_denied_message(inbound: &ParsedInbound, decision: AccessDecision) -> String {
+fn build_access_denied_message(
+    inbound: &ParsedInbound,
+    decision: AccessDecision,
+    alias: &str,
+) -> String {
     let userid = normalize_wecom_identity(&inbound.sender_userid);
     let userid = if userid.is_empty() {
         "unknown"
@@ -1874,23 +1948,46 @@ fn build_access_denied_message(inbound: &ParsedInbound, decision: AccessDecision
             .map(normalize_wecom_identity)
             .filter(|chatid| !chatid.is_empty())
             .unwrap_or_else(|| "unknown".to_string());
+        let allowed_groups_path = format!("channels.wecom_ws.{alias}.allowed_groups");
+        let allowed_users_path = format!("channels.wecom_ws.{alias}.allowed_users");
         return match decision {
-            AccessDecision::AllowlistMissing => format!(
-                "管理员尚未配置 WeCom allowlist，当前机器人不接收任何群消息。\n\n群 chatid: {chatid}\n发送者 userid: {userid}\n\n请在 channels.wecom_ws.allowed_groups 或 channels.wecom_ws.allowed_users 中加入允许项，也可以临时设置为 [\"*\"] 进行测试。"
+            AccessDecision::AllowlistMissing => wecom_ws_cli_string_with_args(
+                "channel-wecom-ws-group-allowlist-missing",
+                &[
+                    ("chatid", &chatid),
+                    ("userid", userid),
+                    ("allowed_groups_path", &allowed_groups_path),
+                    ("allowed_users_path", &allowed_users_path),
+                ],
             ),
-            AccessDecision::Denied => format!(
-                "当前群未被允许使用此机器人。\n\n群 chatid: {chatid}\n发送者 userid: {userid}\n\n请管理员将该群加入 channels.wecom_ws.allowed_groups，或将你的 userid 加入 channels.wecom_ws.allowed_users。"
+            AccessDecision::Denied => wecom_ws_cli_string_with_args(
+                "channel-wecom-ws-group-access-denied",
+                &[
+                    ("chatid", &chatid),
+                    ("userid", userid),
+                    ("allowed_groups_path", &allowed_groups_path),
+                    ("allowed_users_path", &allowed_users_path),
+                ],
             ),
             AccessDecision::Allowed => String::new(),
         };
     }
 
+    let allowed_users_path = format!("channels.wecom_ws.{alias}.allowed_users");
     match decision {
-        AccessDecision::AllowlistMissing => format!(
-            "管理员尚未配置 WeCom allowlist，当前机器人不接收任何消息。\n\n你的 userid: {userid}\n\n请在 channels.wecom_ws.allowed_users 中加入允许项，也可以临时设置为 [\"*\"] 进行测试。"
+        AccessDecision::AllowlistMissing => wecom_ws_cli_string_with_args(
+            "channel-wecom-ws-dm-allowlist-missing",
+            &[
+                ("userid", userid),
+                ("allowed_users_path", &allowed_users_path),
+            ],
         ),
-        AccessDecision::Denied => format!(
-            "你没有权限使用此机器人。\n\n你的 userid: {userid}\n\n请管理员将你的 userid 加入 channels.wecom_ws.allowed_users。"
+        AccessDecision::Denied => wecom_ws_cli_string_with_args(
+            "channel-wecom-ws-dm-access-denied",
+            &[
+                ("userid", userid),
+                ("allowed_users_path", &allowed_users_path),
+            ],
         ),
         AccessDecision::Allowed => String::new(),
     }
@@ -2027,16 +2124,15 @@ fn log_attachment_processing_failure(
     kind: AttachmentKind,
     url: &str,
 ) {
-    tracing::warn!(
-        msg_id = %inbound.msg_id,
-        msg_type = %inbound.msg_type,
-        chat_type = %inbound.chat_type,
-        chat_id = %inbound.chat_id.as_deref().unwrap_or("single"),
-        sender_userid = %inbound.sender_userid,
-        attachment_kind = %kind.as_str(),
-        url_target = %summarize_attachment_url_for_log(url),
-        error = %format_args!("{err:#}"),
-        "{stage}"
+    wecom_log_warn!(
+        "{stage} msg_id={} msg_type={} chat_type={} chat_id={} sender_userid={} attachment_kind={} url_target={} error={err:#}",
+        inbound.msg_id,
+        inbound.msg_type,
+        inbound.chat_type,
+        inbound.chat_id.as_deref().unwrap_or("single"),
+        inbound.sender_userid,
+        kind.as_str(),
+        summarize_attachment_url_for_log(url)
     );
 }
 
@@ -2898,6 +2994,7 @@ mod tests {
             max_file_size_mb: 20,
             stream_mode: StreamMode::Partial,
             proxy_url: None,
+            excluded_tools: vec![],
         }
     }
 
@@ -2944,7 +3041,7 @@ mod tests {
     #[test]
     fn denied_group_message_mentions_chatid_and_userid() {
         let inbound = test_inbound("group", Some("zeroclaw_group"), "zeroclaw_user");
-        let text = build_access_denied_message(&inbound, AccessDecision::Denied);
+        let text = build_access_denied_message(&inbound, AccessDecision::Denied, "primary");
         assert!(text.contains("zeroclaw_group"));
         assert!(text.contains("zeroclaw_user"));
         assert!(text.contains("allowed_groups"));
@@ -3266,6 +3363,7 @@ mod tests {
             reply_target: "user--zeroclaw_user".to_string(),
             content: "prefill".to_string(),
             channel: "wecom_ws".to_string(),
+            channel_alias: None,
             timestamp: bytes_timestamp_now(),
             thread_ts: None,
             interruption_scope_id: None,

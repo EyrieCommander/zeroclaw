@@ -72,10 +72,9 @@ api_key = "..."
 ## WeCom Bot Webhook (企业微信群机器人)
 
 ```toml
-[channels.wecom]
+[channels.wecom.default]
 enabled = true
 webhook_key = "..."                 # key from the group bot webhook URL
-allowed_users = ["*"]
 ```
 
 WeCom Bot Webhook is send-only through the group bot webhook API. Use it for simple outbound delivery into a WeCom group when ZeroClaw does not need to receive messages from WeCom.
@@ -84,15 +83,15 @@ WeCom Bot Webhook is send-only through the group bot webhook API. Use it for sim
 
 | Use case | Config block | Transport | Direction |
 |---|---|---|---|
-| Send simple messages into a WeCom group bot webhook | `[channels.wecom]` | WeCom group bot webhook | Outbound only |
-| Receive and reply as a WeCom AI Bot | `[channels.wecom_ws]` | WeCom AI Bot long connection over WebSocket | Bidirectional |
+| Send simple messages into a WeCom group bot webhook | `[channels.wecom.<alias>]` | WeCom group bot webhook | Outbound only |
+| Receive and reply as a WeCom AI Bot | `[channels.wecom_ws.<alias>]` | WeCom AI Bot long connection over WebSocket | Bidirectional |
 
 `wecom_ws` uses WebSocket as the transport, but it is not a generic WebSocket-compatible channel. It implements WeCom's AI Bot long-connection protocol, including subscription, inbound callback frames, response commands, request acknowledgements, user/group allowlists, and encrypted attachment handling.
 
 ## WeCom AI Bot Long Connection (企业微信智能机器人长连接)
 
 ```toml
-[channels.wecom_ws]
+[channels.wecom_ws.default]
 enabled = true
 bot_id = "..."
 secret = "..."
@@ -105,7 +104,7 @@ max_file_size_mb = 20
 # proxy_url = "http://127.0.0.1:7890"  # optional per-channel override
 ```
 
-This channel connects to WeCom's AI Bot long-connection API over WebSocket. Use it when ZeroClaw needs to receive WeCom messages and reply as the AI Bot. For simple outbound-only group webhook delivery, use `[channels.wecom]` instead.
+This channel connects to WeCom's AI Bot long-connection API over WebSocket. Use it when ZeroClaw needs to receive WeCom messages and reply as the AI Bot. For simple outbound-only group webhook delivery, use `[channels.wecom.<alias>]` instead.
 
 The WebSocket is only the transport. The channel still implements WeCom-specific subscription/auth, `msg_callback` parsing, `aibot_respond_msg` / `aibot_send_msg` replies, request acknowledgement handling, allowlists, group addressing, and encrypted attachment handling. Enabling `wecom_ws` does not change existing webhook behavior.
 
