@@ -119,80 +119,40 @@ impl Tool for CronRunTool {
             Box::pin(cron::scheduler::execute_job_now(&self.config, &job)).await;
         let finished_at = Utc::now();
         let duration_ms = (finished_at - started_at).num_milliseconds();
-        let mut persisted_status = if success { "ok" } else { "error" }.to_string();
-        let mut persisted_output = output.to_string();
-
-        if job.delivery.mode.eq_ignore_ascii_case("announce")
-            && let (Some(channel), Some(target)) =
-                (job.delivery.channel.as_deref(), job.delivery.to.as_deref())
-            && let Err(e) = cron::scheduler::deliver_announcement(
-                &self.config,
-                channel,
-                target,
-                job.delivery.thread_id.as_deref(),
-                &output,
-            )
-            .await
-        {
-            if job.delivery.best_effort {
-                ::zeroclaw_log::record!(
-                    WARN,
-                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
-                        .with_outcome(::zeroclaw_log::EventOutcome::Unknown)
-                        .with_attrs(
-                            ::serde_json::json!({"job_id": job.id, "error": format!("{}", e)})
-                        ),
-                    "cron_run delivery failed (best_effort)"
-                );
-                if success {
-                    persisted_status = "degraded".to_string();
-                }
-            } else {
-                ::zeroclaw_log::record!(
-                    WARN,
-                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
-                        .with_outcome(::zeroclaw_log::EventOutcome::Unknown)
-                        .with_attrs(
-                            ::serde_json::json!({"job_id": job.id, "error": format!("{}", e)})
-                        ),
-                    "cron_run delivery failed"
-                );
-                success = false;
-                persisted_status = "error".to_string();
-            }
-
-            if persisted_output.trim().is_empty() {
-                persisted_output = format!("delivery failed: {e}");
-            } else {
-                persisted_output.push_str("\n\ndelivery failed: ");
-                persisted_output.push_str(&e.to_string());
-            }
-        }
+        let outcome = cron::scheduler::deliver_and_classify_run_result(
+            &self.config,
+            &job,
+            success,
+            output,
+            cron::scheduler::CronDeliveryContext::ToolManual,
+        )
+        .await;
+        success = outcome.success;
 
         let _ = cron::record_run(
             &self.config,
             &job.id,
             started_at,
             finished_at,
-            &persisted_status,
-            Some(&persisted_output),
+            &outcome.status,
+            Some(&outcome.output),
             duration_ms,
         );
         let _ = cron::record_last_run_with_status(
             &self.config,
             &job.id,
             finished_at,
-            &persisted_status,
-            &persisted_output,
+            &outcome.status,
+            &outcome.output,
         );
 
         Ok(ToolResult {
             success,
             output: serde_json::to_string_pretty(&json!({
                 "job_id": job.id,
-                "status": persisted_status,
+                "status": outcome.status,
                 "duration_ms": duration_ms,
-                "output": persisted_output
+                "output": outcome.output
             }))?,
             error: if success {
                 None
