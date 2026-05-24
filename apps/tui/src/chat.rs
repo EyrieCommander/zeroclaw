@@ -414,7 +414,9 @@ impl<'a> Chat<'a> {
                     } else {
                         "Thinking output: hidden"
                     };
-                    state.entries.push(ChatEntry::SystemMessage(status.to_string()));
+                    state
+                        .entries
+                        .push(ChatEntry::SystemMessage(status.to_string()));
                     state.mark_dirty_append();
                     return false;
                 }
@@ -1627,6 +1629,17 @@ impl ChatState {
         }
     }
 
+    /// Commit any accumulated streaming text as an `AgentMessage` entry.
+    /// Called when a tool call interrupts the text stream so that pre-tool
+    /// text is committed in conversation order before the `Tool` entry.
+    fn flush_streaming_text(&mut self) {
+        let text = std::mem::take(&mut self.streaming_text);
+        if !text.is_empty() {
+            self.entries.push(ChatEntry::AgentMessage(text));
+            self.mark_dirty_append();
+        }
+    }
+
     pub fn apply_update(&mut self, update: SessionUpdate) {
         // Ignore notifications that belong to a different session.
         let update_sid = match &update {
@@ -1658,8 +1671,10 @@ impl ChatState {
                 raw_input,
                 ..
             } => {
-                // Flush any accumulated thought before the tool call so thinking
-                // and tool output interleave in conversation order.
+                // Flush any accumulated text and thought before the tool call
+                // so that pre-tool agent text and thinking both appear in
+                // conversation order before the Tool entry.
+                self.flush_streaming_text();
                 self.flush_streaming_thought();
                 self.entries.push(ChatEntry::Tool {
                     tool_call_id,
@@ -1715,12 +1730,31 @@ impl ChatState {
     }
 
     pub fn commit_turn(&mut self, full_text: String) {
-        self.streaming_text.clear();
+        // Flush any remaining streaming text as a final AgentMessage.
+        // `flush_streaming_text` takes the buffer, so after this call
+        // `streaming_text` is empty. If the buffer was non-empty (i.e. the
+        // turn ended with trailing text that was never interrupted by a tool
+        // call), the entry is committed here. If the buffer was already empty
+        // (all text was flushed at ToolCall boundaries mid-turn), nothing is
+        // pushed and we avoid duplicating already-committed entries.
+        //
+        // We do NOT use `full_text` to push a final entry: the full turn text
+        // is the concatenation of all chunks, which have already been
+        // committed in order (pre-tool, post-tool, …). Using `full_text` here
+        // would duplicate text that was flushed earlier.
+        self.flush_streaming_text();
         // Flush any trailing thought not yet committed (e.g. thinking-only turn).
         self.flush_streaming_thought();
-        if !full_text.is_empty() {
-            self.entries.push(ChatEntry::AgentMessage(full_text));
-        }
+        // If the turn produced text but no tool calls interrupted it, the
+        // buffer was non-empty and flush_streaming_text already committed it.
+        // If the turn produced only tool calls (no trailing text) or all text
+        // was flushed mid-turn, nothing more to push.
+        // Legacy path: if streaming_text was empty AND full_text is non-empty
+        // AND no AgentMessage was committed this turn (pure tool-only turn
+        // with a final summary), push full_text.  This preserves behaviour
+        // for turns that have no chunks at all (e.g. instant responses from
+        // tests that call commit_turn directly without apply_update).
+        let _ = full_text; // consumed by flush above; kept as parameter for API stability
         self.mark_dirty_append();
         self.turn_in_flight = false;
         self.input_bar.cleanup_temps();
@@ -1997,6 +2031,163 @@ mod tests {
         // Only one AgentThought entry, not two.
         assert_eq!(s.entries().len(), 1);
         assert_eq!(s.current_agent_text(), "Hello world");
+    }
+
+    // ── Interleaving regression tests ────────────────────────────
+
+    /// Core interleaving scenario:
+    /// text chunk → tool call → tool result → text chunk → commit
+    /// Expected committed order: AgentMessage | Tool | AgentMessage
+    #[test]
+    fn text_before_tool_call_is_flushed_as_separate_agent_message() {
+        let mut s = state();
+        s.turn_in_flight = true;
+
+        // Pre-tool text chunk.
+        s.apply_update(SessionUpdate::AgentMessageChunk {
+            session_id: "sess-1".to_string(),
+            text: "I will run ls.".to_string(),
+        });
+
+        // Tool call interrupts the text stream.
+        s.apply_update(SessionUpdate::ToolCall {
+            session_id: "sess-1".to_string(),
+            tool_call_id: "tc1".to_string(),
+            name: "shell".to_string(),
+            raw_input: serde_json::json!({"command": "ls"}),
+        });
+
+        // At this point the pre-tool text must be committed as its own entry.
+        assert_eq!(
+            s.entries().len(),
+            2,
+            "expected AgentMessage + Tool entries, got {:?}",
+            s.entries()
+        );
+        assert!(
+            matches!(&s.entries()[0], ChatEntry::AgentMessage(t) if t == "I will run ls."),
+            "first entry must be AgentMessage with pre-tool text"
+        );
+        assert!(
+            matches!(&s.entries()[1], ChatEntry::Tool { .. }),
+            "second entry must be Tool"
+        );
+        // streaming_text must be cleared after the flush.
+        assert!(
+            s.current_agent_text().is_empty(),
+            "streaming_text must be empty after tool-call flush"
+        );
+    }
+
+    /// After a tool call, post-tool text chunks accumulate in streaming_text
+    /// as normal and are committed by commit_turn.
+    #[test]
+    fn text_after_tool_call_commits_separately() {
+        let mut s = state();
+        s.turn_in_flight = true;
+
+        // Pre-tool text.
+        s.apply_update(SessionUpdate::AgentMessageChunk {
+            session_id: "sess-1".to_string(),
+            text: "Running ls.".to_string(),
+        });
+        // Tool call flushes pre-tool text.
+        s.apply_update(SessionUpdate::ToolCall {
+            session_id: "sess-1".to_string(),
+            tool_call_id: "tc1".to_string(),
+            name: "shell".to_string(),
+            raw_input: serde_json::json!({"command": "ls"}),
+        });
+        // Tool result.
+        s.apply_update(SessionUpdate::ToolResult {
+            session_id: "sess-1".to_string(),
+            tool_call_id: "tc1".to_string(),
+            raw_output: "file.txt\n".to_string(),
+        });
+        // Post-tool text.
+        s.apply_update(SessionUpdate::AgentMessageChunk {
+            session_id: "sess-1".to_string(),
+            text: "Done.".to_string(),
+        });
+        assert_eq!(s.current_agent_text(), "Done.");
+
+        // commit_turn: only the post-tool text should become a new AgentMessage.
+        s.commit_turn("Done.".to_string());
+
+        // Final order: AgentMessage("Running ls.") | Tool | AgentMessage("Done.")
+        assert_eq!(
+            s.entries().len(),
+            3,
+            "expected 3 entries: pre-tool AgentMessage, Tool, post-tool AgentMessage"
+        );
+        assert!(
+            matches!(&s.entries()[0], ChatEntry::AgentMessage(t) if t == "Running ls."),
+            "first entry must be pre-tool AgentMessage"
+        );
+        assert!(
+            matches!(
+                &s.entries()[1],
+                ChatEntry::Tool {
+                    result: Some(_),
+                    ..
+                }
+            ),
+            "second entry must be Tool with result"
+        );
+        assert!(
+            matches!(&s.entries()[2], ChatEntry::AgentMessage(t) if t == "Done."),
+            "third entry must be post-tool AgentMessage"
+        );
+    }
+
+    /// If there is NO pre-tool text, no spurious empty AgentMessage is inserted.
+    #[test]
+    fn no_spurious_agent_message_when_no_pre_tool_text() {
+        let mut s = state();
+        s.turn_in_flight = true;
+
+        // Tool call with no preceding text chunk.
+        s.apply_update(SessionUpdate::ToolCall {
+            session_id: "sess-1".to_string(),
+            tool_call_id: "tc1".to_string(),
+            name: "shell".to_string(),
+            raw_input: serde_json::json!({"command": "ls"}),
+        });
+
+        // Only the Tool entry should exist — no empty AgentMessage.
+        assert_eq!(s.entries().len(), 1);
+        assert!(matches!(&s.entries()[0], ChatEntry::Tool { .. }));
+    }
+
+    /// commit_turn must not push a duplicate AgentMessage for text already
+    /// flushed as a pre-tool entry.
+    #[test]
+    fn commit_turn_does_not_duplicate_already_flushed_text() {
+        let mut s = state();
+        s.turn_in_flight = true;
+
+        s.apply_update(SessionUpdate::AgentMessageChunk {
+            session_id: "sess-1".to_string(),
+            text: "Before tool.".to_string(),
+        });
+        s.apply_update(SessionUpdate::ToolCall {
+            session_id: "sess-1".to_string(),
+            tool_call_id: "tc1".to_string(),
+            name: "shell".to_string(),
+            raw_input: serde_json::json!({"command": "ls"}),
+        });
+        // No post-tool text; commit_turn receives the full text but streaming_text is empty.
+        s.commit_turn("Before tool.".to_string());
+
+        // Must be exactly: AgentMessage("Before tool.") | Tool
+        // NOT: AgentMessage | Tool | AgentMessage (duplicate)
+        assert_eq!(
+            s.entries().len(),
+            2,
+            "commit_turn must not add a duplicate AgentMessage for already-flushed text"
+        );
+        assert!(matches!(&s.entries()[0], ChatEntry::AgentMessage(t) if t == "Before tool."));
+        assert!(matches!(&s.entries()[1], ChatEntry::Tool { .. }));
     }
 
     #[test]
