@@ -2111,13 +2111,13 @@ async fn main() -> Result<()> {
             let mut shown_provider = false;
             for (family, alias, entry) in config.providers.models.iter_entries() {
                 let model = entry.model.as_deref().unwrap_or("(none)");
-                if !shown_provider {
+                if shown_provider {
+                    println!("   ModelProvider:      {family}.{alias}");
+                    println!("   Model:         {model}");
+                } else {
                     println!("🤖 ModelProvider:      {family}.{alias}");
                     println!("   Model:         {model}");
                     shown_provider = true;
-                } else {
-                    println!("   ModelProvider:      {family}.{alias}");
-                    println!("   Model:         {model}");
                 }
             }
             if !shown_provider {
