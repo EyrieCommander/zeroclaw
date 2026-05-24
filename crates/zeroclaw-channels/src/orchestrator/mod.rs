@@ -316,6 +316,21 @@ struct ChannelRuntimeDefaults {
     reliability: zeroclaw_config::schema::ReliabilityConfig,
 }
 
+#[derive(Debug, Clone)]
+struct ChannelRuntimeDefaultsSnapshot {
+    config: Arc<Config>,
+    defaults: ChannelRuntimeDefaults,
+    hot: bool,
+    generation: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ChannelRuntimeOverride {
+    config: Arc<Config>,
+    defaults: ChannelRuntimeDefaults,
+    generation: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ConfigFileStamp {
     modified: SystemTime,
@@ -429,6 +444,7 @@ struct ChannelRuntimeContext {
     /// `Tool receipts:` block sent after the main reply.
     show_receipts_in_response: bool,
     last_applied_config_stamp: Arc<Mutex<Option<ConfigFileStamp>>>,
+    runtime_defaults_override: Arc<Mutex<Option<Arc<ChannelRuntimeOverride>>>>,
 }
 
 #[derive(Clone)]
@@ -1031,61 +1047,86 @@ fn resolved_default_model(config: &Config) -> anyhow::Result<String> {
     )
 }
 
+fn resolved_runtime_model_provider_ref(
+    config: &Config,
+    agent_alias: &str,
+) -> anyhow::Result<String> {
+    let agent = config
+        .agents
+        .get(agent_alias)
+        .with_context(|| format!("agents.{agent_alias} is not configured"))?;
+    let configured = agent.model_provider.trim();
+    if configured.is_empty() {
+        let (model_provider, _) = model_provider_entry_for_ref(config, "")?;
+        return Ok(model_provider);
+    }
+
+    let Some((provider_type, provider_alias, _)) =
+        config.resolved_model_provider_for_agent(agent_alias)
+    else {
+        anyhow::bail!(
+            "agents.{agent_alias}.model_provider `{configured}` does not resolve to a configured provider"
+        );
+    };
+    Ok(format!("{provider_type}.{provider_alias}"))
+}
+
+fn model_provider_entry_for_ref<'a>(
+    config: &'a Config,
+    model_provider: &str,
+) -> anyhow::Result<(String, &'a zeroclaw_config::schema::ModelProviderConfig)> {
+    let trimmed = model_provider.trim();
+    if trimmed.is_empty() {
+        let Some((provider_type, provider_alias, entry)) =
+            config.providers.models.iter_entries().next()
+        else {
+            anyhow::bail!(
+                "no model configured: providers.models has no fallback entry for an empty model_provider reference."
+            );
+        };
+        return Ok((format!("{provider_type}.{provider_alias}"), entry));
+    }
+
+    let Some((provider_type, provider_alias)) = trimmed.split_once('.') else {
+        anyhow::bail!("model_provider `{trimmed}` must use `<type>.<alias>` form");
+    };
+    let Some(entry) = config.providers.models.find(provider_type, provider_alias) else {
+        anyhow::bail!("model_provider `{trimmed}` does not resolve to a configured provider");
+    };
+    Ok((trimmed.to_string(), entry))
+}
+
 /// Resolve runtime defaults from `config` against a specific dotted
 /// `model_provider` reference (`"<type>.<alias>"`) — the per-agent
-/// resolution path. Falls back to `iter_entries().next()` when
-/// the reference is empty or doesn't resolve, preserving the conservative
-/// legacy behavior so misconfigured callsites still get safe defaults.
+/// resolution path.
 fn runtime_defaults_from_config(
     config: &Config,
     model_provider: &str,
 ) -> anyhow::Result<ChannelRuntimeDefaults> {
-    let dotted = model_provider.split_once('.');
-    let entry = dotted
-        .and_then(|(type_key, alias_key)| config.providers.models.find(type_key, alias_key))
-        .or_else(|| {
-            config
-                .providers
-                .models
-                .iter_entries()
-                .next()
-                .map(|(_, _, e)| e)
-        });
-    // `default_model_provider` carries the dotted `<type>.<alias>` ref so
-    // it compares equal to `route.model_provider` entries (also dotted),
-    // letting `get_or_create_provider` short-circuit the cache when a
-    // route targets the same alias as the default.
-    let default_model_provider = if !model_provider.is_empty() {
-        model_provider.to_string()
-    } else {
-        resolved_default_provider(config)
-    };
-    let model = entry
-        .and_then(|e| e.model.clone())
-        .or_else(|| resolved_default_model(config).ok())
-        .ok_or_else(|| {
-            ::zeroclaw_log::record!(
-                ERROR,
-                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Reject)
-                    .with_outcome(::zeroclaw_log::EventOutcome::Failure)
-                    .with_attrs(::serde_json::json!({
-                        "model_provider": model_provider,
-                        "reason": "no_model_configured",
-                    })),
-                "orchestrator: model_provider has no resolvable model"
-            );
-            anyhow::Error::msg(format!(
-                "no model configured: model_provider '{model_provider}' does not resolve to a \
+    let (default_model_provider, entry) = model_provider_entry_for_ref(config, model_provider)?;
+    let model = entry.model.clone().ok_or_else(|| {
+        ::zeroclaw_log::record!(
+            ERROR,
+            ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Reject)
+                .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                .with_attrs(::serde_json::json!({
+                    "model_provider": model_provider,
+                    "reason": "no_model_configured",
+                })),
+            "orchestrator: model_provider has no resolvable model"
+        );
+        anyhow::Error::msg(format!(
+            "no model configured: model_provider '{model_provider}' does not resolve to a \
                  ModelProviderConfig with a `model` field, and providers.models has no \
                  fallback entry."
-            ))
-        })?;
+        ))
+    })?;
     Ok(ChannelRuntimeDefaults {
         default_model_provider,
         model,
-        temperature: entry.and_then(|e| e.temperature),
-        api_key: entry.and_then(|e| e.api_key.clone()),
-        api_url: entry.and_then(|e| e.uri.clone()),
+        temperature: entry.temperature,
+        api_key: entry.api_key.clone(),
+        api_url: entry.uri.clone(),
         reliability: config.reliability.clone(),
     })
 }
@@ -1097,14 +1138,33 @@ fn runtime_config_path(ctx: &ChannelRuntimeContext) -> Option<PathBuf> {
         .map(|dir| dir.join("config.toml"))
 }
 
-fn runtime_defaults_snapshot(ctx: &ChannelRuntimeContext) -> ChannelRuntimeDefaults {
-    ChannelRuntimeDefaults {
-        default_model_provider: ctx.default_model_provider.as_str().to_string(),
-        model: ctx.model.as_str().to_string(),
-        temperature: ctx.temperature,
-        api_key: ctx.api_key.clone(),
-        api_url: ctx.api_url.clone(),
-        reliability: (*ctx.reliability).clone(),
+fn runtime_defaults_snapshot(ctx: &ChannelRuntimeContext) -> ChannelRuntimeDefaultsSnapshot {
+    if let Some(runtime_override) = ctx
+        .runtime_defaults_override
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+    {
+        return ChannelRuntimeDefaultsSnapshot {
+            config: Arc::clone(&runtime_override.config),
+            defaults: runtime_override.defaults.clone(),
+            hot: true,
+            generation: runtime_override.generation,
+        };
+    }
+
+    ChannelRuntimeDefaultsSnapshot {
+        config: Arc::clone(&ctx.prompt_config),
+        defaults: ChannelRuntimeDefaults {
+            default_model_provider: ctx.default_model_provider.as_str().to_string(),
+            model: ctx.model.as_str().to_string(),
+            temperature: ctx.temperature,
+            api_key: ctx.api_key.clone(),
+            api_url: ctx.api_url.clone(),
+            reliability: (*ctx.reliability).clone(),
+        },
+        hot: false,
+        generation: 0,
     }
 }
 
@@ -1119,7 +1179,7 @@ async fn config_file_stamp(path: &Path) -> Option<ConfigFileStamp> {
 
 async fn load_runtime_config_and_defaults(
     path: &Path,
-    model_provider: &str,
+    agent_alias: &str,
 ) -> Result<(Config, ChannelRuntimeDefaults)> {
     let contents = tokio::fs::read_to_string(path)
         .await
@@ -1134,7 +1194,8 @@ async fn load_runtime_config_and_defaults(
         parsed.decrypt_secrets(&store)?;
     }
 
-    let defaults = runtime_defaults_from_config(&parsed, model_provider)?;
+    let model_provider = resolved_runtime_model_provider_ref(&parsed, agent_alias)?;
+    let defaults = runtime_defaults_from_config(&parsed, &model_provider)?;
     Ok((parsed, defaults))
 }
 
@@ -1158,14 +1219,15 @@ async fn maybe_apply_runtime_config_update(ctx: &ChannelRuntimeContext) -> Resul
     }
 
     let (next_config, next_defaults) =
-        load_runtime_config_and_defaults(&config_path, &ctx.agent_cfg.model_provider).await?;
+        load_runtime_config_and_defaults(&config_path, ctx.agent_alias.as_str()).await?;
+    let next_config = Arc::new(next_config);
     let next_options = zeroclaw_providers::options_for_provider_ref(
-        &next_config,
+        next_config.as_ref(),
         &next_defaults.default_model_provider,
         &ctx.provider_runtime_options,
     );
     let next_default_model_provider = zeroclaw_providers::create_resilient_model_provider_from_ref(
-        &next_config,
+        next_config.as_ref(),
         &next_defaults.default_model_provider,
         next_defaults.api_key.as_deref(),
         next_defaults.api_url.as_deref(),
@@ -1184,25 +1246,40 @@ async fn maybe_apply_runtime_config_update(ctx: &ChannelRuntimeContext) -> Resul
     }
 
     {
+        let mut override_guard = ctx
+            .runtime_defaults_override
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let next_generation = override_guard.as_ref().map_or(1, |runtime_override| {
+            runtime_override.generation.saturating_add(1)
+        });
+        let next_override = Arc::new(ChannelRuntimeOverride {
+            config: Arc::clone(&next_config),
+            defaults: next_defaults.clone(),
+            generation: next_generation,
+        });
+        let cache_key =
+            provider_cache_key(&next_defaults.default_model_provider, None, next_generation);
+
         let mut cache = ctx.provider_cache.lock().unwrap_or_else(|e| e.into_inner());
         cache.clear();
-        cache.insert(
-            next_defaults.default_model_provider.clone(),
-            Arc::clone(&next_default_model_provider),
-        );
+        cache.insert(cache_key, Arc::clone(&next_default_model_provider));
+        *override_guard = Some(next_override);
     }
 
     *ctx.last_applied_config_stamp
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = Some(stamp);
 
-    ::zeroclaw_log::record!(INFO, ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_attrs(::serde_json::json!({"path": config_path.display().to_string(), "model_provider": next_defaults.default_model_provider, "model": next_defaults.model, "temperature": next_defaults.temperature, "agent_model_provider": ctx.agent_cfg.model_provider})), "Applied updated channel runtime config from disk");
+    ::zeroclaw_log::record!(INFO, ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_attrs(::serde_json::json!({"path": config_path.display().to_string(), "model_provider": next_defaults.default_model_provider, "model": next_defaults.model, "temperature": next_defaults.temperature, "agent_model_provider": next_defaults.default_model_provider})), "Applied updated channel runtime config from disk");
 
     Ok(())
 }
 
-fn default_route_selection(ctx: &ChannelRuntimeContext) -> ChannelRouteSelection {
-    let defaults = runtime_defaults_snapshot(ctx);
+fn default_route_selection_from_snapshot(
+    defaults_snapshot: &ChannelRuntimeDefaultsSnapshot,
+) -> ChannelRouteSelection {
+    let defaults = defaults_snapshot.defaults.clone();
     ChannelRouteSelection {
         model_provider: defaults.default_model_provider,
         model: defaults.model,
@@ -1210,17 +1287,26 @@ fn default_route_selection(ctx: &ChannelRuntimeContext) -> ChannelRouteSelection
     }
 }
 
-fn get_route_selection(ctx: &ChannelRuntimeContext, sender_key: &str) -> ChannelRouteSelection {
+fn get_route_selection(
+    ctx: &ChannelRuntimeContext,
+    sender_key: &str,
+    defaults_snapshot: &ChannelRuntimeDefaultsSnapshot,
+) -> ChannelRouteSelection {
     ctx.route_overrides
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(sender_key)
         .cloned()
-        .unwrap_or_else(|| default_route_selection(ctx))
+        .unwrap_or_else(|| default_route_selection_from_snapshot(defaults_snapshot))
 }
 
-fn set_route_selection(ctx: &ChannelRuntimeContext, sender_key: &str, next: ChannelRouteSelection) {
-    let default_route = default_route_selection(ctx);
+fn set_route_selection(
+    ctx: &ChannelRuntimeContext,
+    sender_key: &str,
+    next: ChannelRouteSelection,
+    defaults_snapshot: &ChannelRuntimeDefaultsSnapshot,
+) {
+    let default_route = default_route_selection_from_snapshot(defaults_snapshot);
     let mut routes = ctx
         .route_overrides
         .lock()
@@ -1619,12 +1705,12 @@ fn load_cached_model_preview(workspace_dir: &Path, provider_name: &str) -> Vec<S
         .unwrap_or_default()
 }
 
-/// Build a cache key that includes the model_provider name and, when a
-/// route-specific API key is supplied, a hash of that key. This prevents
-/// cache poisoning when multiple routes target the same model_provider with
-/// different credentials.
-fn provider_cache_key(provider_name: &str, route_api_key: Option<&str>) -> String {
-    match route_api_key {
+/// Build a cache key that includes the runtime-defaults generation, the
+/// model_provider name, and, when a route-specific API key is supplied, a hash
+/// of that key. Generation `0` is the immutable startup config, so its key shape
+/// stays unchanged; hot-reload generations get isolated cache entries.
+fn provider_cache_key(provider_name: &str, route_api_key: Option<&str>, generation: u64) -> String {
+    let base = match route_api_key {
         Some(key) => {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -1632,15 +1718,62 @@ fn provider_cache_key(provider_name: &str, route_api_key: Option<&str>) -> Strin
             format!("{provider_name}@{:x}", hasher.finish())
         }
         None => provider_name.to_string(),
+    };
+    if generation == 0 {
+        base
+    } else {
+        format!("g{generation}:{base}")
     }
+}
+
+fn model_provider_config_for_ref<'a>(
+    config: &'a Config,
+    provider_name: &str,
+) -> Option<&'a zeroclaw_config::schema::ModelProviderConfig> {
+    let provider_name = provider_name.trim();
+    if let Some((provider_type, provider_alias)) = provider_name.split_once('.') {
+        return config.providers.models.find(provider_type, provider_alias);
+    }
+
+    config
+        .providers
+        .models
+        .iter_entries()
+        .find_map(|(provider_type, _, entry)| (provider_type == provider_name).then_some(entry))
+}
+
+fn is_default_model_provider_ref(provider_name: &str, default_provider: &str) -> bool {
+    provider_name == default_provider
+        || default_provider
+            .split_once('.')
+            .is_some_and(|(provider_type, _)| provider_name == provider_type)
+}
+
+fn provider_credentials_for_ref(
+    config: &Config,
+    provider_name: &str,
+    defaults: &ChannelRuntimeDefaults,
+    route_api_key: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    let entry = model_provider_config_for_ref(config, provider_name);
+    let is_default = is_default_model_provider_ref(provider_name, &defaults.default_model_provider);
+    let api_key = route_api_key
+        .map(ToString::to_string)
+        .or_else(|| entry.and_then(|provider| provider.api_key.clone()))
+        .or_else(|| is_default.then(|| defaults.api_key.clone()).flatten());
+    let api_url = entry
+        .and_then(|provider| provider.uri.clone())
+        .or_else(|| is_default.then(|| defaults.api_url.clone()).flatten());
+    (api_key, api_url)
 }
 
 async fn get_or_create_provider(
     ctx: &ChannelRuntimeContext,
     provider_name: &str,
     route_api_key: Option<&str>,
+    defaults_snapshot: &ChannelRuntimeDefaultsSnapshot,
 ) -> anyhow::Result<Arc<dyn ModelProvider>> {
-    let cache_key = provider_cache_key(provider_name, route_api_key);
+    let cache_key = provider_cache_key(provider_name, route_api_key, defaults_snapshot.generation);
 
     if let Some(existing) = ctx
         .provider_cache
@@ -1652,31 +1785,29 @@ async fn get_or_create_provider(
         return Ok(existing);
     }
 
-    // Only return the pre-built default model_provider when there is no
-    // route-specific credential override — otherwise the default was
-    // created with the global key and would be wrong.
-    if route_api_key.is_none() && provider_name == ctx.default_model_provider.as_str() {
+    let config = Arc::clone(&defaults_snapshot.config);
+    let defaults = defaults_snapshot.defaults.clone();
+
+    // Only return the pre-built startup default model_provider while the
+    // current runtime defaults still match startup and there is no
+    // route-specific credential override. Once config reload changes defaults,
+    // the cache/store path above owns the live default provider.
+    if route_api_key.is_none()
+        && provider_name == defaults.default_model_provider.as_str()
+        && provider_name == ctx.default_model_provider.as_str()
+        && !defaults_snapshot.hot
+    {
         return Ok(Arc::clone(&ctx.model_provider));
     }
-
-    let defaults = runtime_defaults_snapshot(ctx);
-    let api_url = if provider_name == defaults.default_model_provider.as_str() {
-        defaults.api_url.as_deref()
-    } else {
-        None
-    };
-
-    // Prefer route-specific credential; fall back to the global key.
-    let effective_api_key = route_api_key
-        .map(ToString::to_string)
-        .or_else(|| ctx.api_key.clone());
+    let (effective_api_key, api_url) =
+        provider_credentials_for_ref(config.as_ref(), provider_name, &defaults, route_api_key);
 
     let model_provider = create_resilient_model_provider_nonblocking(
-        Arc::clone(&ctx.prompt_config),
+        config,
         provider_name,
         effective_api_key,
-        api_url.map(ToString::to_string),
-        ctx.reliability.as_ref().clone(),
+        api_url,
+        defaults.reliability,
         ctx.provider_runtime_options.clone(),
     )
     .await?;
@@ -1964,18 +2095,26 @@ async fn handle_runtime_command_if_needed(
     };
 
     let sender_key = conversation_history_key(msg);
-    let mut current = get_route_selection(ctx, &sender_key);
+    let defaults_snapshot = runtime_defaults_snapshot(ctx);
+    let mut current = get_route_selection(ctx, &sender_key, &defaults_snapshot);
 
     let response = match command {
         ChannelRuntimeCommand::ShowProviders => build_providers_help_response(&current),
         ChannelRuntimeCommand::SetProvider(raw_model_provider) => {
             match canonical_model_provider_name(&raw_model_provider) {
                 Some(provider_name) => {
-                    match get_or_create_provider(ctx, &provider_name, None).await {
+                    match get_or_create_provider(ctx, &provider_name, None, &defaults_snapshot)
+                        .await
+                    {
                         Ok(_) => {
                             if provider_name != current.model_provider {
                                 current.model_provider = provider_name.clone();
-                                set_route_selection(ctx, &sender_key, current.clone());
+                                set_route_selection(
+                                    ctx,
+                                    &sender_key,
+                                    current.clone(),
+                                    &defaults_snapshot,
+                                );
                             }
 
                             format!(
@@ -2014,7 +2153,7 @@ async fn handle_runtime_command_if_needed(
                 } else {
                     current.model = model.clone();
                 }
-                set_route_selection(ctx, &sender_key, current.clone());
+                set_route_selection(ctx, &sender_key, current.clone(), &defaults_snapshot);
 
                 format!(
                     "Model switched to `{}` (model_provider: `{}`). Context preserved.",
@@ -2451,7 +2590,7 @@ fn parse_reply_intent(response: &str) -> AssistantChannelOutcome {
 /// Resolve a per-agent `classifier_provider` ref to a (provider, model, temperature)
 /// triple for `classify_channel_reply_intent`. Returns `None` when the
 /// ref is empty or unresolvable; the caller MUST then fall back to the
-/// main agent's `active_model_provider` + `route.model` + `runtime_defaults.temperature`.
+/// main agent's `active_model_provider` plus the active route/defaults snapshot.
 ///
 /// Per AGENTS.md SINGLE SOURCE OF TRUTH: this function reads the
 /// referenced `[providers.models.<type>.<alias>]` entry on every call
@@ -2460,6 +2599,7 @@ fn parse_reply_intent(response: &str) -> AssistantChannelOutcome {
 async fn resolve_classifier_route(
     ctx: &ChannelRuntimeContext,
     provider_ref: &zeroclaw_config::providers::ModelProviderRef,
+    defaults_snapshot: &ChannelRuntimeDefaultsSnapshot,
 ) -> Option<(Arc<dyn ModelProvider>, String, Option<f64>)> {
     let provider_str = provider_ref.as_str().trim();
     if provider_str.is_empty() {
@@ -2480,7 +2620,12 @@ async fn resolve_classifier_route(
         }
     };
 
-    let model_cfg = match ctx.prompt_config.providers.models.find(type_key, alias_key) {
+    let model_cfg = match defaults_snapshot
+        .config
+        .providers
+        .models
+        .find(type_key, alias_key)
+    {
         Some(cfg) => cfg,
         None => {
             ::zeroclaw_log::record!(
@@ -2507,8 +2652,13 @@ async fn resolve_classifier_route(
         return None;
     }
 
-    let provider = match get_or_create_provider(ctx, provider_str, model_cfg.api_key.as_deref())
-        .await
+    let provider = match get_or_create_provider(
+        ctx,
+        provider_str,
+        model_cfg.api_key.as_deref(),
+        defaults_snapshot,
+    )
+    .await
     {
         Ok(p) => p,
         Err(e) => {
@@ -3486,7 +3636,8 @@ async fn process_channel_message_body(
             );
         }
     }
-    let mut route = get_route_selection(ctx.as_ref(), &history_key);
+    let runtime_defaults = runtime_defaults_snapshot(ctx.as_ref());
+    let mut route = get_route_selection(ctx.as_ref(), &history_key, &runtime_defaults);
 
     // ── Query classification: override route when a rule matches ──
     if let Some(hint) =
@@ -3504,11 +3655,11 @@ async fn process_channel_message_body(
         };
     }
 
-    let runtime_defaults = runtime_defaults_snapshot(ctx.as_ref());
     let mut active_model_provider = match get_or_create_provider(
         ctx.as_ref(),
         &route.model_provider,
         route.api_key.as_deref(),
+        &runtime_defaults,
     )
     .await
     {
@@ -3741,22 +3892,26 @@ async fn process_channel_message_body(
             Arc<dyn ModelProvider>,
             String,
             Option<f64>,
-        ) = resolve_classifier_route(ctx.as_ref(), &ctx.agent_cfg.classifier_provider)
-            .await
-            .unwrap_or_else(|| {
-                (
-                    Arc::clone(&active_model_provider),
-                    route.model.clone(),
-                    None,
-                )
-            });
+        ) = resolve_classifier_route(
+            ctx.as_ref(),
+            &ctx.agent_cfg.classifier_provider,
+            &runtime_defaults,
+        )
+        .await
+        .unwrap_or_else(|| {
+            (
+                Arc::clone(&active_model_provider),
+                route.model.clone(),
+                None,
+            )
+        });
 
         classify_channel_reply_intent(
             classifier_provider_arc.as_ref(),
             history[0].content.as_str(),
             &history,
             classifier_model_owned.as_str(),
-            classifier_temperature.or(runtime_defaults.temperature),
+            classifier_temperature.or(runtime_defaults.defaults.temperature),
         )
         .await
         .unwrap_or(AssistantChannelOutcome::Reply(String::new()))
@@ -4086,7 +4241,7 @@ async fn process_channel_message_body(
                         notify_observer.as_ref() as &dyn Observer,
                         route.model_provider.as_str(),
                         route.model.as_str(),
-                        runtime_defaults.temperature,
+                        runtime_defaults.defaults.temperature,
                         true,
                         Some(&*ctx.approval_manager),
                         msg.channel.as_str(),
@@ -4145,18 +4300,16 @@ async fn process_channel_message_body(
                     )
                 );
 
-                match create_resilient_model_provider_nonblocking(
-                    Arc::clone(&ctx.prompt_config),
+                match get_or_create_provider(
+                    ctx.as_ref(),
                     &new_model_provider,
-                    ctx.api_key.clone(),
-                    ctx.api_url.clone(),
-                    ctx.reliability.as_ref().clone(),
-                    ctx.provider_runtime_options.clone(),
+                    None,
+                    &runtime_defaults,
                 )
                 .await
                 {
                     Ok(new_prov) => {
-                        active_model_provider = Arc::from(new_prov);
+                        active_model_provider = new_prov;
                         route.model_provider = new_model_provider;
                         route.model = new_model;
                         clear_model_switch_request();
@@ -4629,8 +4782,11 @@ async fn process_channel_message_body(
                 // Evict cached model_provider on auth errors so the next request
                 // re-creates it with fresh OAuth credentials.
                 if zeroclaw_providers::reliable::is_auth_error(&e) {
-                    let cache_key =
-                        provider_cache_key(&route.model_provider, route.api_key.as_deref());
+                    let cache_key = provider_cache_key(
+                        &route.model_provider,
+                        route.api_key.as_deref(),
+                        runtime_defaults.generation,
+                    );
                     let mut cache = ctx.provider_cache.lock().unwrap_or_else(|p| p.into_inner());
                     if cache.remove(&cache_key).is_some() {
                         ::zeroclaw_log::record!(
@@ -8382,6 +8538,7 @@ pub async fn start_channels(
             },
             show_receipts_in_response: agent.resolved.tool_receipts.show_in_response,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         agent_ctxs.insert(agent_alias.clone(), runtime_ctx);
@@ -9110,6 +9267,7 @@ mod tests {
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -9117,7 +9275,12 @@ mod tests {
     async fn resolve_classifier_route_returns_none_for_empty_ref() {
         let ctx = router_test_ctx();
         let empty = zeroclaw_config::providers::ModelProviderRef::default();
-        let result = resolve_classifier_route(ctx.as_ref(), &empty).await;
+        let result = resolve_classifier_route(
+            ctx.as_ref(),
+            &empty,
+            &runtime_defaults_snapshot(ctx.as_ref()),
+        )
+        .await;
         assert!(result.is_none(), "empty ref must fall back to main agent");
     }
 
@@ -9125,7 +9288,12 @@ mod tests {
     async fn resolve_classifier_route_returns_none_for_unresolvable_ref() {
         let ctx = router_test_ctx();
         let bogus = zeroclaw_config::providers::ModelProviderRef::from("custom.does-not-exist");
-        let result = resolve_classifier_route(ctx.as_ref(), &bogus).await;
+        let result = resolve_classifier_route(
+            ctx.as_ref(),
+            &bogus,
+            &runtime_defaults_snapshot(ctx.as_ref()),
+        )
+        .await;
         assert!(result.is_none(), "unresolvable ref must soft-fail to None");
     }
 
@@ -9151,7 +9319,12 @@ mod tests {
         });
 
         let alias_ref = zeroclaw_config::providers::ModelProviderRef::from("openai.my-classifier");
-        let result = resolve_classifier_route(ctx.as_ref(), &alias_ref).await;
+        let result = resolve_classifier_route(
+            ctx.as_ref(),
+            &alias_ref,
+            &runtime_defaults_snapshot(ctx.as_ref()),
+        )
+        .await;
 
         let (_, _, temp) = result.expect("must resolve to alias");
         assert_eq!(
@@ -9576,6 +9749,322 @@ mod tests {
         ));
     }
 
+    fn channel_runtime_context_for_defaults_test(
+        zeroclaw_dir: &std::path::Path,
+        agent_alias: &str,
+        default_model_provider: &str,
+        model: &str,
+    ) -> ChannelRuntimeContext {
+        ChannelRuntimeContext {
+            channels_by_name: Arc::new(HashMap::new()),
+            model_provider: Arc::new(DummyModelProvider),
+            default_model_provider: Arc::new(default_model_provider.to_string()),
+            agent_alias: Arc::new(agent_alias.to_string()),
+            agent_cfg: Arc::new(zeroclaw_config::schema::AliasedAgentConfig {
+                model_provider: default_model_provider.into(),
+                ..Default::default()
+            }),
+            memory: Arc::new(NoopMemory),
+            tools_registry: Arc::new(vec![]),
+            observer: Arc::new(NoopObserver),
+            system_prompt: Arc::new("system".to_string()),
+            model: Arc::new(model.to_string()),
+            temperature: Some(0.0),
+            auto_save_memory: false,
+            max_tool_iterations: 5,
+            min_relevance_score: 0.0,
+            conversation_histories: Arc::new(Mutex::new(lru::LruCache::new(
+                std::num::NonZeroUsize::new(MAX_CONVERSATION_SENDERS).unwrap(),
+            ))),
+            pending_new_sessions: Arc::new(Mutex::new(HashSet::new())),
+            provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            api_key: None,
+            api_url: None,
+            reliability: Arc::new(zeroclaw_config::schema::ReliabilityConfig::default()),
+            interrupt_on_new_message: InterruptOnNewMessageConfig {
+                telegram: false,
+                slack: false,
+                discord: false,
+                mattermost: false,
+                matrix: false,
+            },
+            multimodal: zeroclaw_config::schema::MultimodalConfig::default(),
+            media_pipeline: zeroclaw_config::schema::MediaPipelineConfig::default(),
+            transcription_config: zeroclaw_config::schema::TranscriptionConfig::default(),
+            agent_transcription_provider: String::new(),
+            hooks: None,
+            provider_runtime_options: zeroclaw_providers::ModelProviderRuntimeOptions {
+                zeroclaw_dir: Some(zeroclaw_dir.to_path_buf()),
+                ..Default::default()
+            },
+            workspace_dir: Arc::new(std::env::temp_dir()),
+            prompt_config: Arc::new(zeroclaw_config::schema::Config::default()),
+            message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
+            non_cli_excluded_tools: Arc::new(Vec::new()),
+            autonomy_level: AutonomyLevel::default(),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
+            model_routes: Arc::new(Vec::new()),
+            query_classification: zeroclaw_config::schema::QueryClassificationConfig::default(),
+            ack_reactions: true,
+            show_tool_calls: true,
+            session_store: None,
+            approval_manager: Arc::new(ApprovalManager::for_non_interactive(
+                &zeroclaw_config::schema::RiskProfileConfig::default(),
+            )),
+            activated_tools: None,
+            cost_tracking: None,
+            pacing: zeroclaw_config::schema::PacingConfig::default(),
+            max_tool_result_chars: 0,
+            context_token_budget: 0,
+            debouncer: Arc::new(zeroclaw_infra::debounce::MessageDebouncer::new(
+                Duration::ZERO,
+            )),
+            receipt_generator: None,
+            show_receipts_in_response: false,
+            last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    #[test]
+    fn runtime_defaults_are_scoped_by_runtime_context() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let agent_a = channel_runtime_context_for_defaults_test(
+            tmp.path(),
+            "agent_a",
+            "openrouter.default",
+            "startup-a",
+        );
+        let agent_b = channel_runtime_context_for_defaults_test(
+            tmp.path(),
+            "agent_b",
+            "anthropic.default",
+            "startup-b",
+        );
+        assert!(!runtime_defaults_snapshot(&agent_a).hot);
+        assert!(!runtime_defaults_snapshot(&agent_b).hot);
+
+        let hot_override = ChannelRuntimeOverride {
+            config: Arc::new(zeroclaw_config::schema::Config::default()),
+            defaults: ChannelRuntimeDefaults {
+                default_model_provider: "openrouter.reloaded".to_string(),
+                model: "hot-model".to_string(),
+                temperature: Some(0.7),
+                api_key: Some("hot-key".to_string()),
+                api_url: Some("https://example.test/v1".to_string()),
+                reliability: zeroclaw_config::schema::ReliabilityConfig::default(),
+            },
+            generation: 1,
+        };
+        *agent_a
+            .runtime_defaults_override
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(hot_override));
+
+        let route_a = default_route_selection_from_snapshot(&runtime_defaults_snapshot(&agent_a));
+        assert_eq!(route_a.model_provider, "openrouter.reloaded");
+        assert_eq!(route_a.model, "hot-model");
+        let snapshot_a = runtime_defaults_snapshot(&agent_a);
+        assert!(snapshot_a.hot);
+        assert_eq!(snapshot_a.generation, 1);
+
+        let route_b = default_route_selection_from_snapshot(&runtime_defaults_snapshot(&agent_b));
+        assert_eq!(route_b.model_provider, "anthropic.default");
+        assert_eq!(route_b.model, "startup-b");
+        assert!(!runtime_defaults_snapshot(&agent_b).hot);
+    }
+
+    #[tokio::test]
+    async fn load_runtime_config_uses_resolved_agent_provider() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        tokio::fs::write(
+            &config_path,
+            r#"
+[agents.agent_a]
+model_provider = "openrouter.hot"
+
+[agents.agent_b]
+model_provider = "anthropic.default"
+
+[providers.models.openrouter.hot]
+model = "hot-model"
+api_key = "hot-key"
+uri = "https://hot.example.test/v1"
+temperature = 0.2
+
+[providers.models.anthropic.default]
+model = "cold-model"
+api_key = "cold-key"
+"#,
+        )
+        .await
+        .unwrap();
+
+        let (_config, defaults) = load_runtime_config_and_defaults(&config_path, "agent_a")
+            .await
+            .unwrap();
+
+        assert_eq!(defaults.default_model_provider, "openrouter.hot");
+        assert_eq!(defaults.model, "hot-model");
+        assert_eq!(defaults.api_key.as_deref(), Some("hot-key"));
+        assert_eq!(
+            defaults.api_url.as_deref(),
+            Some("https://hot.example.test/v1")
+        );
+        assert_eq!(defaults.temperature, Some(0.2));
+    }
+
+    #[tokio::test]
+    async fn load_runtime_config_rejects_unresolved_agent_provider() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        tokio::fs::write(
+            &config_path,
+            r#"
+[agents.agent_a]
+model_provider = "openrouter.missing"
+
+[providers.models.anthropic.default]
+model = "cold-model"
+api_key = "cold-key"
+"#,
+        )
+        .await
+        .unwrap();
+
+        let err = load_runtime_config_and_defaults(&config_path, "agent_a")
+            .await
+            .expect_err("unresolved agent provider should reject reload");
+
+        assert!(
+            err.to_string()
+                .contains("agents.agent_a.model_provider `openrouter.missing` does not resolve")
+        );
+    }
+
+    #[tokio::test]
+    async fn load_runtime_config_rejects_missing_agent() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        tokio::fs::write(
+            &config_path,
+            r#"
+[agents.agent_b]
+model_provider = "anthropic.default"
+
+[providers.models.anthropic.default]
+model = "cold-model"
+api_key = "cold-key"
+"#,
+        )
+        .await
+        .unwrap();
+
+        let err = load_runtime_config_and_defaults(&config_path, "agent_a")
+            .await
+            .expect_err("runtime reload should reject a config missing the active agent");
+
+        assert!(err.to_string().contains("agents.agent_a is not configured"));
+    }
+
+    #[tokio::test]
+    async fn load_runtime_config_empty_agent_provider_uses_reloaded_first_provider() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        tokio::fs::write(
+            &config_path,
+            r#"
+[agents.agent_a]
+model_provider = ""
+
+[providers.models.anthropic.default]
+model = "first-model"
+api_key = "first-key"
+
+[providers.models.openrouter.default]
+model = "second-model"
+api_key = "second-key"
+"#,
+        )
+        .await
+        .unwrap();
+
+        let (_config, defaults) = load_runtime_config_and_defaults(&config_path, "agent_a")
+            .await
+            .unwrap();
+
+        assert_eq!(defaults.default_model_provider, "anthropic.default");
+        assert_eq!(defaults.model, "first-model");
+        assert_eq!(defaults.api_key.as_deref(), Some("first-key"));
+    }
+
+    #[test]
+    fn provider_credentials_use_target_alias_key_after_reload() {
+        let config: Config = toml::from_str(
+            r#"
+[providers.models.openrouter.default]
+model = "openrouter-model"
+api_key = "openrouter-key"
+uri = "https://openrouter.example.test/v1"
+
+[providers.models.anthropic.default]
+model = "anthropic-model"
+api_key = "anthropic-key"
+uri = "https://anthropic.example.test/v1"
+"#,
+        )
+        .unwrap();
+        let defaults = runtime_defaults_from_config(&config, "openrouter.default").unwrap();
+
+        let (api_key, api_url) =
+            provider_credentials_for_ref(&config, "anthropic.default", &defaults, None);
+
+        assert_eq!(api_key.as_deref(), Some("anthropic-key"));
+        assert_eq!(
+            api_url.as_deref(),
+            Some("https://anthropic.example.test/v1")
+        );
+    }
+
+    #[test]
+    fn provider_credentials_prefer_route_key_over_target_alias_key() {
+        let config: Config = toml::from_str(
+            r#"
+[providers.models.openrouter.default]
+model = "openrouter-model"
+api_key = "openrouter-key"
+
+[providers.models.anthropic.default]
+model = "anthropic-model"
+api_key = "anthropic-key"
+"#,
+        )
+        .unwrap();
+        let defaults = runtime_defaults_from_config(&config, "openrouter.default").unwrap();
+
+        let (api_key, _api_url) = provider_credentials_for_ref(
+            &config,
+            "anthropic.default",
+            &defaults,
+            Some("route-key"),
+        );
+
+        assert_eq!(api_key.as_deref(), Some("route-key"));
+    }
+
+    #[test]
+    fn provider_cache_key_isolates_hot_generations() {
+        let startup = provider_cache_key("openrouter.default", None, 0);
+        let hot_1 = provider_cache_key("openrouter.default", None, 1);
+        let hot_2 = provider_cache_key("openrouter.default", None, 2);
+
+        assert_eq!(startup, "openrouter.default");
+        assert_ne!(hot_1, startup);
+        assert_ne!(hot_1, hot_2);
+    }
+
     #[test]
     fn strip_tool_result_content_removes_blocks_and_header() {
         let input = r#"[Tool results]
@@ -9807,6 +10296,7 @@ mod tests {
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         };
 
         assert!(compact_sender_history(&ctx, &sender));
@@ -9939,6 +10429,7 @@ mod tests {
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         };
 
         append_sender_turn(&ctx, &sender, ChatMessage::user("hello"));
@@ -10042,6 +10533,7 @@ mod tests {
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         };
 
         assert!(rollback_orphan_user_turn(&ctx, &sender, "pending"));
@@ -10149,6 +10641,7 @@ mod tests {
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         };
 
         assert!(rollback_orphan_user_turn(
@@ -10492,6 +10985,7 @@ mod tests {
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -11131,6 +11625,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         process_channel_message(
@@ -11237,6 +11732,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
             agent_cfg: Arc::new(zeroclaw_config::schema::AliasedAgentConfig::default()),
             agent_transcription_provider: String::new(),
         });
@@ -11355,6 +11851,7 @@ BTC is currently around $65,000 based on latest tool output."#
             ),
             show_receipts_in_response: true,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
             agent_cfg: Arc::new(zeroclaw_config::schema::AliasedAgentConfig::default()),
             agent_transcription_provider: String::new(),
         });
@@ -11496,6 +11993,7 @@ BTC is currently around $65,000 based on latest tool output."#
             ),
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
             agent_cfg: Arc::new(zeroclaw_config::schema::AliasedAgentConfig::default()),
             agent_transcription_provider: String::new(),
         });
@@ -11606,6 +12104,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
             agent_cfg: Arc::new(zeroclaw_config::schema::AliasedAgentConfig::default()),
             agent_transcription_provider: String::new(),
         });
@@ -11734,6 +12233,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         process_channel_message(
@@ -11848,6 +12348,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         process_channel_message(
@@ -11947,6 +12448,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         process_channel_message(
@@ -12059,6 +12561,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         process_channel_message(
@@ -12197,6 +12700,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         process_channel_message(
@@ -12398,6 +12902,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         process_channel_message(
@@ -12495,6 +13000,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         process_channel_message(
@@ -12599,6 +13105,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         process_channel_message(
@@ -12959,6 +13466,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<zeroclaw_api::channel::ChannelMessage>(4);
@@ -13092,6 +13600,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<zeroclaw_api::channel::ChannelMessage>(8);
@@ -13235,6 +13744,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<zeroclaw_api::channel::ChannelMessage>(8);
@@ -13375,6 +13885,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<zeroclaw_api::channel::ChannelMessage>(8);
@@ -13493,6 +14004,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         process_channel_message(
@@ -13592,6 +14104,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         process_channel_message(
@@ -14771,6 +15284,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         process_channel_message(
@@ -14930,6 +15444,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         process_channel_message(
@@ -15129,6 +15644,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         process_channel_message(
@@ -15265,6 +15781,7 @@ BTC is currently around $65,000 based on latest tool output."#
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         process_channel_message(
@@ -16258,6 +16775,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         // Simulate a photo attachment message with [IMAGE:] marker.
@@ -16364,6 +16882,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         process_channel_message(
@@ -16507,6 +17026,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
             media_pipeline: zeroclaw_config::schema::MediaPipelineConfig::default(),
             transcription_config: zeroclaw_config::schema::TranscriptionConfig::default(),
             agent_transcription_provider: String::new(),
@@ -16704,6 +17224,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         process_channel_message(
@@ -16845,6 +17366,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         process_channel_message(
@@ -16978,6 +17500,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         process_channel_message(
@@ -17131,6 +17654,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         process_channel_message(
@@ -17485,6 +18009,7 @@ This is an example JSON object for profile settings."#;
             receipt_generator: None,
             show_receipts_in_response: false,
             last_applied_config_stamp: Arc::new(Mutex::new(None)),
+            runtime_defaults_override: Arc::new(Mutex::new(None)),
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<zeroclaw_api::channel::ChannelMessage>(8);
