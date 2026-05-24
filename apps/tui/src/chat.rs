@@ -364,7 +364,7 @@ impl<'a> Chat<'a> {
         // The input bar handles: file explorer, Ctrl+A, Ctrl+V,
         // Enter (slash commands + submit), text input, cursor, backspace.
         // It does NOT handle approval, selection, session management, etc.
-        if state.pending_approval().is_none() && state.selected_entry.is_none() {
+        if state.pending_approval().is_none() && !state.in_browse_mode() {
             let action = state.input_bar.handle_key(key, state.turn_in_flight);
             match action {
                 InputBarAction::Submit { text, attachments } => {
@@ -437,9 +437,9 @@ impl<'a> Chat<'a> {
                 }
             }
             KeyCode::Esc => {
-                if state.selected_entry.is_some() {
-                    state.selected_entry = None;
-                    state.mark_dirty_full();
+                if state.in_browse_mode() {
+                    // Return to input mode from browse mode.
+                    state.exit_browse_mode();
                 } else if state.turn_in_flight {
                     let _ = self.rpc.session_cancel(&state.session_id).await;
                     state.turn_in_flight = false;
@@ -549,54 +549,83 @@ impl<'a> Chat<'a> {
             KeyCode::Char('t')
                 if state.input_bar.input().is_empty()
                     && state.pending_approval().is_none()
-                    && state.selected_entry.is_none() =>
+                    && !state.in_browse_mode() =>
             {
                 state.show_thoughts = !state.show_thoughts;
                 state.mark_dirty_full();
             }
-            // ── Entry selection & yank ───────────────────────────
-            KeyCode::Char('y') if state.selected_entry.is_some() => {
-                if let Some(idx) = state.selected_entry
-                    && let Some(entry) = state.entries.get(idx)
-                {
-                    crate::mouse::copy_osc52(&clipboard_text(entry));
+            // ── Browse mode: enter (Ctrl+↑) ──────────────────────
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if !state.in_browse_mode() {
+                    state.enter_browse_mode();
+                } else {
+                    state.browse_move_up(1, false);
                 }
             }
-            KeyCode::Char('k')
-                if state.input_bar.input().is_empty()
-                    && state.pending_approval().is_none()
-                    && !state.turn_in_flight =>
-            {
-                let len = state.entries.len();
-                if len > 0 {
-                    state.selected_entry = Some(match state.selected_entry {
-                        Some(i) => i.saturating_sub(1),
-                        None => len - 1,
-                    });
-                    state.mark_dirty_full();
+            // ── Browse mode: exit (Ctrl+↓) ───────────────────────
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if state.in_browse_mode() {
+                    state.exit_browse_mode();
                 }
             }
-            // ── Shift+Up/Down: scroll conversation ───────────
+            // ── Browse mode: navigate ↑/↓ ────────────────────────
+            KeyCode::Up if state.in_browse_mode() => {
+                state.browse_move_up(1, false);
+            }
+            KeyCode::Down if state.in_browse_mode() => {
+                state.browse_move_down(1, false);
+            }
+            // ── Browse mode: range extend (Shift+↑/↓) ───────────
             KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                state.scroll_up(1);
-            }
-            KeyCode::Char('j')
-                if state.input_bar.input().is_empty()
-                    && state.pending_approval().is_none()
-                    && !state.turn_in_flight =>
-            {
-                let len = state.entries.len();
-                if len > 0 {
-                    state.selected_entry = Some(match state.selected_entry {
-                        Some(i) if i + 1 < len => i + 1,
-                        Some(_) => len - 1,
-                        None => 0,
-                    });
-                    state.mark_dirty_full();
+                if state.in_browse_mode() {
+                    state.browse_move_up(1, true);
+                } else {
+                    state.scroll_up(1);
                 }
             }
             KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                state.scroll_down(1);
+                if state.in_browse_mode() {
+                    state.browse_move_down(1, true);
+                } else {
+                    state.scroll_down(1);
+                }
+            }
+            // ── Browse mode: fast scroll (Ctrl+Shift+↑/↓) ───────
+            KeyCode::Up
+                if key.modifiers.contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT) =>
+            {
+                state.scroll_up(5);
+            }
+            KeyCode::Down
+                if key.modifiers.contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT) =>
+            {
+                state.scroll_down(5);
+            }
+            // ── Browse mode: vim-style cursor (j/k, input empty) ─
+            KeyCode::Char('k')
+                if state.in_browse_mode()
+                    && state.pending_approval().is_none()
+                    && !state.turn_in_flight =>
+            {
+                state.browse_move_up(1, false);
+            }
+            KeyCode::Char('j')
+                if state.in_browse_mode()
+                    && state.pending_approval().is_none()
+                    && !state.turn_in_flight =>
+            {
+                state.browse_move_down(1, false);
+            }
+            // ── Browse mode: yank selection ──────────────────────
+            KeyCode::Char('y') if state.in_browse_mode() => {
+                if let Some((lo, hi)) = state.browse_range() {
+                    let text = state.entries[lo..=hi]
+                        .iter()
+                        .map(clipboard_text)
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    crate::mouse::copy_osc52(&text);
+                }
             }
             _ => {}
         }
@@ -689,8 +718,8 @@ impl<'a> Chat<'a> {
                 if !matches!(s.session_overlay, SessionOverlay::None) {
                     return false;
                 }
-                // Selection mode: single-char bindings active.
-                if s.selected_entry.is_some() {
+                // Browse mode: single-char bindings active.
+                if s.in_browse_mode() {
                     return false;
                 }
                 // Command mode when input is empty; text mode when typing.
@@ -740,11 +769,13 @@ impl<'a> Chat<'a> {
                         ("Ctrl+D", "Deny"),
                         ("Ctrl+C", "Cancel turn"),
                     ]
-                } else if state.selected_entry.is_some() {
+                } else if state.in_browse_mode() {
                     vec![
-                        ("j / k", "Move cursor"),
-                        ("y", "Yank to clipboard"),
-                        ("Esc", "Deselect"),
+                        ("↑ / k", "Move cursor up"),
+                        ("↓ / j", "Move cursor down"),
+                        ("Shift+↑/↓", "Extend selection"),
+                        ("y", "Yank selection"),
+                        ("Ctrl+↓ / Esc", "Return to input"),
                     ]
                 } else if state.turn_in_flight {
                     vec![("Ctrl+C / Esc", "Cancel turn")]
@@ -756,9 +787,8 @@ impl<'a> Chat<'a> {
                         ("Ctrl+A", "File browser"),
                         ("Ctrl+V", "Paste"),
                         ("/toggle-thinking", "Toggle thinking visibility"),
-                        ("Shift+\u{2191}/\u{2193}", "Scroll conversation"),
-                        ("j / k", "Select entry"),
-                        ("y", "Yank selected entry"),
+                        ("Ctrl+↑", "Browse mode (select entries)"),
+                        ("Shift+↑/↓", "Scroll conversation"),
                         ("t", "Toggle thoughts"),
                         ("Ctrl+N", "New session"),
                         ("Ctrl+S", "Session list"),
@@ -1493,7 +1523,11 @@ pub struct ChatState {
     pending_approval: Option<PendingApproval>,
     pub turn_in_flight: bool,
     show_thoughts: bool,
-    selected_entry: Option<usize>,
+    /// Browse mode cursor (most-recently moved position).
+    browse_cursor: Option<usize>,
+    /// Anchor for range selection; set when Shift+↑/↓ is first pressed.
+    /// Range is `min(anchor, cursor)..=max(anchor, cursor)`.
+    browse_anchor: Option<usize>,
     session_overlay: SessionOverlay,
     scroll_offset: u16,
     pinned_to_bottom: bool,
@@ -1524,7 +1558,8 @@ impl ChatState {
             pending_approval: None,
             turn_in_flight: false,
             show_thoughts: true,
-            selected_entry: None,
+            browse_cursor: None,
+            browse_anchor: None,
             session_overlay: SessionOverlay::None,
             scroll_offset: 0,
             pinned_to_bottom: true,
@@ -1548,6 +1583,74 @@ impl ChatState {
         self.dirty = LinesDirty::Full;
     }
 
+    // ── Browse-mode helpers ───────────────────────────────────────
+
+    /// True when browse mode is active (cursor is set).
+    fn in_browse_mode(&self) -> bool {
+        self.browse_cursor.is_some()
+    }
+
+    /// Enter browse mode: jump cursor to last entry, clear anchor.
+    fn enter_browse_mode(&mut self) {
+        if !self.entries.is_empty() {
+            self.browse_cursor = Some(self.entries.len() - 1);
+            self.browse_anchor = None;
+            self.mark_dirty_full();
+        }
+    }
+
+    /// Leave browse mode: clear both cursor and anchor, return to input.
+    fn exit_browse_mode(&mut self) {
+        self.browse_cursor = None;
+        self.browse_anchor = None;
+        self.mark_dirty_full();
+    }
+
+    /// Move the cursor up by `n` entries.  Clamps at 0.
+    /// If `extend` is true, sets/keeps the anchor for range selection.
+    fn browse_move_up(&mut self, n: usize, extend: bool) {
+        let len = self.entries.len();
+        if len == 0 { return; }
+        let cur = self.browse_cursor.unwrap_or(len - 1);
+        if extend && self.browse_anchor.is_none() {
+            self.browse_anchor = Some(cur);
+        } else if !extend {
+            self.browse_anchor = None;
+        }
+        self.browse_cursor = Some(cur.saturating_sub(n));
+        self.mark_dirty_full();
+    }
+
+    /// Move the cursor down by `n` entries.  Clamps at last entry.
+    /// If `extend` is true, sets/keeps the anchor for range selection.
+    fn browse_move_down(&mut self, n: usize, extend: bool) {
+        let len = self.entries.len();
+        if len == 0 { return; }
+        let cur = self.browse_cursor.unwrap_or(0);
+        if extend && self.browse_anchor.is_none() {
+            self.browse_anchor = Some(cur);
+        } else if !extend {
+            self.browse_anchor = None;
+        }
+        self.browse_cursor = Some((cur + n).min(len - 1));
+        self.mark_dirty_full();
+    }
+
+    /// The selected range as `(lo, hi)` indices, inclusive.
+    /// Returns `None` when not in browse mode.
+    fn browse_range(&self) -> Option<(usize, usize)> {
+        let cur = self.browse_cursor?;
+        let anchor = self.browse_anchor.unwrap_or(cur);
+        let lo = cur.min(anchor);
+        let hi = cur.max(anchor);
+        Some((lo, hi))
+    }
+
+    /// True when `idx` falls inside the current browse selection range.
+    fn is_in_browse_range(&self, idx: usize) -> bool {
+        self.browse_range().map_or(false, |(lo, hi)| idx >= lo && idx <= hi)
+    }
+
     /// Rebuild (or incrementally extend) the cached rendered lines from committed entries.
     fn rebuild_lines(&mut self) {
         // Cap the render window so cached_lines (and its per-frame clone) stays
@@ -1556,8 +1659,9 @@ impl ChatState {
         const MAX_RENDERED_ENTRIES: usize = 1_000;
         let total = self.entries.len();
         let natural_start = total.saturating_sub(MAX_RENDERED_ENTRIES);
-        let start = if let Some(sel) = self.selected_entry {
-            natural_start.min(sel)
+        // Ensure the browse selection range is always visible.
+        let start = if let Some((lo, _hi)) = self.browse_range() {
+            natural_start.min(lo)
         } else {
             natural_start
         };
@@ -1568,14 +1672,13 @@ impl ChatState {
         // re-running markdown_to_lines on every prior AgentMessage.
         if self.dirty == LinesDirty::Appended && start == self.cached_render_start {
             let render_from = start + self.cached_entry_count;
-            let selected = self.selected_entry;
             let show_thoughts = self.show_thoughts;
             let mut new_lines = Vec::new();
             for (rel_idx, entry) in self.entries[render_from..].iter().enumerate() {
                 let abs_idx = render_from + rel_idx;
                 render_entry_into(
                     entry,
-                    selected == Some(abs_idx),
+                    self.is_in_browse_range(abs_idx),
                     show_thoughts,
                     &mut new_lines,
                 );
@@ -1588,11 +1691,10 @@ impl ChatState {
 
         // ── Full rebuild path ─────────────────────────────────────
         let mut lines = Vec::new();
-        let selected = self.selected_entry;
         let show_thoughts = self.show_thoughts;
         for (rel_idx, entry) in self.entries[start..].iter().enumerate() {
             let abs_idx = start + rel_idx;
-            render_entry_into(entry, selected == Some(abs_idx), show_thoughts, &mut lines);
+            render_entry_into(entry, self.is_in_browse_range(abs_idx), show_thoughts, &mut lines);
         }
         self.cached_lines = lines;
         self.cached_entry_count = total - start;
@@ -1807,7 +1909,8 @@ impl ChatState {
         self.cached_render_start = 0;
         self.pending_approval = None;
         self.turn_in_flight = false;
-        self.selected_entry = None;
+        self.browse_cursor = None;
+        self.browse_anchor = None;
     }
 }
 
