@@ -4,6 +4,13 @@ A **channel** is a messaging surface the agent talks through. One ZeroClaw insta
 
 Channels are implementations of the `Channel` trait in `zeroclaw-api`. Each one is feature-gated at compile time, so a minimal build only includes the channels you want.
 
+The default ZeroClaw build includes a lean channel bundle: ACP, webhook, email, and Telegram. These cover local/editor sessions, gateway ingress, and common first-run external messaging without compiling every bundled platform integration. Build with `--features channels-full` when you want the historical broad channel set, or use individual `channel-*` features for selective builds:
+
+```bash
+cargo build --features channels-full
+cargo build --no-default-features --features "agent-runtime,gateway,channel-discord"
+```
+
 ## Categories
 
 ### Chat platforms
@@ -15,7 +22,7 @@ Real-time messaging where the agent can hold a conversation, get notified of new
 | Matrix | `channel-matrix` | [Matrix](./matrix.md) |
 | Mattermost | `channel-mattermost` | [Mattermost](./mattermost.md) |
 | LINE | `channel-line` | [LINE](./line.md) |
-| Nextcloud Talk | `channel-nextcloud-talk` | [Nextcloud Talk](./nextcloud-talk.md) |
+| Nextcloud Talk | `channel-nextcloud` | [Nextcloud Talk](./nextcloud-talk.md) |
 | Discord, Slack, Telegram, Signal, iMessage, WeCom Bot Webhook, WeCom AI Bot Long Connection, WeChat personal iLink Bot, DingTalk, Lark, QQ, IRC, Mochat, Notion | per channel | [Other chat platforms](./chat-others.md) |
 
 ### Social & broadcast
@@ -36,7 +43,7 @@ See [Social channels](./social.md).
 | Channel | Feature flag | Notes |
 |---|---|---|
 | IMAP / SMTP | `channel-email` | Classic poll-based inbox |
-| Gmail Push | `channel-gmail-push` | Google Pub/Sub push notifications — real-time, no polling |
+| Gmail Push | `channel-email` | Google Pub/Sub push notifications — real-time, no polling |
 
 See [Email](./email.md).
 
@@ -46,8 +53,8 @@ See [Email](./email.md).
 |---|---|---|
 | ClawdTalk | `channel-clawdtalk` | Telnyx SIP real-time voice |
 | Voice Call | `channel-voice-call` | Twilio / Telnyx / Plivo |
-| Voice Wake | `channel-voice-wake` | Local wake-word detection |
-| TTS | `channel-tts` | Outbound speech synthesis (OpenAI, ElevenLabs, Google Cloud, Edge, Piper) |
+| Voice Wake | `voice-wake` | Local wake-word detection |
+| TTS | always compiled with channel support | Outbound speech synthesis (OpenAI, ElevenLabs, Google Cloud, Edge, Piper) |
 
 See [Voice & telephony](./voice.md).
 
@@ -55,10 +62,10 @@ See [Voice & telephony](./voice.md).
 
 | Channel | Feature flag | Shape |
 |---|---|---|
-| Webhook | (always on with gateway) | Inbound HTTP → agent |
+| Webhook | `channel-webhook` | Inbound HTTP → agent |
 | CLI | always on | Local stdin/stdout |
 | Gateway REST/WS | always on | HTTP + WebSocket |
-| ACP (Agent Client Protocol) | (always on with runtime) | JSON-RPC 2.0 over stdio — editor/IDE sessions |
+| ACP (Agent Client Protocol) | `channel-acp-server` | JSON-RPC 2.0 over stdio — editor/IDE sessions |
 
 See [Webhooks](./webhook.md) and [ACP](./acp.md).
 

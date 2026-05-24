@@ -89,3 +89,61 @@ pub fn compiled_channels(cfg: &ChannelsConfig) -> Vec<ChannelInfo> {
         .filter(|info| compiled.contains(&info.name))
         .collect()
 }
+
+/// Returns whether a schema channel type key is compiled into this binary.
+///
+/// Accepts both kebab-case keys emitted by the config schema and legacy
+/// underscore spellings used in channel references.
+pub fn is_channel_type_compiled(channel_type: &str) -> bool {
+    match channel_type {
+        "telegram" => cfg!(feature = "channel-telegram"),
+        "discord" => cfg!(feature = "channel-discord"),
+        "slack" => cfg!(feature = "channel-slack"),
+        "mattermost" => cfg!(feature = "channel-mattermost"),
+        "imessage" => cfg!(feature = "channel-imessage"),
+        "matrix" => cfg!(feature = "channel-matrix"),
+        "signal" => cfg!(feature = "channel-signal"),
+        "whatsapp" => cfg!(feature = "channel-whatsapp-cloud"),
+        "whatsapp-web" | "whatsapp_web" => cfg!(feature = "whatsapp-web"),
+        "linq" => cfg!(feature = "channel-linq"),
+        "wati" => cfg!(feature = "channel-wati"),
+        "nextcloud-talk" | "nextcloud_talk" => cfg!(feature = "channel-nextcloud"),
+        "email" | "gmail-push" | "gmail_push" => cfg!(feature = "channel-email"),
+        "irc" => cfg!(feature = "channel-irc"),
+        "lark" | "feishu" => cfg!(feature = "channel-lark"),
+        "dingtalk" => cfg!(feature = "channel-dingtalk"),
+        "wecom" => cfg!(feature = "channel-wecom"),
+        "wecom-ws" | "wecom_ws" => cfg!(feature = "channel-wecom-ws"),
+        "wechat" => cfg!(feature = "channel-wechat"),
+        "qq" => cfg!(feature = "channel-qq"),
+        "nostr" => cfg!(feature = "channel-nostr"),
+        "clawdtalk" => cfg!(feature = "channel-clawdtalk"),
+        "reddit" => cfg!(feature = "channel-reddit"),
+        "bluesky" => cfg!(feature = "channel-bluesky"),
+        "twitter" => cfg!(feature = "channel-twitter"),
+        "mochat" => cfg!(feature = "channel-mochat"),
+        "line" => cfg!(feature = "channel-line"),
+        "voice-call" | "voice_call" => cfg!(feature = "channel-voice-call"),
+        "voice-wake" | "voice_wake" => cfg!(feature = "voice-wake"),
+        "mqtt" => cfg!(feature = "channel-mqtt"),
+        "webhook" => cfg!(feature = "channel-webhook"),
+        "acp-server" | "acp_server" => cfg!(feature = "channel-acp-server"),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_channel_type_compiled;
+
+    #[cfg(feature = "default-channels")]
+    #[test]
+    fn channel_type_compilation_matches_default_bundle() {
+        assert!(is_channel_type_compiled("telegram"));
+        assert!(is_channel_type_compiled("email"));
+        assert!(is_channel_type_compiled("webhook"));
+        assert!(is_channel_type_compiled("acp-server"));
+        assert!(!is_channel_type_compiled("nextcloud-talk"));
+        assert!(!is_channel_type_compiled("linq"));
+    }
+}

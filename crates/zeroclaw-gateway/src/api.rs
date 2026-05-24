@@ -1155,16 +1155,23 @@ pub async fn handle_api_channels(
         .into_iter()
         .map(|info| {
             let composite = format!("{}.{}", info.channel_type, info.alias);
+            let compiled = zeroclaw_channels::listing::is_channel_type_compiled(&info.channel_type);
+            let (status, health) = match (compiled, info.enabled) {
+                (false, _) => ("not_compiled", "unavailable"),
+                (true, false) => ("disabled", "disabled"),
+                (true, true) => ("active", "healthy"),
+            };
             serde_json::json!({
                 "name": composite,
                 "type": info.channel_type,
                 "alias": info.alias,
                 "owning_agent": info.owning_agent,
                 "enabled": info.enabled,
-                "status": "active",
+                "compiled": compiled,
+                "status": status,
                 "message_count": 0,
                 "last_message_at": null,
-                "health": "healthy",
+                "health": health,
             })
         })
         .collect();
@@ -1824,13 +1831,21 @@ mod tests {
             rate_limiter: Arc::new(GatewayRateLimiter::new(100, 100, 100)),
             auth_limiter: Arc::new(crate::auth_rate_limit::AuthRateLimiter::new()),
             idempotency_store: Arc::new(IdempotencyStore::new(Duration::from_secs(300), 1000)),
+            #[cfg(feature = "channel-whatsapp-cloud")]
             whatsapp: None,
+            #[cfg(feature = "channel-whatsapp-cloud")]
             whatsapp_app_secret: None,
+            #[cfg(feature = "channel-linq")]
             linq: None,
+            #[cfg(feature = "channel-linq")]
             linq_signing_secret: None,
+            #[cfg(feature = "channel-nextcloud")]
             nextcloud_talk: None,
+            #[cfg(feature = "channel-nextcloud")]
             nextcloud_talk_webhook_secret: None,
+            #[cfg(feature = "channel-wati")]
             wati: None,
+            #[cfg(feature = "channel-email")]
             gmail_push: None,
             observer: Arc::new(zeroclaw_runtime::observability::NoopObserver),
             tools_registry: Arc::new(Vec::new()),
@@ -1862,6 +1877,44 @@ mod tests {
             .expect("response body")
             .to_bytes();
         serde_json::from_slice(&body).expect("valid json response")
+    }
+
+    #[cfg(not(feature = "channel-nextcloud"))]
+    #[tokio::test]
+    async fn api_channels_marks_configured_uncompiled_channel_unavailable() {
+        let mut config = zeroclaw_config::schema::Config::default();
+        config.channels.nextcloud_talk.insert(
+            "default".to_string(),
+            zeroclaw_config::schema::NextcloudTalkConfig {
+                enabled: true,
+                base_url: "https://cloud.example.com".to_string(),
+                app_token: "test-token".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let response = handle_api_channels(State(test_state(config)), HeaderMap::new())
+            .await
+            .into_response();
+        let json = response_json(response).await;
+        let channels = json["channels"].as_array().expect("channels array");
+        let nextcloud = channels
+            .iter()
+            .find(|channel| channel["alias"] == "default")
+            .expect("configured channel is listed");
+
+        assert!(
+            matches!(
+                nextcloud["type"].as_str(),
+                Some("nextcloud-talk" | "nextcloud_talk")
+            ),
+            "unexpected channel type: {}",
+            nextcloud["type"]
+        );
+        assert_eq!(nextcloud["enabled"], true);
+        assert_eq!(nextcloud["compiled"], false);
+        assert_eq!(nextcloud["status"], "not_compiled");
+        assert_eq!(nextcloud["health"], "unavailable");
     }
 
     fn test_state_with_session_backend(
