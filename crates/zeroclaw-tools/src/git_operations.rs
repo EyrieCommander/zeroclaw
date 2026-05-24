@@ -468,13 +468,40 @@ impl GitOperationsTool {
                 anyhow::Error::msg("Missing 'message' parameter")
             })?;
 
-        // Sanitize commit message
-        let sanitized = message
-            .lines()
-            .map(|l| l.trim())
-            .filter(|l| !l.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n");
+        // Sanitize commit message.
+        // Trim trailing whitespace from each line but preserve blank lines —
+        // git uses the blank line between the subject and the body to separate
+        // them, so stripping blank lines collapses the entire message onto one
+        // line in `git log --oneline` and breaks `git log --format=%b`.
+        // We do strip leading blank lines and collapse runs of 3+ consecutive
+        // blank lines down to 2 (one blank line = paragraph break is fine;
+        // more than that is just noise).
+        let trimmed_lines: Vec<&str> = message.lines().map(|l| l.trim_end()).collect();
+        // Drop leading blank lines.
+        let trimmed_lines = trimmed_lines
+            .iter()
+            .copied()
+            .skip_while(|l| l.is_empty())
+            .collect::<Vec<_>>();
+        // Collapse runs of more than 2 consecutive blank lines to 2.
+        let mut sanitized_lines: Vec<&str> = Vec::with_capacity(trimmed_lines.len());
+        let mut consecutive_blanks = 0usize;
+        for line in &trimmed_lines {
+            if line.is_empty() {
+                consecutive_blanks += 1;
+                if consecutive_blanks <= 2 {
+                    sanitized_lines.push(line);
+                }
+            } else {
+                consecutive_blanks = 0;
+                sanitized_lines.push(line);
+            }
+        }
+        // Drop trailing blank lines.
+        while sanitized_lines.last().is_some_and(|l: &&str| l.is_empty()) {
+            sanitized_lines.pop();
+        }
+        let sanitized = sanitized_lines.join("\n");
 
         if sanitized.is_empty() {
             anyhow::bail!("Commit message cannot be empty");
@@ -1267,6 +1294,70 @@ mod tests {
                 .as_deref()
                 .unwrap_or("")
                 .contains("Unknown operation")
+        );
+    }
+
+    /// The blank line between the subject and body must be preserved so that
+    /// `git log --format=%b` and `git log --oneline` both work correctly.
+    /// Before the fix, `filter(|l| !l.is_empty())` stripped all blank lines
+    /// and collapsed the whole message onto a single line.
+    #[tokio::test]
+    async fn commit_message_preserves_blank_line_between_subject_and_body() {
+        let tmp = TempDir::new().unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        // Create an initial commit so HEAD exists.
+        std::fs::write(tmp.path().join("README.md"), "hello").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+
+        let tool = test_tool(tmp.path());
+
+        let msg = "fix(foo): subject line\n\nThis is the body paragraph.\n\nSecond paragraph.";
+        let result = tool
+            .execute(json!({"operation": "commit", "message": msg}))
+            .await
+            .unwrap();
+        assert!(result.success, "commit failed: {:?}", result.error);
+
+        // Read back the raw commit message via git log.
+        let log_out = std::process::Command::new("git")
+            .args(["log", "-1", "--format=%B"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        let log_msg = String::from_utf8_lossy(&log_out.stdout);
+
+        // Subject line must be on its own line.
+        assert!(
+            log_msg.starts_with("fix(foo): subject line\n"),
+            "subject line missing or not first: {log_msg:?}"
+        );
+        // A blank line must follow the subject.
+        assert!(
+            log_msg.contains("fix(foo): subject line\n\n"),
+            "blank line between subject and body missing: {log_msg:?}"
+        );
+        // Body text must be present.
+        assert!(
+            log_msg.contains("This is the body paragraph."),
+            "body paragraph missing: {log_msg:?}"
         );
     }
 
