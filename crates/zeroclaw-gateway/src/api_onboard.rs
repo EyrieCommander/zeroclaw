@@ -116,6 +116,8 @@ async fn catalog_models_for_config(
                 .as_deref()
                 .map(str::trim)
                 .is_some_and(|uri| !uri.is_empty());
+        let alias_catalog_must_match_alias =
+            has_alias_endpoint || !model_provider_family_has_public_catalog(model_provider);
         match zeroclaw_providers::create_model_provider_for_alias(
             cfg,
             model_provider,
@@ -127,10 +129,7 @@ async fn catalog_models_for_config(
                 Ok(models) => Some((models, true)),
                 Err(e) => {
                     record_catalog_models_error(model_provider, Some(alias), &e);
-                    if local
-                        && (has_alias_endpoint
-                            || !model_provider_family_has_public_catalog(model_provider))
-                    {
+                    if alias_catalog_must_match_alias {
                         return ModelsResponse {
                             model_provider: model_provider.to_string(),
                             models: Vec::new(),
@@ -143,10 +142,7 @@ async fn catalog_models_for_config(
             },
             Err(e) => {
                 record_catalog_models_error(model_provider, Some(alias), &e);
-                if local
-                    && (has_alias_endpoint
-                        || !model_provider_family_has_public_catalog(model_provider))
-                {
+                if alias_catalog_must_match_alias {
                     return ModelsResponse {
                         model_provider: model_provider.to_string(),
                         models: Vec::new(),
@@ -1770,6 +1766,26 @@ mod tests {
         let resp = catalog_models_for_config(&cfg, "ollama", Some("default")).await;
 
         assert!(resp.local);
+        assert!(!resp.live);
+        assert!(resp.models.is_empty());
+    }
+
+    #[tokio::test]
+    async fn catalog_models_marks_unreachable_hosted_alias_endpoint_not_live() {
+        let mut cfg = zeroclaw_config::schema::Config::default();
+        cfg.create_map_key("providers.models.moonshot", "default")
+            .unwrap();
+        cfg.set_prop_persistent("providers.models.moonshot.default.api-key", "sk-test")
+            .unwrap();
+        cfg.set_prop_persistent(
+            "providers.models.moonshot.default.uri",
+            "http://127.0.0.1:1",
+        )
+        .unwrap();
+
+        let resp = catalog_models_for_config(&cfg, "moonshot", Some("default")).await;
+
+        assert!(!resp.local);
         assert!(!resp.live);
         assert!(resp.models.is_empty());
     }
