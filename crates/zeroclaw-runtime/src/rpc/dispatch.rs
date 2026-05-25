@@ -2103,25 +2103,15 @@ fn notification_for_turn_event(
             arguments_summary: arguments_summary.clone(),
             timeout_secs: *timeout_secs,
         },
-        TurnEvent::Usage { input_tokens, cached_input_tokens, output_tokens, .. } => {
-            // Cumulative session-token meter: every token the provider reports
-            // (fresh input + cached input + output) is summed and forwarded.
-            // The TUI adds this to its session-cumulative counter on arrival.
-            let combined = {
-                let mut total: Option<u64> = None;
-                let mut add = |v: Option<u64>| {
-                    if let Some(x) = v {
-                        total = Some(total.unwrap_or(0).saturating_add(x));
-                    }
-                };
-                add(*input_tokens);
-                add(*cached_input_tokens);
-                add(*output_tokens);
-                total
-            };
+        TurnEvent::Usage { input_tokens, cached_input_tokens: _, output_tokens: _, .. } => {
+            // `input_tokens` per TokenUsage contract is the *total* prompt
+            // size (uncached + cached). `cached_input_tokens` is a subset
+            // and must NOT be added — doing so double-counts cache reads
+            // and inflates the displayed context size (was showing ~2× the
+            // real value on Anthropic / OpenAI sessions with prompt cache).
             SessionUpdateEvent::ContextUsage {
                 session_id: session_id.to_string(),
-                input_tokens: combined,
+                input_tokens: *input_tokens,
                 max_context_tokens,
             }
         },
@@ -2248,33 +2238,43 @@ mod tests {
         let v = parse(&json);
         assert_eq!(v["params"]["type"], "context_usage");
         assert_eq!(v["params"]["session_id"], "s1");
-        // Cumulative meter: 100 input + 50 output = 150.
-        assert_eq!(v["params"]["input_tokens"], 150);
+        // Context size is the prompt the model just consumed = input_tokens.
+        // Output tokens are the model's reply, not part of the prompt size.
+        // cached_input_tokens is a *subset* of input_tokens per the
+        // TokenUsage contract and must NOT be added (double-counts).
+        assert_eq!(v["params"]["input_tokens"], 100);
         assert_eq!(v["params"]["max_context_tokens"], 32_000);
     }
 
     #[test]
-    fn usage_event_without_input_tokens_still_emits() {
+    fn usage_event_without_input_tokens_emits_null() {
         let event = TurnEvent::Usage {
             input_tokens: None,
             cached_input_tokens: None,
             output_tokens: Some(50),
             cost_usd: None,
         };
-        // Output-only is still credited (sum = 50).
         let json = notification_for_turn_event("s1", &event, None).unwrap();
         let v = parse(&json);
         assert_eq!(v["params"]["type"], "context_usage");
-        assert_eq!(v["params"]["input_tokens"], 50);
+        // No input_tokens reported → field omitted (skip_serializing_if).
+        assert!(
+            v["params"].get("input_tokens").is_none(),
+            "absent input_tokens should not be synthesized from output_tokens"
+        );
     }
 
     #[test]
-    fn usage_event_combines_all_token_categories() {
-        // The meter sums every category the provider reports: direct input,
-        // cached input, and output. 5_000 + 150_000 + 200 = 155_200.
+    fn usage_event_does_not_double_count_cached_subset() {
+        // Per TokenUsage contract, cached_input_tokens is a *subset* of
+        // input_tokens. The ACP ContextUsage notification must report
+        // input_tokens as-is — the cached subset is already included.
+        //
+        // Realistic OpenAI-shape: prompt_tokens = 25_000 (already total),
+        // cached_tokens = 15_000 (subset). Context size = 25_000, NOT 40_000.
         let event = TurnEvent::Usage {
-            input_tokens: Some(5_000),
-            cached_input_tokens: Some(150_000),
+            input_tokens: Some(25_000),
+            cached_input_tokens: Some(15_000),
             output_tokens: Some(200),
             cost_usd: None,
         };
@@ -2282,15 +2282,15 @@ mod tests {
         let v = parse(&json);
         assert_eq!(v["params"]["type"], "context_usage");
         assert_eq!(
-            v["params"]["input_tokens"],
-            155_200,
-            "input_tokens must sum input + cached + output"
+            v["params"]["input_tokens"], 25_000,
+            "input_tokens is reported as-is — cached subset must not be added"
         );
     }
 
     #[test]
-    fn usage_event_only_cached_tokens_still_emits_combined() {
-        // Edge case: provider reports only cached tokens (input_tokens = None).
+    fn usage_event_only_cached_tokens_emits_null() {
+        // Edge case: provider reports only cached without input total.
+        // Without a known total this is ambiguous, so we don't synthesize one.
         let event = TurnEvent::Usage {
             input_tokens: None,
             cached_input_tokens: Some(80_000),
@@ -2299,8 +2299,10 @@ mod tests {
         };
         let json = notification_for_turn_event("s1", &event, Some(100_000)).unwrap();
         let v = parse(&json);
-        // 80_000 + 100 = 80_100.
-        assert_eq!(v["params"]["input_tokens"], 80_100);
+        assert!(
+            v["params"].get("input_tokens").is_none(),
+            "cached-only is ambiguous; do not fabricate a total"
+        );
     }
 
     #[test]

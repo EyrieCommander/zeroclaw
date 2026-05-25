@@ -873,21 +873,22 @@ async fn process_chat_message(
                         let _ = sender.send(Message::Text(frame.to_string().into())).await;
                     }
                 }
-                event_opt = event_rx.recv() => {
+                    event_opt = event_rx.recv() => {
                     let Some(event) = event_opt else { break };
                     let ws_msg = match event {
                         TurnEvent::Usage {
                             input_tokens,
-                            cached_input_tokens,
+                            cached_input_tokens: _,
                             output_tokens,
                             cost_usd: _,
                         } => {
+                            // `input_tokens` per TokenUsage contract is
+                            // the *total* prompt size (uncached + cached).
+                            // `cached_input_tokens` is a subset and must
+                            // NOT be added — that would double-count
+                            // cache reads.
                             if let Some(it) = input_tokens {
                                 total_input_tokens = Some(total_input_tokens.unwrap_or(0) + it);
-                            }
-                            // Prompt-cache reads count against the context window.
-                            if let Some(ct) = cached_input_tokens {
-                                total_input_tokens = Some(total_input_tokens.unwrap_or(0) + ct);
                             }
                             if let Some(ot) = output_tokens {
                                 total_output_tokens = Some(total_output_tokens.unwrap_or(0) + ot);

@@ -539,10 +539,23 @@ impl AnthropicModelProvider {
         let mut text_parts = Vec::new();
         let mut tool_calls = Vec::new();
 
-        let usage = response.usage.map(|u| TokenUsage {
-            input_tokens: u.input_tokens,
-            output_tokens: u.output_tokens,
-            cached_input_tokens: u.cache_read_input_tokens,
+        let usage = response.usage.map(|u| {
+            // Anthropic returns `input_tokens` as the *uncached* portion and
+            // `cache_read_input_tokens` separately. Our TokenUsage contract is
+            // that `input_tokens` is the **total** prompt size (uncached +
+            // cached), and `cached_input_tokens` is a subset. Normalize here.
+            let uncached = u.input_tokens.unwrap_or(0);
+            let cached = u.cache_read_input_tokens.unwrap_or(0);
+            let total = uncached.saturating_add(cached);
+            TokenUsage {
+                input_tokens: if u.input_tokens.is_some() || u.cache_read_input_tokens.is_some() {
+                    Some(total)
+                } else {
+                    None
+                },
+                output_tokens: u.output_tokens,
+                cached_input_tokens: u.cache_read_input_tokens,
+            }
         });
 
         for block in response.content {
@@ -794,9 +807,19 @@ impl AnthropicModelProvider {
                         "stream: message_stop"
                     );
                     if input_tokens.is_some() || output_tokens.is_some() {
+                        // Normalize to TokenUsage contract: `input_tokens` is
+                        // the *total* prompt size (uncached + cached).
+                        // Anthropic streams report `input_tokens` as the
+                        // uncached portion only; fold cached reads in here.
+                        let normalized_input = match (input_tokens, cached_input_tokens) {
+                            (Some(u), Some(c)) => Some(u.saturating_add(c)),
+                            (Some(u), None) => Some(u),
+                            (None, Some(c)) => Some(c),
+                            (None, None) => None,
+                        };
                         let _ = tx
                             .send(Ok(StreamEvent::Usage(TokenUsage {
-                                input_tokens,
+                                input_tokens: normalized_input,
                                 output_tokens,
                                 cached_input_tokens,
                             })))
@@ -1314,8 +1337,8 @@ data: {\"type\":\"message_stop\"}\n\n"
             .unwrap();
         assert_eq!(
             usage.input_tokens,
-            Some(314),
-            "input_tokens from message_start usage frame"
+            Some(356),
+            "input_tokens must be total (uncached 314 + cached 42) per TokenUsage contract"
         );
         assert_eq!(
             usage.output_tokens,

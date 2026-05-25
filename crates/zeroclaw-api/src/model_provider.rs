@@ -56,11 +56,26 @@ pub struct ToolCall {
 }
 
 /// Raw token counts from a single LLM API response.
+///
+/// Contract: `input_tokens` is the **total prompt size** sent to the model
+/// (uncached + cached). `cached_input_tokens` is the **subset** of
+/// `input_tokens` that was served from the prompt cache. So
+/// `cached_input_tokens <= input_tokens`, and the uncached/billable portion
+/// is `input_tokens - cached_input_tokens`.
+///
+/// Providers normalize to this shape:
+/// - OpenAI/Compatible: `prompt_tokens` is already total, `cached_tokens` is
+///   already a subset — used directly.
+/// - Anthropic: `input_tokens` from the API is the *uncached* portion, and
+///   `cache_read_input_tokens` is the cached portion. The provider adapter
+///   must add them to produce a total before constructing `TokenUsage`.
 #[derive(Debug, Clone, Default)]
 pub struct TokenUsage {
+    /// Total prompt size: uncached + cached input tokens.
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
-    /// Tokens served from the model_provider's prompt cache (Anthropic `cache_read_input_tokens`,
+    /// Subset of `input_tokens` that was served from the model_provider's
+    /// prompt cache (Anthropic `cache_read_input_tokens`,
     /// OpenAI `prompt_tokens_details.cached_tokens`).
     pub cached_input_tokens: Option<u64>,
 }
