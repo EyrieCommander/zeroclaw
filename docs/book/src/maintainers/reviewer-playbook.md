@@ -80,6 +80,8 @@ Vague comments create avoidable round trips. If you find yourself writing "this 
 
 The same risk-routing principle applies to issues, but the labels and signals are different.
 
+Issue `risk:*` labels describe likely fix blast radius from the report. PR `risk:*` labels describe the actual diff under review. Reassess risk when an issue becomes a PR instead of carrying the issue label forward automatically.
+
 ### Triage labels
 
 | Label | When to use |
@@ -87,7 +89,12 @@ The same risk-routing principle applies to issues, but the labels and signals ar
 | `r:needs-repro` | Bug report missing a deterministic repro. Block deeper triage on this. |
 | `r:support` | Usage or help question better routed outside the bug backlog. |
 | `duplicate` / `invalid` | Non-actionable noise. Close with a polite pointer. |
-| `status:no-stale` | Accepted work waiting on an external blocker. Keeps the issue out of stale automation and should have a visible reason. |
+| `status:accepted` | The team has accepted the RFC or work item. Add `status:no-stale` only when the issue also needs stale protection. |
+| `status:blocked` | Valid work is waiting on an external dependency, maintainer decision, or linked prerequisite. Record the blocker; this is stale protection only while that blocker remains unresolved. |
+| `status:in-progress` | An open PR is actively targeting the issue. Re-check live PR state before relying on it during stale passes. |
+| `status:no-stale` | Accepted or otherwise long-lived work should stay open and is not already protected by another stale exclusion. Record the reason in a maintainer comment, issue body, or tracker entry. |
+| `good first issue` | XS/S, self-contained, documented work with clear acceptance criteria, relevant code or docs links, a named mentor or contact, and low onboarding risk. |
+| `help wanted` | Actionable, unblocked work maintainers want external help on and can review. Do not use it as a generic valid/unowned marker. |
 
 If logs or payloads in the report contain personal identifiers or sensitive data, request redaction before deeper triage. The triage process must not propagate the exposure.
 
@@ -123,7 +130,7 @@ This keeps context loss low and avoids the next reviewer redoing the same fetche
 
 ## Weekly queue hygiene
 
-- Walk the stale queue. Apply `status:no-stale` only to accepted-but-blocked work with a visible reason.
+- Walk the stale queue. Apply `status:no-stale` only when accepted or otherwise long-lived work has a recorded reason to stay open and is not already protected by another stale exclusion.
 - Prioritize `size: XS/S` bug and security PRs first.
 - Convert recurring support questions into docs improvements and auto-response guidance.
 
