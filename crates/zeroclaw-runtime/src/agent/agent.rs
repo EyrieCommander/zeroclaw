@@ -572,6 +572,13 @@ impl Agent {
         self.model_name = model_name;
     }
 
+    /// Return the names of all registered tools.  Test-only — avoids
+    /// exposing `Box<dyn Tool>` across the crate boundary.
+    #[cfg(test)]
+    pub fn tool_names(&self) -> Vec<&str> {
+        self.tools.iter().map(|t| t.name()).collect()
+    }
+
     /// Hydrate the agent with prior chat messages (e.g. from a session backend).
     ///
     /// Ensures a system prompt is prepended if history is empty, then appends all
@@ -1455,6 +1462,33 @@ impl Agent {
     }
 
     pub async fn turn(&mut self, user_message: &str) -> Result<String> {
+        // Refuse empty/whitespace-only turns. An empty `user_message` would
+        // append a user-role message containing only the timestamp prefix
+        // (`[<now>] `) to history, leaving the model to face a system prompt
+        // immediately followed by a blank user turn. On Claude this surfaces
+        // as the underlying `<<HUMAN_CONVERSATION_START>>` template sentinel
+        // bleeding into the visible response ("there's no human turn yet…"),
+        // because the model has nothing to respond to and narrates the
+        // structural marker instead. Stopping it here keeps history clean
+        // and prevents wasted model spend on garbage turns.
+        if user_message.trim().is_empty() {
+            ::zeroclaw_log::record!(
+                WARN,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Reject)
+                    .with_category(::zeroclaw_log::EventCategory::Agent)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                    .with_attrs(::serde_json::json!({
+                        "reason": "empty_user_message",
+                        "entry_point": "Agent::turn",
+                        "raw_len": user_message.len(),
+                    })),
+                "Refusing blank user turn (would emit timestamp-only message and risk prompt-template bleed-through)"
+            );
+            return Err(anyhow::Error::msg(
+                "empty user message: refusing to dispatch a blank turn",
+            ));
+        }
+
         if self.history.is_empty() {
             let system_prompt = self.build_system_prompt()?;
             self.history
@@ -1635,6 +1669,13 @@ impl Agent {
         event_tx: tokio::sync::mpsc::Sender<TurnEvent>,
         cancel_token: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<(String, Vec<ConversationMessage>)> {
+        // See `Agent::turn` for the rationale. Same guard: blank input would
+        // push a timestamp-only user message into history and the model would
+        // narrate the trailing prompt-template sentinel instead of replying.
+        if user_message.trim().is_empty() {
+            anyhow::bail!("empty user message: refusing to dispatch a blank turn");
+        }
+
         // ── Preamble (identical to turn) ───────────────────────────────
         if self.history.is_empty() {
             let system_prompt = self.build_system_prompt()?;
@@ -2047,7 +2088,7 @@ impl Agent {
             .expect("CLI channel factory not registered — call register_cli_channel_fn at startup")(
         );
 
-        let listen_handle = tokio::spawn(async move {
+        let listen_handle = zeroclaw_api::spawn!(async move {
             let _ = zeroclaw_api::channel::Channel::listen(&*cli, tx).await;
         });
 
@@ -3132,7 +3173,7 @@ mod tests {
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mock_addr = listener.local_addr().unwrap();
-        let server_handle = tokio::spawn(async move {
+        let server_handle = zeroclaw_api::spawn!(async move {
             axum::serve(listener, app).await.unwrap();
         });
 
@@ -4442,118 +4483,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn exclude_memory_strips_memory_tools() {
-        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
-        let mem: Arc<dyn Memory> = Arc::new(zeroclaw_memory::NoneMemory::new("none"));
-
-        let agent = Agent::builder()
-            .model_provider(Box::new(MockModelProvider {
-                responses: Mutex::new(vec![]),
-            }))
-            .tools(vec![
-                Box::new(NamedMockTool::new("shell")),
-                Box::new(NamedMockTool::new("memory_recall")),
-                Box::new(NamedMockTool::new("memory_store")),
-                Box::new(NamedMockTool::new("memory_forget")),
-                Box::new(NamedMockTool::new("memory_export")),
-                Box::new(NamedMockTool::new("memory_purge")),
-                Box::new(NamedMockTool::new("file_read")),
-            ])
-            .memory(mem)
-            .observer(observer)
-            .tool_dispatcher(Box::new(XmlToolDispatcher))
-            .workspace_dir(std::path::PathBuf::from("/tmp"))
-            .exclude_memory(true)
-            .build()
-            .expect("agent builder should succeed");
-
-        let names: Vec<&str> = agent.tools.iter().map(|t| t.name()).collect();
-        assert_eq!(names, &["shell", "file_read"]);
-    }
-
-    #[test]
-    fn exclude_memory_forces_none_backend_and_no_autosave() {
-        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
-        // Provide a real memory backend — exclude_memory should override it.
-        let workspace = tempfile::TempDir::new().expect("temp dir");
-        let mem: Arc<dyn Memory> = Arc::from(
-            zeroclaw_memory::create_memory(
-                &zeroclaw_config::schema::MemoryConfig {
-                    backend: "sqlite".into(),
-                    ..Default::default()
-                },
-                workspace.path(),
-                None,
-            )
-            .expect("memory creation should succeed"),
-        );
-
-        let agent = Agent::builder()
-            .model_provider(Box::new(MockModelProvider {
-                responses: Mutex::new(vec![]),
-            }))
-            .tools(vec![Box::new(NamedMockTool::new("shell"))])
-            .memory(mem)
-            .observer(observer)
-            .tool_dispatcher(Box::new(XmlToolDispatcher))
-            .workspace_dir(workspace.path().to_path_buf())
-            .auto_save(true)
-            .exclude_memory(true)
-            .build()
-            .expect("agent builder should succeed");
-
-        assert_eq!(
-            agent.memory.name(),
-            "none",
-            "memory backend must be NoneMemory"
-        );
-        assert!(!agent.auto_save, "auto_save must be forced off");
-    }
-
-    #[test]
-    fn exclude_memory_false_preserves_memory() {
-        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
-        let workspace = tempfile::TempDir::new().expect("temp dir");
-        let mem: Arc<dyn Memory> = Arc::from(
-            zeroclaw_memory::create_memory(
-                &zeroclaw_config::schema::MemoryConfig {
-                    backend: "sqlite".into(),
-                    ..Default::default()
-                },
-                workspace.path(),
-                None,
-            )
-            .expect("memory creation should succeed"),
-        );
-
-        let agent = Agent::builder()
-            .model_provider(Box::new(MockModelProvider {
-                responses: Mutex::new(vec![]),
-            }))
-            .tools(vec![
-                Box::new(NamedMockTool::new("shell")),
-                Box::new(NamedMockTool::new("memory_recall")),
-            ])
-            .memory(mem)
-            .observer(observer)
-            .tool_dispatcher(Box::new(XmlToolDispatcher))
-            .workspace_dir(workspace.path().to_path_buf())
-            .auto_save(true)
-            .exclude_memory(false)
-            .build()
-            .expect("agent builder should succeed");
-
-        assert_ne!(
-            agent.memory.name(),
-            "none",
-            "memory backend must be preserved"
-        );
-        assert!(agent.auto_save, "auto_save must be preserved");
-        let names: Vec<&str> = agent.tools.iter().map(|t| t.name()).collect();
-        assert!(
-            names.contains(&"memory_recall"),
-            "memory tools must be preserved"
-        );
-    }
 }

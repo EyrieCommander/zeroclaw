@@ -359,7 +359,7 @@ impl RpcDispatcher {
                     let handle = self.spawn_handle();
                     let id_clone = id;
                     let params_clone = req.params.clone();
-                    tokio::spawn(async move {
+                    zeroclaw_api::spawn!(async move {
                         let result = handle.handle_session_prompt(&params_clone).await;
                         match result {
                             Ok(v) => handle.send_result(id_clone, v).await,
@@ -575,6 +575,14 @@ impl RpcDispatcher {
 
     // ── Session handlers ─────────────────────────────────────────
 
+    /// Test-only: call `handle_session_new` directly, bypassing the
+    /// authentication gate in the `run` loop.  This lets integration tests
+    /// drive the full agent-creation path without spinning up a transport.
+    #[cfg(test)]
+    pub async fn handle_session_new_for_test(&self, params: &Value) -> RpcResult {
+        self.handle_session_new(params).await
+    }
+
     async fn handle_session_new(&self, params: &Value) -> RpcResult {
         let req: SessionNewParams = parse_params(params)?;
         let session_id = req
@@ -594,7 +602,7 @@ impl RpcDispatcher {
             &req.agent_alias,
             cwd_path,
             false,
-            false,
+            req.exclude_memory.unwrap_or(false),
             tui_env,
         )
         .await
@@ -661,6 +669,24 @@ impl RpcDispatcher {
         let req: SessionPromptParams = parse_params(params)?;
         let sid = &req.session_id;
 
+        // Reject blank turns at the RPC boundary. A turn must carry SOMETHING
+        // — either prose or an attachment — for the agent to act on. Letting
+        // an empty `{prompt: "", attachments: []}` through would push a user
+        // message that contains only the runtime's timestamp prefix into the
+        // model context; Claude in particular then narrates the trailing
+        // `<<HUMAN_CONVERSATION_START>>` template sentinel instead of
+        // responding, and that bleeds into the visible transcript. The
+        // duplicate guard inside `Agent::turn_streamed` is the load-bearing
+        // one (any code path that reaches the agent is covered); this one
+        // gives RPC callers a clean error code instead of a generic agent
+        // failure surfaced after queue acquisition.
+        if req.prompt.trim().is_empty() && req.attachments.is_empty() {
+            return Err(rpc_err(
+                INVALID_PARAMS,
+                "session/prompt requires a non-empty `prompt` or at least one attachment",
+            ));
+        }
+
         let agent = self
             .ctx
             .sessions
@@ -693,13 +719,22 @@ impl RpcDispatcher {
                 .to_string_lossy()
                 .to_string();
             let is_wss = self.peer_label.starts_with("wss:");
-            prompt.push('\n');
-            for entry in &req.attachments {
+            // Only insert a newline separator if there's existing text.
+            // An attachment-only turn must not start with a leading "\n"
+            // because that produces a user message whose only non-marker
+            // content is whitespace — same failure mode the top-of-fn
+            // guard prevents, just at one layer down.
+            if !prompt.is_empty() {
+                prompt.push('\n');
+            }
+            for (idx, entry) in req.attachments.iter().enumerate() {
                 let result =
                     process_file_entry(entry, sid, &upload_root, is_wss, &self.ctx.sessions)
                         .await?;
+                if idx > 0 {
+                    prompt.push('\n');
+                }
                 prompt.push_str(&result.marker);
-                prompt.push('\n');
             }
         }
 
@@ -1863,7 +1898,7 @@ impl RpcDispatcher {
         let mut rx = event_tx.subscribe();
         let rpc = self.rpc.clone();
         // Spawn a forwarding task that lives until the subscriber drops.
-        tokio::spawn(async move {
+        zeroclaw_api::spawn!(async move {
             while let Ok(event) = rx.recv().await {
                 let notification = JsonRpcNotification::new(notification::LOGS_EVENT, event);
                 if let Ok(json) = serde_json::to_string(&notification)
@@ -2200,5 +2235,148 @@ mod tests {
         let val = to_result(r).unwrap();
         assert_eq!(val["protocol_version"], 1);
         assert_eq!(val["server_version"], "0.1.0");
+    }
+
+    // -----------------------------------------------------------------------
+    // ACP session/new — memory-tool exclusion
+    // -----------------------------------------------------------------------
+    //
+    // These tests verify that `session/new` with `exclude_memory: true` strips
+    // all five memory tools from the agent, while `exclude_memory: false` leaves
+    // at least one memory tool present.
+    //
+    // They live here (not in `tests/`) because they depend on `#[cfg(test)]`
+    // helpers: `RpcContext::minimal`, `RpcDispatcher::handle_session_new_for_test`,
+    // and `Agent::tool_names`.
+
+    const MEMORY_TOOLS: &[&str] = &[
+        "memory_recall",
+        "memory_store",
+        "memory_forget",
+        "memory_export",
+        "memory_purge",
+    ];
+
+    fn make_acp_test_config(tmp: &tempfile::TempDir) -> zeroclaw_config::schema::Config {
+        use std::collections::HashMap;
+        use zeroclaw_config::schema::{AliasedAgentConfig, RiskProfileConfig};
+
+        let workspace_dir = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace_dir).unwrap();
+
+        let mut providers = zeroclaw_config::providers::Providers::default();
+        {
+            let base = providers
+                .models
+                .ensure("openai", "test-provider")
+                .expect("`openai` slot must exist");
+            base.api_key = Some("test-key".into());
+            base.model = Some("test-model".into());
+            base.uri = Some("http://127.0.0.1:1".into());
+        }
+
+        let mut agents = HashMap::new();
+        agents.insert(
+            "test-agent".to_string(),
+            AliasedAgentConfig {
+                enabled: true,
+                model_provider: "openai.test-provider".into(),
+                risk_profile: "test-profile".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let mut risk_profiles = HashMap::new();
+        risk_profiles.insert("test-profile".to_string(), RiskProfileConfig::default());
+
+        zeroclaw_config::schema::Config {
+            data_dir: workspace_dir,
+            config_path: tmp.path().join("config.toml"),
+            providers,
+            agents,
+            risk_profiles,
+            ..zeroclaw_config::schema::Config::default()
+        }
+    }
+
+    fn make_acp_test_dispatcher(
+        config: zeroclaw_config::schema::Config,
+    ) -> (RpcDispatcher, Arc<crate::rpc::session::SessionStore>) {
+        use zeroclaw_infra::session_queue::SessionActorQueue;
+        let queue = Arc::new(SessionActorQueue::new(4, 10, 60));
+        let sessions = Arc::new(crate::rpc::session::SessionStore::new(16, queue));
+        let ctx = RpcContext::minimal(config, Arc::clone(&sessions));
+        let (tx, _rx) = tokio::sync::mpsc::channel(64);
+        let dispatcher = RpcDispatcher::new(ctx, tx, "test-peer".into());
+        (dispatcher, sessions)
+    }
+
+    #[tokio::test]
+    async fn acp_session_new_exposes_no_memory_tools() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config = make_acp_test_config(&tmp);
+        let (dispatcher, sessions) = make_acp_test_dispatcher(config);
+
+        let params = json!({
+            "agent_alias": "test-agent",
+            "exclude_memory": true,
+            "session_id": "acp-test-session-001"
+        });
+
+        let result = dispatcher.handle_session_new_for_test(&params).await;
+        assert!(
+            result.is_ok(),
+            "session/new should succeed; got: {:?}",
+            result.err()
+        );
+
+        let agent_arc = sessions
+            .get_agent("acp-test-session-001")
+            .await
+            .expect("session must be registered in the store after session/new");
+
+        let agent = agent_arc.lock().await;
+        let tool_names = agent.tool_names();
+
+        for &mem_tool in MEMORY_TOOLS {
+            assert!(
+                !tool_names.contains(&mem_tool),
+                "ACP session must NOT expose `{mem_tool}` — found in tool list: {tool_names:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn non_acp_session_new_exposes_memory_tools() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config = make_acp_test_config(&tmp);
+        let (dispatcher, sessions) = make_acp_test_dispatcher(config);
+
+        let params = json!({
+            "agent_alias": "test-agent",
+            "exclude_memory": false,
+            "session_id": "chat-test-session-001"
+        });
+
+        let result = dispatcher.handle_session_new_for_test(&params).await;
+        assert!(
+            result.is_ok(),
+            "session/new should succeed; got: {:?}",
+            result.err()
+        );
+
+        let agent_arc = sessions
+            .get_agent("chat-test-session-001")
+            .await
+            .expect("session must be registered in the store after session/new");
+
+        let agent = agent_arc.lock().await;
+        let tool_names = agent.tool_names();
+
+        let has_any_memory_tool = MEMORY_TOOLS.iter().any(|&t| tool_names.contains(&t));
+        assert!(
+            has_any_memory_tool,
+            "non-ACP session MUST expose at least one memory tool — tool list: {tool_names:?}"
+        );
     }
 }

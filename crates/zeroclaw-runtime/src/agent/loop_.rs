@@ -1589,17 +1589,24 @@ pub async fn run_tool_call_loop(
         let mut streamed_protocol_suppressed = false;
 
         let chat_result = if should_consume_provider_stream {
-            match consume_provider_streaming_response(
-                active_model_provider,
-                &prepared_messages.messages,
-                request_tools,
-                active_model,
-                temperature,
-                cancellation_token.as_ref(),
-                on_delta.as_ref(),
-                strict_tool_parsing,
+            use ::zeroclaw_log::Instrument;
+            let provider_span = ::zeroclaw_log::attribution_span!(active_model_provider);
+            let stream_future = ::zeroclaw_log::scope!(
+                model: active_model,
+                =>
+                consume_provider_streaming_response(
+                    active_model_provider,
+                    &prepared_messages.messages,
+                    request_tools,
+                    active_model,
+                    temperature,
+                    cancellation_token.as_ref(),
+                    on_delta.as_ref(),
+                    strict_tool_parsing,
+                )
             )
-            .await
+            .instrument(provider_span);
+            match stream_future.await
             {
                 Ok(streamed) => {
                     streamed_live_deltas = streamed.forwarded_live_deltas;
@@ -3948,7 +3955,7 @@ pub async fn run(
                 let content_streamed_flag = content_was_streamed.clone();
                 let is_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
 
-                let consumer_handle = tokio::spawn(async move {
+                let consumer_handle = zeroclaw_api::spawn!(async move {
                     use std::io::Write;
                     while let Some(event) = delta_rx.recv().await {
                         match event {
@@ -3973,7 +3980,7 @@ pub async fn run(
                 // Ctrl+C cancels the in-flight turn instead of killing the process.
                 let cancel_token = CancellationToken::new();
                 let cancel_token_clone = cancel_token.clone();
-                let ctrlc_handle = tokio::spawn(async move {
+                let ctrlc_handle = zeroclaw_api::spawn!(async move {
                     if tokio::signal::ctrl_c().await.is_ok() {
                         cancel_token_clone.cancel();
                     }

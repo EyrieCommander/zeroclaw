@@ -836,7 +836,7 @@ impl ModelProvider for OpenRouterModelProvider {
 
         let (tx, rx) = tokio::sync::mpsc::channel::<StreamResult<StreamEvent>>(100);
 
-        let handle = tokio::spawn(async move {
+        let handle = ::zeroclaw_api::spawn!(async move {
             let response = match client
                 .post("https://openrouter.ai/api/v1/chat/completions")
                 .header("Authorization", format!("Bearer {credential}"))
@@ -2086,7 +2086,7 @@ mod tests {
         let finished = Arc::new(AtomicBool::new(false));
         let finished_clone = Arc::clone(&finished);
 
-        let handle = tokio::spawn(async move {
+        let handle = zeroclaw_api::spawn!(async move {
             tokio::time::sleep(Duration::from_secs(30)).await;
             finished_clone.store(true, Ordering::SeqCst);
         });

@@ -29,6 +29,36 @@ pub mod session_keys;
 pub mod tool;
 pub mod vad;
 
+/// Private re-export root for macros defined in this crate. External
+/// crates must not reach for `tracing` through here — it exists solely
+/// so `spawn!` can expand without callers needing `tracing` as a
+/// direct dependency.
+#[doc(hidden)]
+pub mod __private {
+    pub use ::tracing;
+}
+
+/// `tokio::spawn` that propagates the caller's current tracing span
+/// into the spawned task. Use this anywhere a per-request / per-turn
+/// child task needs to inherit the parent's attribution context
+/// (session key, channel, agent, etc.) so log records emitted from
+/// the task land attributed instead of orphaning.
+///
+/// Layering note: this lives in `zeroclaw-api` (the lowest crate in
+/// the workspace) so every implementation crate can reach it without
+/// inverting the dep graph. The macro itself only depends on `tokio`
+/// and `tracing`, both of which `zeroclaw-api` already pulls in.
+#[macro_export]
+macro_rules! spawn {
+    ($body:expr) => {{
+        #[allow(unused_imports)]
+        use $crate::__private::tracing::Instrument as _;
+        #[allow(clippy::disallowed_methods)]
+        let __zc_spawn_handle = ::tokio::spawn(($body).in_current_span());
+        __zc_spawn_handle
+    }};
+}
+
 tokio::task_local! {
     /// Current thread/sender ID for per-sender rate limiting.
     /// Set by the agent loop, read by SecurityPolicy.

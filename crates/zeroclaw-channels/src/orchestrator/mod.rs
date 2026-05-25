@@ -110,7 +110,6 @@ use std::time::{Duration, Instant, SystemTime};
 use tokio_util::sync::CancellationToken;
 use zeroclaw_api::session_keys::sanitize_session_key;
 use zeroclaw_config::schema::Config;
-use zeroclaw_log::Instrument;
 use zeroclaw_memory::{self, MEMORY_CONTEXT_CLOSE, MEMORY_CONTEXT_OPEN, Memory};
 use zeroclaw_providers::reliable::{scope_provider_fallback, take_last_provider_fallback};
 use zeroclaw_providers::{self, ChatMessage, ModelProvider};
@@ -2947,7 +2946,7 @@ fn spawn_supervised_listener_with_health_interval(
         _ => ch.name().to_string(),
     };
     let span = zeroclaw_log::attribution_span!(&*ch);
-    tokio::spawn(
+    zeroclaw_api::spawn!(
         async move {
             let component = format!("channel:{composite}");
             let mut backoff = initial_backoff_secs.max(1);
@@ -3012,7 +3011,7 @@ fn spawn_supervised_listener_with_health_interval(
                 backoff = backoff.saturating_mul(2).min(max_backoff);
             }
         }
-        .instrument(span),
+        .instrument(span)
     )
 }
 
@@ -3044,7 +3043,7 @@ fn spawn_scoped_typing_task(
 ) -> tokio::task::JoinHandle<()> {
     let stop_signal = cancellation_token;
     let refresh_interval = Duration::from_secs(CHANNEL_TYPING_REFRESH_INTERVAL_SECS);
-    zeroclaw_log::spawn!(async move {
+    zeroclaw_api::spawn!(async move {
         let mut interval = tokio::time::interval(refresh_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -3658,7 +3657,7 @@ async fn process_channel_message_body(
             let channel = Arc::clone(channel_ref);
             let reply_target = msg.reply_target.clone();
             let draft_id = draft_id_ref.to_string();
-            Some(zeroclaw_log::spawn!(async move {
+            Some(zeroclaw_api::spawn!(async move {
                 use zeroclaw_runtime::agent::loop_::StreamDelta;
                 let mut accumulated = String::new();
                 while let Some(event) = rx.recv().await {
@@ -3754,11 +3753,11 @@ async fn process_channel_message_body(
     let notify_reply_target = msg.reply_target.clone();
     let notify_thread_root = followup_thread_id(&msg);
     let notify_task = if msg.channel == "cli" || !ctx.show_tool_calls {
-        Some(zeroclaw_log::spawn!(async move {
+        Some(zeroclaw_api::spawn!(async move {
             while notify_rx.recv().await.is_some() {}
         }))
     } else {
-        Some(zeroclaw_log::spawn!(async move {
+        Some(zeroclaw_api::spawn!(async move {
             let thread_ts = notify_thread_root;
             while let Some(text) = notify_rx.recv().await {
                 if let Some(ref ch) = notify_channel {
@@ -4168,7 +4167,7 @@ async fn process_channel_message_body(
                 let memory = Arc::clone(&ctx.memory);
                 let user_msg = msg.content.clone();
                 let assistant_resp = delivered_response.clone();
-                zeroclaw_log::spawn!(async move {
+                zeroclaw_api::spawn!(async move {
                     if let Err(e) = zeroclaw_memory::consolidation::consolidate_turn(
                         model_provider.as_ref(),
                         &model,
@@ -4659,7 +4658,7 @@ async fn run_message_dispatch_loop(
             if let Some(channel) = channel {
                 let reply_target = msg.reply_target.clone();
                 let thread_ts = msg.thread_ts.clone();
-                tokio::spawn(async move {
+                zeroclaw_api::spawn!(async move {
                     let _ = channel
                         .send(&SendMessage::new(reply, &reply_target).in_thread(thread_ts))
                         .await;
@@ -11640,7 +11639,7 @@ BTC is currently around $65,000 based on latest tool output."#
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<zeroclaw_api::channel::ChannelMessage>(8);
-        let send_task = tokio::spawn(async move {
+        let send_task = zeroclaw_api::spawn!(async move {
             tx.send(zeroclaw_api::channel::ChannelMessage {
                 id: "msg-1".to_string(),
                 sender: "alice".to_string(),
@@ -11781,7 +11780,7 @@ BTC is currently around $65,000 based on latest tool output."#
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<zeroclaw_api::channel::ChannelMessage>(8);
-        let send_task = tokio::spawn(async move {
+        let send_task = zeroclaw_api::spawn!(async move {
             tx.send(zeroclaw_api::channel::ChannelMessage {
                 id: "msg-1".to_string(),
                 sender: "U123".to_string(),
@@ -11919,7 +11918,7 @@ BTC is currently around $65,000 based on latest tool output."#
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<zeroclaw_api::channel::ChannelMessage>(8);
-        let send_task = tokio::spawn(async move {
+        let send_task = zeroclaw_api::spawn!(async move {
             tx.send(zeroclaw_api::channel::ChannelMessage {
                 id: "msg-a".to_string(),
                 sender: "alice".to_string(),
@@ -15595,7 +15594,7 @@ This is an example JSON object for profile settings."#;
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<zeroclaw_api::channel::ChannelMessage>(8);
-        let send_task = tokio::spawn(async move {
+        let send_task = zeroclaw_api::spawn!(async move {
             // Two messages from same sender but in different Slack threads —
             // they must NOT cancel each other.
             tx.send(zeroclaw_api::channel::ChannelMessage {
