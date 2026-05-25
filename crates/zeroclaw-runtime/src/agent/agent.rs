@@ -1192,29 +1192,43 @@ impl Agent {
             approval_requirement == ApprovalRequirement::Approved,
         );
 
+        // Serialize arguments once (after hooks may have mutated them) and
+        // use the same string on the observer event so OTel exporters can
+        // attach the actual JSON payload to the tool span.
+        let args_json = tool_args.to_string();
+        let tool_call_id = call.tool_call_id.clone();
+
         // First try to find tool in static registry, then in activated MCP tools.
         let (result, success) =
             if let Some(tool) = self.tools.iter().find(|t| t.name() == tool_name) {
                 match tool.execute(tool_args.clone()).await {
                     Ok(r) => {
-                        self.observer.record_event(&ObserverEvent::ToolCall {
-                            tool: tool_name.clone(),
-                            duration: start.elapsed(),
-                            success: r.success,
-                        });
-                        if r.success {
+                        let (outcome_text, ok) = if r.success {
                             (r.output, true)
                         } else {
                             (format!("Error: {}", r.error.unwrap_or(r.output)), false)
-                        }
-                    }
-                    Err(e) => {
+                        };
                         self.observer.record_event(&ObserverEvent::ToolCall {
                             tool: tool_name.clone(),
+                            tool_call_id: tool_call_id.clone(),
+                            duration: start.elapsed(),
+                            success: ok,
+                            arguments: Some(args_json.clone()),
+                            result: Some(super::loop_::scrub_credentials(&outcome_text)),
+                        });
+                        (outcome_text, ok)
+                    }
+                    Err(e) => {
+                        let err_text = format!("Error executing {}: {e}", tool_name);
+                        self.observer.record_event(&ObserverEvent::ToolCall {
+                            tool: tool_name.clone(),
+                            tool_call_id: tool_call_id.clone(),
                             duration: start.elapsed(),
                             success: false,
+                            arguments: Some(args_json.clone()),
+                            result: Some(super::loop_::scrub_credentials(&err_text)),
                         });
-                        (format!("Error executing {}: {e}", tool_name), false)
+                        (err_text, false)
                     }
                 }
             } else if let Some(activated_arc) = self.activated_tools.as_ref() {
@@ -1222,24 +1236,32 @@ impl Agent {
                 if let Some(tool) = activated_opt {
                     match tool.execute(tool_args.clone()).await {
                         Ok(r) => {
-                            self.observer.record_event(&ObserverEvent::ToolCall {
-                                tool: tool_name.clone(),
-                                duration: start.elapsed(),
-                                success: r.success,
-                            });
-                            if r.success {
+                            let (outcome_text, ok) = if r.success {
                                 (r.output, true)
                             } else {
                                 (format!("Error: {}", r.error.unwrap_or(r.output)), false)
-                            }
-                        }
-                        Err(e) => {
+                            };
                             self.observer.record_event(&ObserverEvent::ToolCall {
                                 tool: tool_name.clone(),
+                                tool_call_id: tool_call_id.clone(),
+                                duration: start.elapsed(),
+                                success: ok,
+                                arguments: Some(args_json.clone()),
+                                result: Some(super::loop_::scrub_credentials(&outcome_text)),
+                            });
+                            (outcome_text, ok)
+                        }
+                        Err(e) => {
+                            let err_text = format!("Error executing {}: {e}", tool_name);
+                            self.observer.record_event(&ObserverEvent::ToolCall {
+                                tool: tool_name.clone(),
+                                tool_call_id: tool_call_id.clone(),
                                 duration: start.elapsed(),
                                 success: false,
+                                arguments: Some(args_json.clone()),
+                                result: Some(super::loop_::scrub_credentials(&err_text)),
                             });
-                            (format!("Error executing {}: {e}", tool_name), false)
+                            (err_text, false)
                         }
                     }
                 } else {
@@ -1424,6 +1446,7 @@ impl Agent {
                         } else {
                             None
                         },
+                        thinking: None,
                     },
                     &effective_model,
                     Some(self.temperature),
@@ -1625,6 +1648,7 @@ impl Agent {
                     } else {
                         None
                     },
+                    thinking: None,
                 },
                 &effective_model,
                 Some(self.temperature),
@@ -1632,6 +1656,7 @@ impl Agent {
             );
 
             let mut streamed_text = String::new();
+            let mut streamed_reasoning = String::new();
             let mut streamed_tool_calls: Vec<zeroclaw_providers::traits::ToolCall> = Vec::new();
             let mut streamed_usage: Option<zeroclaw_providers::traits::TokenUsage> = None;
             let mut got_stream = false;
@@ -1665,6 +1690,10 @@ impl Agent {
                             if let Some(reasoning) = chunk.reasoning
                                 && !reasoning.is_empty()
                             {
+                                // Accumulate for signed-block round-trip on
+                                // providers that carry signatures in this
+                                // field (Anthropic native-thinking fallback).
+                                streamed_reasoning.push_str(&reasoning);
                                 let _ = event_tx
                                     .send(TurnEvent::Thinking { delta: reasoning })
                                     .await;
@@ -1746,12 +1775,20 @@ impl Agent {
             // If streaming produced text, use it as the response and
             // check for tool calls via the dispatcher.
             let response = if got_stream {
-                // Build a synthetic ChatResponse from streamed text
+                // Build a synthetic ChatResponse from streamed text.
+                // `streamed_reasoning` carries signed thinking blocks from
+                // providers that emit them via `StreamChunk.reasoning`
+                // (Anthropic's native-thinking non-streaming fallback), so
+                // the signature round-trip survives into conversation history.
                 zeroclaw_providers::ChatResponse {
                     text: Some(streamed_text),
                     tool_calls: streamed_tool_calls,
                     usage: streamed_usage.clone(),
-                    reasoning_content: None,
+                    reasoning_content: if streamed_reasoning.is_empty() {
+                        None
+                    } else {
+                        Some(streamed_reasoning)
+                    },
                 }
             } else {
                 // Fall back to non-streaming chat, with cancellation guard
@@ -1763,6 +1800,7 @@ impl Agent {
                         } else {
                             None
                         },
+                        thinking: None,
                     },
                     &effective_model,
                     Some(self.temperature),

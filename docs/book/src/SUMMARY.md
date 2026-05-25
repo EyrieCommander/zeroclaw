@@ -50,6 +50,8 @@
 - [Mattermost](./channels/mattermost.md)
 - [LINE](./channels/line.md)
 - [Nextcloud Talk](./channels/nextcloud-talk.md)
+- [Signal](./channels/signal.md)
+- [WhatsApp](./channels/whatsapp.md)
 - [Other chat platforms](./channels/chat-others.md)
 - [Social (Bluesky, Nostr, Twitter, Reddit)](./channels/social.md)
 - [Email](./channels/email.md)
@@ -120,6 +122,7 @@
 # Contributing
 
 - [How to contribute](./contributing/how-to.md)
+- [Architecture and contribution map](./contributing/architecture-map.md)
 - [RFC process](./contributing/rfcs.md)
 - [Communication](./contributing/communication.md)
 - [Privacy & PII discipline](./contributing/privacy.md)
