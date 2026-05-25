@@ -2103,15 +2103,21 @@ fn notification_for_turn_event(
             arguments_summary: arguments_summary.clone(),
             timeout_secs: *timeout_secs,
         },
-        TurnEvent::Usage { input_tokens, cached_input_tokens, .. } => {
-            // True context size = direct input tokens + prompt-cache reads.
-            // Both count against the context window; we must add them together
-            // so the TUI bar reflects the real usage.
-            let combined = match (*input_tokens, *cached_input_tokens) {
-                (Some(a), Some(b)) => Some(a.saturating_add(b)),
-                (Some(a), None) => Some(a),
-                (None, Some(b)) => Some(b),
-                (None, None) => None,
+        TurnEvent::Usage { input_tokens, cached_input_tokens, output_tokens, .. } => {
+            // Cumulative session-token meter: every token the provider reports
+            // (fresh input + cached input + output) is summed and forwarded.
+            // The TUI adds this to its session-cumulative counter on arrival.
+            let combined = {
+                let mut total: Option<u64> = None;
+                let mut add = |v: Option<u64>| {
+                    if let Some(x) = v {
+                        total = Some(total.unwrap_or(0).saturating_add(x));
+                    }
+                };
+                add(*input_tokens);
+                add(*cached_input_tokens);
+                add(*output_tokens);
+                total
             };
             SessionUpdateEvent::ContextUsage {
                 session_id: session_id.to_string(),
@@ -2242,7 +2248,8 @@ mod tests {
         let v = parse(&json);
         assert_eq!(v["params"]["type"], "context_usage");
         assert_eq!(v["params"]["session_id"], "s1");
-        assert_eq!(v["params"]["input_tokens"], 100);
+        // Cumulative meter: 100 input + 50 output = 150.
+        assert_eq!(v["params"]["input_tokens"], 150);
         assert_eq!(v["params"]["max_context_tokens"], 32_000);
     }
 
@@ -2254,17 +2261,17 @@ mod tests {
             output_tokens: Some(50),
             cost_usd: None,
         };
-        // Should emit even without input_tokens — TUI can handle None.
+        // Output-only is still credited (sum = 50).
         let json = notification_for_turn_event("s1", &event, None).unwrap();
         let v = parse(&json);
         assert_eq!(v["params"]["type"], "context_usage");
-        assert!(v["params"]["input_tokens"].is_null());
+        assert_eq!(v["params"]["input_tokens"], 50);
     }
 
     #[test]
-    fn usage_event_combines_cached_and_direct_input_tokens() {
-        // Anthropic sends input_tokens=5000 (non-cached) + cache_read_input_tokens=150000.
-        // The TUI bar must show 155000, not 5000.
+    fn usage_event_combines_all_token_categories() {
+        // The meter sums every category the provider reports: direct input,
+        // cached input, and output. 5_000 + 150_000 + 200 = 155_200.
         let event = TurnEvent::Usage {
             input_tokens: Some(5_000),
             cached_input_tokens: Some(150_000),
@@ -2276,8 +2283,8 @@ mod tests {
         assert_eq!(v["params"]["type"], "context_usage");
         assert_eq!(
             v["params"]["input_tokens"],
-            155_000,
-            "input_tokens must be direct + cached combined"
+            155_200,
+            "input_tokens must sum input + cached + output"
         );
     }
 
@@ -2292,7 +2299,8 @@ mod tests {
         };
         let json = notification_for_turn_event("s1", &event, Some(100_000)).unwrap();
         let v = parse(&json);
-        assert_eq!(v["params"]["input_tokens"], 80_000);
+        // 80_000 + 100 = 80_100.
+        assert_eq!(v["params"]["input_tokens"], 80_100);
     }
 
     #[test]

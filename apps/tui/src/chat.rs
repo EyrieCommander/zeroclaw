@@ -515,7 +515,6 @@ impl<'a> Chat<'a> {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if state.turn_in_flight {
                     let _ = self.rpc.session_cancel(&state.session_id).await;
-                    state.drain_turn_tokens();
                     state.turn_in_flight = false;
                     state.turn_status = TurnStatus::Idle;
                 } else {
@@ -528,7 +527,6 @@ impl<'a> Chat<'a> {
                     state.exit_browse_mode();
                 } else if state.turn_in_flight {
                     let _ = self.rpc.session_cancel(&state.session_id).await;
-                    state.drain_turn_tokens();
                     state.turn_in_flight = false;
                     state.turn_status = TurnStatus::Idle;
                 }
@@ -816,15 +814,7 @@ impl<'a> Chat<'a> {
     /// Return the current context token counts for the status bar.
     pub(crate) fn ctx_tokens(&self) -> (Option<u64>, Option<u64>) {
         match &self.phase {
-            ChatPhase::Active(s) => {
-                let live = match (s.context_input_tokens, s.turn_input_tokens) {
-                    (Some(ctx), Some(turn)) => Some(ctx.saturating_add(turn)),
-                    (Some(ctx), None) => Some(ctx),
-                    (None, Some(turn)) => Some(turn),
-                    _ => None,
-                };
-                (live, s.context_max_tokens)
-            }
+            ChatPhase::Active(s) => (s.context_input_tokens, s.context_max_tokens),
             _ => (None, None),
         }
     }
@@ -1075,14 +1065,7 @@ fn render(f: &mut Frame, state: &mut ChatState, area: Rect) {
     let turn_status = state.turn_status.clone();
     let turn_started_at = state.turn_started_at;
 
-    // Show cumulative tokens including the current in-flight turn so the counter
-    // updates continuously as tokens arrive, not just at turn end.
-    let _live_input_tokens = match (state.context_input_tokens, state.turn_input_tokens) {
-        (Some(a), Some(b)) => Some(a + b),
-        (Some(a), None) => Some(a),
-        (None, Some(b)) => Some(b),
-        (None, None) => None,
-    };
+    let _live_input_tokens = state.context_input_tokens;
     let input_area = area;
 
     let conv_area = state.input_bar.render(
@@ -1751,11 +1734,10 @@ pub struct ChatState {
     cached_entry_count: usize,
     /// The `entries` index where the render window starts for the current cache.
     cached_render_start: usize,
-    /// Cumulative context token count across all completed turns.
+    /// Cumulative token count for this session: every Usage event from the
+    /// provider (input + cached + output) is added on arrival. Cleared on
+    /// session reset only.
     pub context_input_tokens: Option<u64>,
-    /// Token count for the current in-flight turn (last Usage value seen this turn).
-    /// Drained into `context_input_tokens` on commit.
-    turn_input_tokens: Option<u64>,
     /// Configured context limit for this session's model.
     pub context_max_tokens: Option<u64>,
 }
@@ -1788,7 +1770,6 @@ impl ChatState {
             cached_entry_count: 0,
             cached_render_start: 0,
             context_input_tokens: None,
-            turn_input_tokens: None,
             context_max_tokens: None,
         }
     }
@@ -2092,26 +2073,17 @@ impl ChatState {
                 max_context_tokens,
                 ..
             } => {
-                // Each Usage event carries the input tokens for that single
-                // LLM hop. A multi-hop turn fires multiple Usage events, so
-                // we accumulate them into turn_input_tokens. On commit/cancel
-                // that total is drained into the cumulative context_input_tokens.
+                // Credit on arrival: every Usage event from the provider is
+                // added immediately to the session-cumulative counter. No
+                // per-turn buffer — cancellations/errors mid-turn still count.
                 if let Some(t) = input_tokens {
-                    *self.turn_input_tokens.get_or_insert(0) += t;
+                    self.context_input_tokens =
+                        Some(self.context_input_tokens.unwrap_or(0).saturating_add(t));
                 }
                 if max_context_tokens.is_some() {
                     self.context_max_tokens = max_context_tokens;
                 }
             }
-        }
-    }
-
-    /// Drain the current turn's token count into the cumulative total.
-    /// Call on both commit and cancel so no turn's tokens are lost.
-    fn drain_turn_tokens(&mut self) {
-        if let Some(t) = self.turn_input_tokens.take() {
-            self.context_input_tokens =
-                Some(self.context_input_tokens.unwrap_or(0) + t);
         }
     }
 
@@ -2141,7 +2113,6 @@ impl ChatState {
         // for turns that have no chunks at all (e.g. instant responses from
         // tests that call commit_turn directly without apply_update).
         let _ = full_text; // consumed by flush above; kept as parameter for API stability
-        self.drain_turn_tokens();
         self.mark_dirty_append();
         self.turn_in_flight = false;
         self.turn_status = TurnStatus::Idle;
