@@ -1462,6 +1462,33 @@ impl Agent {
     }
 
     pub async fn turn(&mut self, user_message: &str) -> Result<String> {
+        // Refuse empty/whitespace-only turns. An empty `user_message` would
+        // append a user-role message containing only the timestamp prefix
+        // (`[<now>] `) to history, leaving the model to face a system prompt
+        // immediately followed by a blank user turn. On Claude this surfaces
+        // as the underlying `<<HUMAN_CONVERSATION_START>>` template sentinel
+        // bleeding into the visible response ("there's no human turn yet…"),
+        // because the model has nothing to respond to and narrates the
+        // structural marker instead. Stopping it here keeps history clean
+        // and prevents wasted model spend on garbage turns.
+        if user_message.trim().is_empty() {
+            ::zeroclaw_log::record!(
+                WARN,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Reject)
+                    .with_category(::zeroclaw_log::EventCategory::Agent)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                    .with_attrs(::serde_json::json!({
+                        "reason": "empty_user_message",
+                        "entry_point": "Agent::turn",
+                        "raw_len": user_message.len(),
+                    })),
+                "Refusing blank user turn (would emit timestamp-only message and risk prompt-template bleed-through)"
+            );
+            return Err(anyhow::Error::msg(
+                "empty user message: refusing to dispatch a blank turn",
+            ));
+        }
+
         if self.history.is_empty() {
             let system_prompt = self.build_system_prompt()?;
             self.history
@@ -1642,6 +1669,13 @@ impl Agent {
         event_tx: tokio::sync::mpsc::Sender<TurnEvent>,
         cancel_token: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<(String, Vec<ConversationMessage>)> {
+        // See `Agent::turn` for the rationale. Same guard: blank input would
+        // push a timestamp-only user message into history and the model would
+        // narrate the trailing prompt-template sentinel instead of replying.
+        if user_message.trim().is_empty() {
+            anyhow::bail!("empty user message: refusing to dispatch a blank turn");
+        }
+
         // ── Preamble (identical to turn) ───────────────────────────────
         if self.history.is_empty() {
             let system_prompt = self.build_system_prompt()?;

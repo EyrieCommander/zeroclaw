@@ -1589,17 +1589,24 @@ pub async fn run_tool_call_loop(
         let mut streamed_protocol_suppressed = false;
 
         let chat_result = if should_consume_provider_stream {
-            match consume_provider_streaming_response(
-                active_model_provider,
-                &prepared_messages.messages,
-                request_tools,
-                active_model,
-                temperature,
-                cancellation_token.as_ref(),
-                on_delta.as_ref(),
-                strict_tool_parsing,
+            use ::zeroclaw_log::Instrument;
+            let provider_span = ::zeroclaw_log::attribution_span!(active_model_provider);
+            let stream_future = ::zeroclaw_log::scope!(
+                model: active_model,
+                =>
+                consume_provider_streaming_response(
+                    active_model_provider,
+                    &prepared_messages.messages,
+                    request_tools,
+                    active_model,
+                    temperature,
+                    cancellation_token.as_ref(),
+                    on_delta.as_ref(),
+                    strict_tool_parsing,
+                )
             )
-            .await
+            .instrument(provider_span);
+            match stream_future.await
             {
                 Ok(streamed) => {
                     streamed_live_deltas = streamed.forwarded_live_deltas;

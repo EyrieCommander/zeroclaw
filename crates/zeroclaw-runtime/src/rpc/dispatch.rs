@@ -669,6 +669,24 @@ impl RpcDispatcher {
         let req: SessionPromptParams = parse_params(params)?;
         let sid = &req.session_id;
 
+        // Reject blank turns at the RPC boundary. A turn must carry SOMETHING
+        // — either prose or an attachment — for the agent to act on. Letting
+        // an empty `{prompt: "", attachments: []}` through would push a user
+        // message that contains only the runtime's timestamp prefix into the
+        // model context; Claude in particular then narrates the trailing
+        // `<<HUMAN_CONVERSATION_START>>` template sentinel instead of
+        // responding, and that bleeds into the visible transcript. The
+        // duplicate guard inside `Agent::turn_streamed` is the load-bearing
+        // one (any code path that reaches the agent is covered); this one
+        // gives RPC callers a clean error code instead of a generic agent
+        // failure surfaced after queue acquisition.
+        if req.prompt.trim().is_empty() && req.attachments.is_empty() {
+            return Err(rpc_err(
+                INVALID_PARAMS,
+                "session/prompt requires a non-empty `prompt` or at least one attachment",
+            ));
+        }
+
         let agent = self
             .ctx
             .sessions
@@ -701,13 +719,22 @@ impl RpcDispatcher {
                 .to_string_lossy()
                 .to_string();
             let is_wss = self.peer_label.starts_with("wss:");
-            prompt.push('\n');
-            for entry in &req.attachments {
+            // Only insert a newline separator if there's existing text.
+            // An attachment-only turn must not start with a leading "\n"
+            // because that produces a user message whose only non-marker
+            // content is whitespace — same failure mode the top-of-fn
+            // guard prevents, just at one layer down.
+            if !prompt.is_empty() {
+                prompt.push('\n');
+            }
+            for (idx, entry) in req.attachments.iter().enumerate() {
                 let result =
                     process_file_entry(entry, sid, &upload_root, is_wss, &self.ctx.sessions)
                         .await?;
+                if idx > 0 {
+                    prompt.push('\n');
+                }
                 prompt.push_str(&result.marker);
-                prompt.push('\n');
             }
         }
 

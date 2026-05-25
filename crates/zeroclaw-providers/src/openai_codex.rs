@@ -1433,7 +1433,7 @@ impl ModelProvider for OpenAiCodexModelProvider {
         let count_tokens = options.count_tokens;
         let (tx, rx) = tokio::sync::mpsc::channel::<StreamResult<StreamEvent>>(16);
 
-        tokio::spawn(async move {
+        ::zeroclaw_api::spawn!(async move {
             let config = zeroclaw_config::schema::MultimodalConfig::default();
             let prepared =
                 match crate::multimodal::prepare_messages_for_provider(&messages, &config).await {

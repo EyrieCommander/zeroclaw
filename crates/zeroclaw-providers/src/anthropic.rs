@@ -1169,7 +1169,7 @@ impl ModelProvider for AnthropicModelProvider {
 
         let (tx, rx) = tokio::sync::mpsc::channel::<StreamResult<StreamEvent>>(64);
 
-        tokio::spawn(async move {
+        ::zeroclaw_api::spawn!(async move {
             let mut req = client
                 .post(&url)
                 .header("anthropic-version", "2023-06-01")

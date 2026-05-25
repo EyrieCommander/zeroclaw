@@ -318,8 +318,14 @@ impl AcpServer {
                 // read loop — outbound RPC responses (e.g. for
                 // session/request_permission) need to be processable
                 // while a prompt turn is in flight.
+                //
+                // Use `zeroclaw_api::spawn!` (not `tokio::spawn`) so the task
+                // inherits the current tracing span. Once `handle_request`
+                // resolves session/agent context and attaches an
+                // attribution scope, every log record emitted from this
+                // task lands attributed in the TUI instead of orphaning.
                 let server = Arc::clone(self);
-                tokio::spawn(async move {
+                ::zeroclaw_api::spawn!(async move {
                     server.handle_request(request).await;
                 });
             }

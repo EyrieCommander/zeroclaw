@@ -3044,7 +3044,7 @@ fn spawn_scoped_typing_task(
 ) -> tokio::task::JoinHandle<()> {
     let stop_signal = cancellation_token;
     let refresh_interval = Duration::from_secs(CHANNEL_TYPING_REFRESH_INTERVAL_SECS);
-    zeroclaw_log::spawn!(async move {
+    zeroclaw_api::spawn!(async move {
         let mut interval = tokio::time::interval(refresh_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -3658,7 +3658,7 @@ async fn process_channel_message_body(
             let channel = Arc::clone(channel_ref);
             let reply_target = msg.reply_target.clone();
             let draft_id = draft_id_ref.to_string();
-            Some(zeroclaw_log::spawn!(async move {
+            Some(zeroclaw_api::spawn!(async move {
                 use zeroclaw_runtime::agent::loop_::StreamDelta;
                 let mut accumulated = String::new();
                 while let Some(event) = rx.recv().await {
@@ -3754,11 +3754,11 @@ async fn process_channel_message_body(
     let notify_reply_target = msg.reply_target.clone();
     let notify_thread_root = followup_thread_id(&msg);
     let notify_task = if msg.channel == "cli" || !ctx.show_tool_calls {
-        Some(zeroclaw_log::spawn!(async move {
+        Some(zeroclaw_api::spawn!(async move {
             while notify_rx.recv().await.is_some() {}
         }))
     } else {
-        Some(zeroclaw_log::spawn!(async move {
+        Some(zeroclaw_api::spawn!(async move {
             let thread_ts = notify_thread_root;
             while let Some(text) = notify_rx.recv().await {
                 if let Some(ref ch) = notify_channel {
@@ -4168,7 +4168,7 @@ async fn process_channel_message_body(
                 let memory = Arc::clone(&ctx.memory);
                 let user_msg = msg.content.clone();
                 let assistant_resp = delivered_response.clone();
-                zeroclaw_log::spawn!(async move {
+                zeroclaw_api::spawn!(async move {
                     if let Err(e) = zeroclaw_memory::consolidation::consolidate_turn(
                         model_provider.as_ref(),
                         &model,
