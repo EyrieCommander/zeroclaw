@@ -17,7 +17,8 @@
 //! Safety always wins.
 
 // robot-kit is an independent hardware crate that does not depend on
-// `zeroclaw-api`, so it cannot use `zeroclaw_api::spawn!`. Bump-recovery
+// `zeroclaw-spawn` (or any orchestrator crate), so it cannot use
+// `zeroclaw_spawn::spawn!`. Bump-recovery
 // tasks here run outside any orchestrator span. See clippy.toml.
 #![allow(clippy::disallowed_methods)]
 

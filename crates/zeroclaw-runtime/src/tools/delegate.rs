@@ -965,7 +965,7 @@ impl DelegateTool {
         // and channel-scoped tool calls would land unattributed.
         let parent_session_key = current_tool_loop_session_key();
 
-        zeroclaw_api::spawn!(async move {
+        zeroclaw_spawn::spawn!(async move {
             scope_delegate_session_key(parent_session_key, async move {
                 let inner = DelegateTool {
                     agents,
@@ -1181,7 +1181,7 @@ impl DelegateTool {
             let root_config = self.root_config.clone();
             let session_key = parent_session_key.clone();
 
-            handles.push(zeroclaw_api::spawn!(async move {
+            handles.push(zeroclaw_spawn::spawn!(async move {
                 let inner = DelegateTool {
                     agents,
                     security,
@@ -2628,7 +2628,7 @@ mod tests {
         let seen = TOOL_LOOP_SESSION_KEY
             .scope(Some("channel_session".to_string()), async {
                 let session_key = current_tool_loop_session_key();
-                zeroclaw_api::spawn!(async move {
+                zeroclaw_spawn::spawn!(async move {
                     scope_delegate_session_key(session_key, async {
                         current_tool_loop_session_key()
                     })

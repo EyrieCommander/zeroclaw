@@ -1016,7 +1016,7 @@ impl ModelProvider for ReliableModelProvider {
             let stream = model_provider.stream_chat(req, &current_model, temperature, options);
             let (tx, rx) = tokio::sync::mpsc::channel::<StreamResult<StreamEvent>>(100);
 
-            ::zeroclaw_api::spawn!(async move {
+            ::zeroclaw_spawn::spawn!(async move {
                 let mut stream = stream;
                 while let Some(event) = stream.next().await {
                     if let Err(ref e) = event {
@@ -1079,7 +1079,7 @@ impl ModelProvider for ReliableModelProvider {
             // Use a channel to bridge the stream with logging
             let (tx, rx) = tokio::sync::mpsc::channel::<StreamResult<StreamChunk>>(100);
 
-            ::zeroclaw_api::spawn!(async move {
+            ::zeroclaw_spawn::spawn!(async move {
                 let mut stream = stream;
                 while let Some(chunk) = stream.next().await {
                     if let Err(ref e) = chunk {
@@ -1138,7 +1138,7 @@ impl ModelProvider for ReliableModelProvider {
 
             let (tx, rx) = tokio::sync::mpsc::channel::<StreamResult<StreamChunk>>(100);
 
-            ::zeroclaw_api::spawn!(async move {
+            ::zeroclaw_spawn::spawn!(async move {
                 let mut stream = stream;
                 while let Some(chunk) = stream.next().await {
                     if let Err(ref e) = chunk {

@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/zeroclaw-api", "crates/zeroclaw-infra", "crates/zeroclaw-config", "crates/zeroclaw-log", "crates/zeroclaw-providers", "crates/zeroclaw-memory", "crates/zeroclaw-channels", "crates/zeroclaw-tools", "crates/zeroclaw-runtime", "apps/tui", "crates/zeroclaw-plugins", "crates/zeroclaw-gateway", "crates/zeroclaw-hardware", "crates/zeroclaw-tool-call-parser", "crates/robot-kit", "crates/aardvark-sys", "crates/zeroclaw-macros", "apps/tauri", "tools/fill-translations", "xtask"]
+members = [".", "crates/zeroclaw-api", "crates/zeroclaw-infra", "crates/zeroclaw-config", "crates/zeroclaw-log", "crates/zeroclaw-spawn", "crates/zeroclaw-providers", "crates/zeroclaw-memory", "crates/zeroclaw-channels", "crates/zeroclaw-tools", "crates/zeroclaw-runtime", "apps/tui", "crates/zeroclaw-plugins", "crates/zeroclaw-gateway", "crates/zeroclaw-hardware", "crates/zeroclaw-tool-call-parser", "crates/robot-kit", "crates/aardvark-sys", "crates/zeroclaw-macros", "apps/tauri", "tools/fill-translations", "xtask"]
 resolver = "2"
 exclude = ["plugins/image-gen-fal"]
 
@@ -15,6 +15,7 @@ zeroclaw-api = { path = "crates/zeroclaw-api", version = "0.8.0-beta-1" }
 zeroclaw-infra = { path = "crates/zeroclaw-infra", version = "0.8.0-beta-1" }
 zeroclaw-config = { path = "crates/zeroclaw-config", version = "0.8.0-beta-1", default-features = false }
 zeroclaw-log = { path = "crates/zeroclaw-log", version = "0.8.0-beta-1" }
+zeroclaw-spawn = { path = "crates/zeroclaw-spawn", version = "0.8.0-beta-1" }
 zeroclaw-providers = { path = "crates/zeroclaw-providers", version = "0.8.0-beta-1" }
 zeroclaw-memory = { path = "crates/zeroclaw-memory", version = "0.8.0-beta-1" }
 zeroclaw-channels = { path = "crates/zeroclaw-channels", version = "0.8.0-beta-1", default-features = false }
@@ -74,6 +75,7 @@ path = "src/lib.rs"
 [dependencies]
 # Internal workspace crates — versions and paths declared once in [workspace.dependencies]
 zeroclaw-api.workspace = true
+zeroclaw-spawn.workspace = true
 zeroclaw-infra.workspace = true
 zeroclaw-config.workspace = true
 zeroclaw-log.workspace = true
