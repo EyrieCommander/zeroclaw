@@ -21,7 +21,7 @@ warn()  { printf "  ${YELLOW}⚠${RESET} %s\n" "$*" >&2; }
 die()   { printf "  ${RED}✗${RESET} %s\n" "$*" >&2; exit 1; }
 bold()  { printf "${BOLD}%s${RESET}" "$*"; }
 
-TUI_BIN_NAME="zeroclaw-tui"
+TUI_BIN_NAME="zerocode"
 
 # ── Parse Cargo.toml (source of truth) ────────────────────────────
 

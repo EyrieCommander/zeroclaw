@@ -32,7 +32,7 @@ static TERMINAL_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Parser)]
 #[command(
-    name = "zeroclaw-tui",
+    name = "zerocode",
     about = "Interactive TUI config manager for ZeroClaw"
 )]
 struct Cli {
@@ -79,7 +79,7 @@ async fn main() -> ExitCode {
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("zeroclaw-tui: {e:#}");
+            eprintln!("zerocode: {e:#}");
             ExitCode::FAILURE
         }
     }

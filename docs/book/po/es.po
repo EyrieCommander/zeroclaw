@@ -3342,8 +3342,8 @@ msgid "Derive macros for config, tool registration"
 msgstr "Generar macros para la configuración y el registro de herramientas"
 
 #: src/architecture/overview.md:57 src/architecture/crates.md:118
-msgid "`zeroclaw-tui`"
-msgstr "`zeroclaw-tui`"
+msgid "`zerocode`"
+msgstr "`zerocode`"
 
 #: src/architecture/overview.md:57
 msgid "Terminal UI"

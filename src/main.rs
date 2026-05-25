@@ -1487,7 +1487,7 @@ async fn main() -> Result<()> {
                 {
                     use std::io::IsTerminal;
                     if std::io::stdout().is_terminal() {
-                        match zeroclaw_tui::RatatuiUi::new() {
+                        match zerocode::RatatuiUi::new() {
                             Ok(mut ui) => {
                                 Box::pin(run_onboard(&mut cfg, &mut ui, target, &flags)).await?;
                             }

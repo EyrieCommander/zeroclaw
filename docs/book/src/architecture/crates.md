@@ -127,7 +127,7 @@ backend. Not a tracing/metrics layer — that's `zeroclaw-log`.
 
 Derive macros for config schema, tool registration, and channel registration. Saves boilerplate across the workspace.
 
-### `zeroclaw-tui`
+### `zerocode`
 
 Terminal UI. Optional — compile with `--features tui`.
 

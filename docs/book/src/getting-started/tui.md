@@ -7,7 +7,7 @@ The ZeroClaw TUI is a terminal interface for managing configuration, chatting wi
 On the same machine as the daemon, no extra configuration is needed:
 
 ```bash
-zeroclaw-tui
+zerocode
 ```
 
 The TUI finds the daemon socket automatically at `<data_dir>/data/daemon.sock`. If the daemon isn't running, the TUI spawns an ephemeral one.
@@ -59,7 +59,7 @@ Connect a TUI on your workstation to a daemon running on another machine (Raspbe
 5. **Connect with TLS verification skipped:**
 
    ```bash
-   zeroclaw-tui --connect wss://<remote-ip>:9781 --tls-skip-verify
+   zerocode --connect wss://<remote-ip>:9781 --tls-skip-verify
    ```
 
    `--tls-skip-verify` is required for self-signed certificates. The HMAC session signing still authenticates the connection.

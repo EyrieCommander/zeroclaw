@@ -115,7 +115,7 @@ Every workspace crate carries a stability tier per the Microkernel Architecture 
 | `zeroclaw-tools` | Experimental | Plugin migration at v1.0.0 |
 | `zeroclaw-runtime` | Experimental | Agent runtime (agent loop, security, cron, SOP, skills, observability) |
 | `zeroclaw-gateway` | Experimental | Separate binary at v0.9.0 |
-| `zeroclaw-tui` | Experimental | TUI onboarding wizard |
+| `zerocode` | Experimental | TUI onboarding wizard |
 | `zeroclaw-plugins` | Experimental | WASM plugin system — foundation for v1.0.0 plugin ecosystem |
 | `zeroclaw-hardware` | Experimental | USB discovery, peripherals, serial |
 | `zeroclaw-macros` | Beta | Tightly coupled to config schema |
@@ -141,7 +141,7 @@ Tiers are promoted, never demoted, through deliberate team decision.
 - `crates/zeroclaw-infra/` — shared infrastructure (debounce, session, stall watchdog)
 - `crates/zeroclaw-gateway/` — webhook/gateway server (separate binary)
 - `crates/zeroclaw-hardware/` — USB discovery, peripherals, serial, GPIO
-- `crates/zeroclaw-tui/` — TUI onboarding wizard
+- `crates/zerocode/` — TUI onboarding wizard
 - `crates/zeroclaw-plugins/` — WASM plugin system
 - `crates/zeroclaw-tool-call-parser/` — tool call parsing
 - `docs/` — topic-based documentation (setup-guides, reference, ops, security, hardware, contributing, maintainers)

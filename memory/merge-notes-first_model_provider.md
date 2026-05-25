@@ -1,6 +1,6 @@
 # Merge Note: first_model_provider must be NUKED
 
-When merging upstream/master into integration/zeroclaw-tui, after resolving conflicts,
+When merging upstream/master into integration/zerocode, after resolving conflicts,
 destroy ALL traces of `first_model_provider` and its family.
 
 ## Definitions to delete (crates/zeroclaw-config/src/schema.rs)

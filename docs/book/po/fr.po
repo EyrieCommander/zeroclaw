@@ -3834,8 +3834,8 @@ msgstr ""
 "Générer des macros pour la configuration et l'enregistrement des outils"
 
 #: src/architecture/overview.md:57 src/architecture/crates.md:118
-msgid "`zeroclaw-tui`"
-msgstr "`zeroclaw-tui`"
+msgid "`zerocode`"
+msgstr "`zerocode`"
 
 #: src/architecture/overview.md:57
 msgid "Terminal UI"

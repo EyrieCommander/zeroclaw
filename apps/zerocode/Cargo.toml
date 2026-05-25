@@ -1,5 +1,5 @@
 [package]
-name = "zeroclaw-tui"
+name = "zerocode"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,7 +7,7 @@ description = "Interactive TUI config manager for ZeroClaw."
 publish = false
 
 [[bin]]
-name = "zeroclaw-tui"
+name = "zerocode"
 path = "src/main.rs"
 
 [dependencies]

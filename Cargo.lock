@@ -13677,36 +13677,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zeroclaw-tui"
-version = "0.8.0-beta-1"
-dependencies = [
- "anyhow",
- "async-trait",
- "clap",
- "crossterm",
- "directories",
- "futures-util",
- "libc",
- "mime_guess",
- "pulldown-cmark",
- "ratatui",
- "rustls",
- "serde",
- "serde_json",
- "shellexpand",
- "similar",
- "syntect",
- "tempfile",
- "tokio",
- "tokio-tungstenite 0.29.0",
- "toml 1.1.2+spec-1.1.0",
- "two-face",
- "zeroclaw-api",
- "zeroclaw-config",
- "zeroclaw-spawn",
-]
-
-[[package]]
 name = "zeroclawlabs"
 version = "0.8.0-beta-1"
 dependencies = [
@@ -13797,8 +13767,38 @@ dependencies = [
  "zeroclaw-spawn",
  "zeroclaw-tool-call-parser",
  "zeroclaw-tools",
- "zeroclaw-tui",
+ "zerocode",
  "zip",
+]
+
+[[package]]
+name = "zerocode"
+version = "0.8.0-beta-1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "crossterm",
+ "directories",
+ "futures-util",
+ "libc",
+ "mime_guess",
+ "pulldown-cmark",
+ "ratatui",
+ "rustls",
+ "serde",
+ "serde_json",
+ "shellexpand",
+ "similar",
+ "syntect",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite 0.29.0",
+ "toml 1.1.2+spec-1.1.0",
+ "two-face",
+ "zeroclaw-api",
+ "zeroclaw-config",
+ "zeroclaw-spawn",
 ]
 
 [[package]]
