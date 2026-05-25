@@ -245,7 +245,7 @@ impl<'a> App<'a> {
     }
 
     /// Handle a key event. Returns `Ok(true)` when the user wants to
-    /// quit this mode (Esc/q at the top-level section list).
+    /// quit the entire TUI (never triggered from Config; use Ctrl+C at the app level).
     pub(crate) async fn handle_key(&mut self, key: KeyEvent, term: &mut Term) -> Result<bool> {
         self.status_msg = None;
 
@@ -886,7 +886,7 @@ impl<'a> App<'a> {
         }
 
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
+            KeyCode::Char('q') | KeyCode::Esc => return Ok(false),
             KeyCode::Up | KeyCode::Char('k') => {
                 self.section_cursor = self.section_cursor.saturating_sub(1);
             }
