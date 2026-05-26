@@ -1187,12 +1187,16 @@ impl AcpServer {
         // Mutex stays locked for the duration of the turn, preventing
         // concurrent stop/reap from touching the agent mid-turn. The outer
         // map entry remains in place.
+        let session_id_for_task = session_id.clone();
         let turn_handle = zeroclaw_spawn::spawn!(async move {
             let mut session = session_arc.lock().await;
-            let result = session
-                .agent
-                .turn_streamed(&prompt, event_tx, Some(cancel_token))
-                .await;
+            let result = zeroclaw_runtime::agent::loop_::scope_session_key(
+                Some(session_id_for_task),
+                session
+                    .agent
+                    .turn_streamed(&prompt, event_tx, Some(cancel_token)),
+            )
+            .await;
             session.last_active = Instant::now();
             result
             // guard drops here, releasing the inner lock
