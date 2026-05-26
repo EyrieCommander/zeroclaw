@@ -312,9 +312,7 @@ impl FileExplorerState {
                 ExplorerAction::None
             }
 
-            KeyCode::Char('c') if self.dir_picker => {
-                ExplorerAction::ConfirmDir(self.cwd.clone())
-            }
+            KeyCode::Char('c') if self.dir_picker => ExplorerAction::ConfirmDir(self.cwd.clone()),
 
             _ => ExplorerAction::None,
         }
