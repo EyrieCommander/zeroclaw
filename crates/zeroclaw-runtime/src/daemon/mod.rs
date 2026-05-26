@@ -1421,11 +1421,12 @@ fn validate_heartbeat_channel_config(config: &Config, channel: &str) -> Result<(
 }
 
 fn has_supervised_channels(config: &Config) -> bool {
-    config
-        .channels
-        .channels()
-        .iter()
-        .any(|info| info.configured)
+    // Check that at least one channel entry has `enabled = true`.
+    // A config with only `enabled = false` entries (e.g. partially-configured
+    // or intentionally disabled bots) must not start the supervisor — the
+    // channels component would find nothing to listen on, return Ok(()), and
+    // the daemon supervisor would restart it in a tight loop.
+    config.channels.has_any_enabled()
 }
 
 // run_mqtt_sop_listener has been moved to zeroclaw-channels::orchestrator::mqtt.
@@ -1500,6 +1501,57 @@ mod tests {
     #[test]
     fn detects_no_supervised_channels() {
         let config = Config::default();
+        assert!(!has_supervised_channels(&config));
+    }
+
+    #[test]
+    fn all_disabled_channels_not_supervised() {
+        // Regression test: a config with channel entries that all have
+        // `enabled = false` must not start the channels supervisor.
+        // Previously, has_supervised_channels only checked map non-emptiness,
+        // causing the supervisor to start, find nothing to listen on, return
+        // Ok(()), and restart in a tight loop.
+        let mut config = Config::default();
+        config.channels.discord.insert(
+            "clamps".to_string(),
+            zeroclaw_config::schema::DiscordConfig {
+                enabled: false,
+                bot_token: "token".into(),
+                guild_ids: vec![],
+                channel_ids: vec![],
+                listen_to_bots: false,
+                mention_only: true,
+                stream_mode: zeroclaw_config::schema::StreamMode::default(),
+                draft_update_interval_ms: 0,
+                multi_message_delay_ms: 0,
+                stall_timeout_secs: 0,
+                interrupt_on_new_message: false,
+                archive: false,
+                approval_timeout_secs: 0,
+                proxy_url: None,
+                excluded_tools: vec![],
+            },
+        );
+        config.channels.discord.insert(
+            "glados".to_string(),
+            zeroclaw_config::schema::DiscordConfig {
+                enabled: false,
+                bot_token: "token2".into(),
+                guild_ids: vec![],
+                channel_ids: vec![],
+                listen_to_bots: false,
+                mention_only: true,
+                stream_mode: zeroclaw_config::schema::StreamMode::default(),
+                draft_update_interval_ms: 0,
+                multi_message_delay_ms: 0,
+                stall_timeout_secs: 0,
+                interrupt_on_new_message: false,
+                archive: false,
+                approval_timeout_secs: 0,
+                proxy_url: None,
+                excluded_tools: vec![],
+            },
+        );
         assert!(!has_supervised_channels(&config));
     }
 
