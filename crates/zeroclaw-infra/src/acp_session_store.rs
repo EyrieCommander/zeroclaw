@@ -61,6 +61,18 @@ pub struct AcpSessionData {
     pub messages: Vec<ConversationMessage>,
 }
 
+/// Lightweight summary for the ACP session picker. Avoids loading the full
+/// message history just to render a one-line label per session.
+pub struct AcpSessionSummary {
+    pub session_uuid: String,
+    pub agent_alias: String,
+    pub workspace_dir: String,
+    pub token_count: u64,
+    pub created_at: DateTime<Utc>,
+    pub last_activity: DateTime<Utc>,
+    pub message_count: usize,
+}
+
 impl AcpSessionStore {
     pub fn new(workspace_dir: &Path) -> Result<Self> {
         let sessions_dir = workspace_dir.join("sessions");
@@ -208,6 +220,63 @@ impl AcpSessionStore {
             last_activity,
             messages,
         }))
+    }
+
+    /// List all sessions as lightweight summaries, ordered by most recent
+    /// activity first. This is the picker-facing read: it avoids the full
+    /// message-history hydration that `load_session` performs.
+    pub fn list_sessions(&self) -> Result<Vec<AcpSessionSummary>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare(
+                "SELECT s.session_uuid,
+                        s.agent_alias,
+                        s.workspace_dir,
+                        s.token_count,
+                        s.created_at,
+                        s.last_activity,
+                        (SELECT COUNT(*) FROM acp_messages m WHERE m.session_id = s.id) AS message_count
+                 FROM acp_sessions s
+                 ORDER BY s.last_activity DESC",
+            )
+            .context("Failed to prepare ACP session list query")?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            })
+            .context("Failed to query ACP sessions")?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            let (
+                session_uuid,
+                agent_alias,
+                workspace_dir,
+                token_count,
+                created_s,
+                activity_s,
+                msg_count,
+            ) = row.context("Failed to read ACP session row")?;
+            out.push(AcpSessionSummary {
+                created_at: parse_ts(&created_s, "created_at", &session_uuid),
+                last_activity: parse_ts(&activity_s, "last_activity", &session_uuid),
+                session_uuid,
+                agent_alias,
+                workspace_dir,
+                token_count: token_count.max(0) as u64,
+                message_count: msg_count.max(0) as usize,
+            });
+        }
+        Ok(out)
     }
 
     fn load_messages(
@@ -900,5 +969,37 @@ mod tests {
         assert_eq!(action, "cancel");
         assert_eq!(outcome, "failure");
         assert_eq!(payload.as_deref(), Some("turn cancelled by user"));
+    }
+
+    #[test]
+    fn list_sessions_returns_summaries_ordered_by_recent_activity() {
+        let (_tmp, store) = open_store();
+        store.create_session("sess-old", "alpha", "/tmp/a").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        store.create_session("sess-new", "beta", "/tmp/b").unwrap();
+        store
+            .append_turn(
+                "sess-new",
+                &[ConversationMessage::Chat(ChatMessage::user("hi"))],
+            )
+            .unwrap();
+        store.set_token_count("sess-new", 1234).unwrap();
+
+        let list = store.list_sessions().unwrap();
+        assert_eq!(list.len(), 2);
+        // Most recent activity first.
+        assert_eq!(list[0].session_uuid, "sess-new");
+        assert_eq!(list[0].agent_alias, "beta");
+        assert_eq!(list[0].workspace_dir, "/tmp/b");
+        assert_eq!(list[0].message_count, 1);
+        assert_eq!(list[0].token_count, 1234);
+        assert_eq!(list[1].session_uuid, "sess-old");
+        assert_eq!(list[1].message_count, 0);
+    }
+
+    #[test]
+    fn list_sessions_empty_when_no_sessions() {
+        let (_tmp, store) = open_store();
+        assert!(store.list_sessions().unwrap().is_empty());
     }
 }

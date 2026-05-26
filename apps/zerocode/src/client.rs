@@ -52,6 +52,7 @@ pub mod method {
     pub const HEALTH: &str = "health";
     pub const COST_QUERY: &str = "cost/query";
     pub const SESSION_LIST: &str = "session/list";
+    pub const SESSION_LIST_ACP: &str = "session/list-acp";
     pub const AGENTS_STATUS: &str = "agents/status";
     pub const CRON_LIST: &str = "cron/list";
     pub const MEMORY_LIST: &str = "memory/list";
@@ -905,6 +906,14 @@ impl RpcClient {
 
     pub async fn session_list(&self, query: Option<&str>) -> Result<SessionListResult> {
         self.call(method::SESSION_LIST, serde_json::json!({ "query": query }))
+            .await
+    }
+
+    /// List ACP sessions from the dedicated ACP session store. The Code (ACP)
+    /// pane's picker uses this so its list only contains ACP-origin sessions
+    /// — chat sessions live in a separate backend and must not show up here.
+    pub async fn acp_session_list(&self) -> Result<SessionListResult> {
+        self.call(method::SESSION_LIST_ACP, serde_json::json!({}))
             .await
     }
 

@@ -51,6 +51,7 @@ pub enum Method {
     SessionConfigure,
     SessionCancel,
     SessionList,
+    SessionListAcp,
     SessionMessages,
     SessionState,
     SessionDelete,
@@ -137,6 +138,7 @@ impl Method {
         (Method::SessionConfigure, "session/configure"),
         (Method::SessionCancel, "session/cancel"),
         (Method::SessionList, "session/list"),
+        (Method::SessionListAcp, "session/list-acp"),
         (Method::SessionMessages, "session/messages"),
         (Method::SessionState, "session/state"),
         (Method::SessionDelete, "session/delete"),
@@ -374,6 +376,7 @@ impl RpcDispatcher {
             Method::SessionConfigure => self.handle_session_configure(&req.params).await,
             Method::SessionCancel => self.handle_session_cancel(&req.params),
             Method::SessionList => self.handle_session_list(&req.params).await,
+            Method::SessionListAcp => self.handle_session_list_acp(&req.params).await,
             Method::SessionMessages => self.handle_session_messages(&req.params).await,
             Method::SessionState => self.handle_session_state(&req.params).await,
             Method::SessionDelete => self.handle_session_delete(&req.params).await,
@@ -914,6 +917,42 @@ impl RpcDispatcher {
                 }
             })
             .collect();
+        to_result(SessionListResult { sessions })
+    }
+
+    /// List ACP sessions from the dedicated ACP session store. The Code (ACP)
+    /// pane in the TUI calls this instead of `session/list` so its picker only
+    /// shows sessions that came from `acp-sessions.db` — chat-pane sessions
+    /// live in the unified `session_backend` and must not appear here.
+    async fn handle_session_list_acp(&self, _params: &Value) -> RpcResult {
+        let store = self
+            .ctx
+            .acp_session_store
+            .as_ref()
+            .ok_or_else(|| rpc_err(INTERNAL_ERROR, "ACP session store is not available"))?;
+
+        let summaries = store
+            .list_sessions()
+            .map_err(|e| rpc_err(INTERNAL_ERROR, format!("acp session list failed: {e}")))?;
+
+        let sessions: Vec<SessionEntry> = summaries
+            .into_iter()
+            .map(|s| SessionEntry {
+                session_id: s.session_uuid.clone(),
+                // ACP sessions are keyed by their UUID directly — no `rpc_`/`gw_`
+                // prefix exists in this store, so session_id == session_key.
+                session_key: s.session_uuid,
+                created_at: s.created_at.to_rfc3339(),
+                last_activity: s.last_activity.to_rfc3339(),
+                message_count: s.message_count,
+                agent_alias: Some(s.agent_alias),
+                channel_id: None,
+                // ACP sessions don't carry a user-set display name today; the
+                // picker falls back to `session_id` when this is None.
+                name: None,
+            })
+            .collect();
+
         to_result(SessionListResult { sessions })
     }
 

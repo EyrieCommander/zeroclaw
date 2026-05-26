@@ -631,21 +631,35 @@ impl Chat {
             KeyCode::Char('s')
                 if key.modifiers.contains(KeyModifiers::CONTROL) && !state.turn_in_flight =>
             {
-                if let Ok(list) = self.rpc.session_list(None).await {
-                    let chat_sessions: Vec<_> = list
-                        .sessions
-                        .into_iter()
-                        .filter(|s| s.channel_id.is_none())
-                        .collect();
-                    let mut ls = ListState::default();
-                    if !chat_sessions.is_empty() {
-                        ls.select(Some(0));
+                // ACP and Chat live in separate stores and must not cross-pick:
+                //  • Chat → unified session_backend (filter out channel-backed
+                //    sessions; those are owned by the channels pane).
+                //  • ACP  → dedicated acp-sessions.db, listed by a separate RPC.
+                let picker_sessions = if self.pane_kind == PaneKind::Acp {
+                    self.rpc
+                        .acp_session_list()
+                        .await
+                        .map(|list| list.sessions)
+                        .unwrap_or_default()
+                } else {
+                    match self.rpc.session_list(None).await {
+                        Ok(list) => list
+                            .sessions
+                            .into_iter()
+                            .filter(|s| s.channel_id.is_none())
+                            .collect(),
+                        Err(_) => Vec::new(),
                     }
-                    state.session_overlay = SessionOverlay::List {
-                        sessions: chat_sessions,
-                        list_state: ls,
-                    };
+                };
+
+                let mut ls = ListState::default();
+                if !picker_sessions.is_empty() {
+                    ls.select(Some(0));
                 }
+                state.session_overlay = SessionOverlay::List {
+                    sessions: picker_sessions,
+                    list_state: ls,
+                };
             }
             KeyCode::Char('r')
                 if key.modifiers.contains(KeyModifiers::CONTROL) && !state.turn_in_flight =>
