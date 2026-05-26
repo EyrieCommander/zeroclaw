@@ -30,7 +30,7 @@ pub enum DaemonExit {
 /// works identically on Linux, macOS, and Windows. The Sender is owned by
 /// the daemon (created in `run`) and cloned to the gateway for AppState.
 /// Default grace period (seconds) before ephemeral shutdown after last client disconnects.
-const EPHEMERAL_GRACE_SECS: u64 = 30;
+const EPHEMERAL_GRACE_SECS: u64 = 1;
 
 async fn wait_for_exit_signal(
     mut reload_rx: tokio::sync::watch::Receiver<bool>,
