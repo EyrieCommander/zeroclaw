@@ -16,10 +16,13 @@ else
   BOLD='' GREEN='' YELLOW='' RED='' RESET=''
 fi
 
-info()  { printf "  ${GREEN}✓${RESET} %s\n" "$*"; }
-warn()  { printf "  ${YELLOW}⚠${RESET} %s\n" "$*" >&2; }
-die()   { printf "  ${RED}✗${RESET} %s\n" "$*" >&2; exit 1; }
-bold()  { printf "${BOLD}%s${RESET}" "$*"; }
+info() { printf "  ${GREEN}✓${RESET} %s\n" "$*"; }
+warn() { printf "  ${YELLOW}⚠${RESET} %s\n" "$*" >&2; }
+die() {
+  printf "  ${RED}✗${RESET} %s\n" "$*" >&2
+  exit 1
+}
+bold() { printf "${BOLD}%s${RESET}" "$*"; }
 
 TUI_BIN_NAME="zerocode"
 
@@ -42,9 +45,18 @@ parse_cargo_toml() {
 
 validate_feature() {
   case "$1" in
-    fantoccini) warn "'fantoccini' is deprecated — use 'browser-native'" ; return 0 ;;
-    landlock)   warn "'landlock' is deprecated — use 'sandbox-landlock'" ; return 0 ;;
-    metrics)    warn "'metrics' is deprecated — use 'observability-prometheus'" ; return 0 ;;
+  fantoccini)
+    warn "'fantoccini' is deprecated — use 'browser-native'"
+    return 0
+    ;;
+  landlock)
+    warn "'landlock' is deprecated — use 'sandbox-landlock'"
+    return 0
+    ;;
+  metrics)
+    warn "'metrics' is deprecated — use 'observability-prometheus'"
+    return 0
+    ;;
   esac
   echo "$ALL_FEATURES" | grep -qx "$1" && return 0
   die "Unknown feature '$1'. Run: $0 --list-features"
@@ -65,19 +77,20 @@ list_features() {
   channels="" observability="" platform="" other=""
   for feat in $ALL_FEATURES; do
     case "$feat" in
-      default|ci-all|fantoccini|landlock|metrics) continue ;;
-      channel-*)       channels="${channels:+$channels, }$feat" ;;
-      observability-*) observability="${observability:+$observability, }$feat" ;;
-      hardware|peripheral-*|sandbox-*|browser-*|probe|rag-pdf|webauthn)
-                       platform="${platform:+$platform, }$feat" ;;
-      *)               other="${other:+$other, }$feat" ;;
+    default | ci-all | fantoccini | landlock | metrics) continue ;;
+    channel-*) channels="${channels:+$channels, }$feat" ;;
+    observability-*) observability="${observability:+$observability, }$feat" ;;
+    hardware | peripheral-* | sandbox-* | browser-* | probe | rag-pdf | webauthn)
+      platform="${platform:+$platform, }$feat"
+      ;;
+    *) other="${other:+$other, }$feat" ;;
     esac
   done
 
-  [ -n "$channels" ]      && printf "  %s\n    %s\n\n" "$(bold "Channels:")" "$channels"
+  [ -n "$channels" ] && printf "  %s\n    %s\n\n" "$(bold "Channels:")" "$channels"
   [ -n "$observability" ] && printf "  %s\n    %s\n\n" "$(bold "Observability:")" "$observability"
-  [ -n "$platform" ]      && printf "  %s\n    %s\n\n" "$(bold "Platform:")" "$platform"
-  [ -n "$other" ]         && printf "  %s\n    %s\n\n" "$(bold "Other:")" "$other"
+  [ -n "$platform" ] && printf "  %s\n    %s\n\n" "$(bold "Platform:")" "$platform"
+  [ -n "$other" ] && printf "  %s\n    %s\n\n" "$(bold "Other:")" "$other"
 
   printf "  %s\n" "$(bold "Build profiles:")"
   printf "    %s                                        # full (default features)\n" "$0"
@@ -111,9 +124,9 @@ detect_shell_profile() {
   local shell_name
   shell_name=$(basename "${SHELL:-/bin/bash}")
   case "$shell_name" in
-    zsh)  echo "$HOME/.zshrc" ;;
-    fish) echo "$HOME/.config/fish/config.fish" ;;
-    *)    echo "$HOME/.bashrc" ;;
+  zsh) echo "$HOME/.zshrc" ;;
+  fish) echo "$HOME/.config/fish/config.fish" ;;
+  *) echo "$HOME/.bashrc" ;;
   esac
 }
 
@@ -121,8 +134,8 @@ shell_export_syntax() {
   local shell_name
   shell_name=$(basename "${SHELL:-/bin/bash}")
   case "$shell_name" in
-    fish) printf 'set -gx PATH "%s/bin" $PATH' "$CARGO_HOME" ;;
-    *)    printf 'export PATH="%s/bin:$PATH"' "$CARGO_HOME" ;;
+  fish) printf 'set -gx PATH "%s/bin" $PATH' "$CARGO_HOME" ;;
+  *) printf 'export PATH="%s/bin:$PATH"' "$CARGO_HOME" ;;
   esac
 }
 
@@ -134,16 +147,17 @@ detect_target_triple() {
   arch=$(uname -m)
 
   case "$os" in
-    Darwin) echo "aarch64-apple-darwin" ;;   # presume M-series
-    Linux)
-      case "$arch" in
-        x86_64)          echo "x86_64-unknown-linux-gnu" ;;
-        aarch64|arm64)   echo "aarch64-unknown-linux-gnu" ;;
-        armv7l)          echo "armv7-unknown-linux-gnueabihf" ;;
-        armv6l|arm*)     echo "arm-unknown-linux-gnueabihf" ;;
-        *)               echo "" ;;
-      esac ;;
+  Darwin) echo "aarch64-apple-darwin" ;; # presume M-series
+  Linux)
+    case "$arch" in
+    x86_64) echo "x86_64-unknown-linux-gnu" ;;
+    aarch64 | arm64) echo "aarch64-unknown-linux-gnu" ;;
+    armv7l) echo "armv7-unknown-linux-gnueabihf" ;;
+    armv6l | arm*) echo "arm-unknown-linux-gnueabihf" ;;
     *) echo "" ;;
+    esac
+    ;;
+  *) echo "" ;;
   esac
 }
 
@@ -159,8 +173,8 @@ install_prebuilt() {
   fi
 
   # Resolve latest release version via GitHub API
-  version=$(curl -fsSL "https://api.github.com/repos/zeroclaw-labs/zeroclaw/releases/latest" \
-    | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\(.*\)".*/\1/')
+  version=$(curl -fsSL "https://api.github.com/repos/zeroclaw-labs/zeroclaw/releases/latest" |
+    grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\(.*\)".*/\1/')
 
   if [ -z "$version" ]; then
     warn "Could not resolve latest release — falling back to source build"
@@ -179,21 +193,21 @@ install_prebuilt() {
 
   # Resolve platform-correct web data directory to match gateway auto-detect
   case "$(uname -s)" in
-    Darwin)
-      web_data_dir="${HOME}/Library/Application Support/zeroclaw/web/dist"
-      ;;
-    MINGW*|CYGWIN*|MSYS*)
-      web_data_dir="${LOCALAPPDATA}/zeroclaw/web/dist"
-      ;;
-    *)
-      web_data_dir="${XDG_DATA_HOME:-${PREFIX}/.local/share}/zeroclaw/web/dist"
-      ;;
+  Darwin)
+    web_data_dir="${HOME}/Library/Application Support/zeroclaw/web/dist"
+    ;;
+  MINGW* | CYGWIN* | MSYS*)
+    web_data_dir="${LOCALAPPDATA}/zeroclaw/web/dist"
+    ;;
+  *)
+    web_data_dir="${XDG_DATA_HOME:-${PREFIX}/.local/share}/zeroclaw/web/dist"
+    ;;
   esac
 
   if [ "$DRY_RUN" = true ]; then
     info "[dry-run] Would download $asset_url"
     info "[dry-run] Would install to $CARGO_HOME/bin/zeroclaw"
-    info "[dry-run] Would install TUI to $CARGO_HOME/bin/$TUI_BIN_NAME (if in tarball)"
+    info "[dry-run] Would install $TUI_BIN_NAME to $CARGO_HOME/bin/$TUI_BIN_NAME (if in tarball)"
     info "[dry-run] Would install web dashboard to $web_data_dir"
     return 0
   fi
@@ -201,19 +215,25 @@ install_prebuilt() {
   tmp_dir=$(mktemp -d)
   trap 'rm -rf "$tmp_dir"' EXIT
 
-  curl -fSL --progress-bar "$asset_url" -o "$tmp_dir/$asset_name" \
-    || { warn "Download failed — falling back to source build"; rm -rf "$tmp_dir"; return 1; }
+  curl -fSL --progress-bar "$asset_url" -o "$tmp_dir/$asset_name" ||
+    {
+      warn "Download failed — falling back to source build"
+      rm -rf "$tmp_dir"
+      return 1
+    }
 
   # Verify checksum — all failure modes fall back to source rather than install unverified
   if ! curl -fsSL "$sha256_url" -o "$tmp_dir/SHA256SUMS" 2>/dev/null; then
     warn "Could not fetch SHA256SUMS — falling back to source build"
-    rm -rf "$tmp_dir"; return 1
+    rm -rf "$tmp_dir"
+    return 1
   fi
 
   expected=$(grep "$asset_name" "$tmp_dir/SHA256SUMS" | awk '{print $1}')
   if [ -z "$expected" ]; then
     warn "Asset not found in SHA256SUMS — falling back to source build"
-    rm -rf "$tmp_dir"; return 1
+    rm -rf "$tmp_dir"
+    return 1
   fi
 
   if command -v sha256sum >/dev/null 2>&1; then
@@ -222,7 +242,8 @@ install_prebuilt() {
     actual=$(shasum -a 256 "$tmp_dir/$asset_name" | awk '{print $1}')
   else
     warn "No checksum tool available (sha256sum/shasum) — falling back to source build"
-    rm -rf "$tmp_dir"; return 1
+    rm -rf "$tmp_dir"
+    return 1
   fi
 
   if [ "$actual" != "$expected" ]; then
@@ -323,8 +344,11 @@ do_uninstall() {
       printf "  Remove config and data (%s)? [y/N] " "$config_dir"
       read -r confirm
       case "$confirm" in
-        [Yy]*) rm -rf "$config_dir"; info "Removed $config_dir" ;;
-        *)     info "Config preserved at $config_dir" ;;
+      [Yy]*)
+        rm -rf "$config_dir"
+        info "Removed $config_dir"
+        ;;
+      *) info "Config preserved at $config_dir" ;;
       esac
     else
       info "Config preserved at $config_dir (non-interactive — use rm -rf to remove)"
@@ -357,12 +381,12 @@ do_uninstall() {
 # default config files still trigger the prompt.
 onboarding_needed() {
   cfg="$PREFIX/.zeroclaw/config.toml"
-  [ -f "$cfg" ] || return 0   # no config → onboard
+  [ -f "$cfg" ] || return 0 # no config → onboard
   # Already-configured signal: any of these patterns means a provider was set.
   if grep -qE '^\[providers\.models\.|^fallback *=|^default_provider *=' "$cfg" 2>/dev/null; then
-    return 1   # configured → skip
+    return 1 # configured → skip
   fi
-  return 0     # config exists but empty → onboard
+  return 0 # config exists but empty → onboard
 }
 
 # ── Interactive feature picker ───────────────────────────────────
@@ -382,9 +406,10 @@ interactive_feature_picker() {
   picker_features=""
   for feat in $ALL_FEATURES; do
     case "$feat" in
-      default|ci-all|fantoccini|landlock|metrics) continue ;;
-      channel-*|observability-*|hardware|peripheral-*|sandbox-*|browser-*|probe|rag-pdf|webauthn)
-        picker_features="${picker_features:+$picker_features }$feat" ;;
+    default | ci-all | fantoccini | landlock | metrics) continue ;;
+    channel-* | observability-* | hardware | peripheral-* | sandbox-* | browser-* | probe | rag-pdf | webauthn)
+      picker_features="${picker_features:+$picker_features }$feat"
+      ;;
     esac
   done
   # TUI is a separate binary, not a cargo feature — append as pseudo-entry
@@ -417,14 +442,14 @@ interactive_feature_picker() {
     [ -z "$choices" ] && break
     for n in $choices; do
       case "$n" in
-        ''|*[!0-9]*) continue ;;
+      '' | *[!0-9]*) continue ;;
       esac
       idx=1
       for feat in $picker_features; do
         if [ "$idx" -eq "$n" ]; then
           case " $selected " in
-            *" $feat "*) selected=$(printf '%s' "$selected" | tr ' ' '\n' | grep -vx "$feat" | paste -sd' ' -) ;;
-            *)            selected="${selected:+$selected }$feat" ;;
+          *" $feat "*) selected=$(printf '%s' "$selected" | tr ' ' '\n' | grep -vx "$feat" | paste -sd' ' -) ;;
+          *) selected="${selected:+$selected }$feat" ;;
           esac
           break
         fi
@@ -484,7 +509,7 @@ apply_low_mem_lto_default() {
 
   mem_kb=$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)
   case "$mem_kb" in
-    ''|*[!0-9]*) return 0 ;;
+  '' | *[!0-9]*) return 0 ;;
   esac
   # 12 GiB in KiB = 12 * 1024 * 1024
   if [ "$mem_kb" -lt 12582912 ]; then
@@ -503,10 +528,10 @@ LIST_FEATURES=false
 UNINSTALL=false
 DRY_RUN=false
 PREFIX="$HOME"
-INSTALL_MODE=""   # ""=ask, "prebuilt"=force prebuilt, "source"=force source
-PRESET=""         # ""=unset, "minimal"=alias for --minimal, "full"=default-features
-WITH_GATEWAY=""   # ""=unset (preset/feature default applies), "true"/"false"=explicit toggle
-WITHOUT_TUI=""    # ""=unset (default: install TUI), "true"=skip TUI
+INSTALL_MODE="" # ""=ask, "prebuilt"=force prebuilt, "source"=force source
+PRESET=""       # ""=unset, "minimal"=alias for --minimal, "full"=default-features
+WITH_GATEWAY="" # ""=unset (preset/feature default applies), "true"/"false"=explicit toggle
+WITHOUT_TUI=""  # ""=unset (default: install TUI), "true"=skip TUI
 
 # Support legacy env var
 if [ -n "${ZEROCLAW_CARGO_FEATURES:-}" ]; then
@@ -515,46 +540,58 @@ fi
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --minimal)        MINIMAL=true ;;
-    --preset)
-      if [ $# -lt 2 ]; then
-        die "Missing value for --preset. Expected: --preset minimal|full"
-      fi
-      shift
-      case "$1" in
-        minimal) PRESET="minimal"; MINIMAL=true ;;
-        full)    PRESET="full" ;;
-        *)       die "Unknown preset '$1'. Expected: minimal or full" ;;
-      esac ;;
-    --features)
-      if [ $# -lt 2 ]; then
-        die "Missing value for --features. Expected: --features X,Y"
-      fi
-      shift; USER_FEATURES="${USER_FEATURES:+$USER_FEATURES,}$1" ;;
-    --with-gateway)    WITH_GATEWAY="true" ;;
-    --without-gateway) WITH_GATEWAY="false" ;;
-    --without-tui)    WITHOUT_TUI=true ;;
-    --list-features)  LIST_FEATURES=true ;;
-    --prefix)
-      if [ $# -lt 2 ]; then
-        die "Missing value for --prefix. Expected: --prefix /path"
-      fi
-      shift; PREFIX=$(echo "$1" | sed 's|/*$||') ;;
-    --dry-run)        DRY_RUN=true ;;
-    --skip-onboard)   SKIP_ONBOARD=true ;;
-    --prebuilt)       INSTALL_MODE="prebuilt" ;;
-    --source)         INSTALL_MODE="source" ;;
-    --uninstall)      UNINSTALL=true ;;
-    -h|--help)        usage; exit 0 ;;
-    -V|--version)
-      if [ -f "Cargo.toml" ]; then
-        parse_cargo_toml "Cargo.toml"
-        echo "install.sh for ZeroClaw v$VERSION"
-      else
-        echo "install.sh (version unknown — not in repo)"
-      fi
-      exit 0 ;;
-    *) die "Unknown option: $1. Run: $0 --help" ;;
+  --minimal) MINIMAL=true ;;
+  --preset)
+    if [ $# -lt 2 ]; then
+      die "Missing value for --preset. Expected: --preset minimal|full"
+    fi
+    shift
+    case "$1" in
+    minimal)
+      PRESET="minimal"
+      MINIMAL=true
+      ;;
+    full) PRESET="full" ;;
+    *) die "Unknown preset '$1'. Expected: minimal or full" ;;
+    esac
+    ;;
+  --features)
+    if [ $# -lt 2 ]; then
+      die "Missing value for --features. Expected: --features X,Y"
+    fi
+    shift
+    USER_FEATURES="${USER_FEATURES:+$USER_FEATURES,}$1"
+    ;;
+  --with-gateway) WITH_GATEWAY="true" ;;
+  --without-gateway) WITH_GATEWAY="false" ;;
+  --without-tui) WITHOUT_TUI=true ;;
+  --list-features) LIST_FEATURES=true ;;
+  --prefix)
+    if [ $# -lt 2 ]; then
+      die "Missing value for --prefix. Expected: --prefix /path"
+    fi
+    shift
+    PREFIX=$(echo "$1" | sed 's|/*$||')
+    ;;
+  --dry-run) DRY_RUN=true ;;
+  --skip-onboard) SKIP_ONBOARD=true ;;
+  --prebuilt) INSTALL_MODE="prebuilt" ;;
+  --source) INSTALL_MODE="source" ;;
+  --uninstall) UNINSTALL=true ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  -V | --version)
+    if [ -f "Cargo.toml" ]; then
+      parse_cargo_toml "Cargo.toml"
+      echo "install.sh for ZeroClaw v$VERSION"
+    else
+      echo "install.sh (version unknown — not in repo)"
+    fi
+    exit 0
+    ;;
+  *) die "Unknown option: $1. Run: $0 --help" ;;
   esac
   shift
 done
@@ -588,8 +625,8 @@ fi
 # --minimal, --features, --without-gateway, or --preset full imply source.
 # Prebuilt binaries always ship with default features, so any flag that
 # changes the feature set must force a source build.
-if [ "$MINIMAL" = true ] || [ -n "$USER_FEATURES" ] \
-   || [ "$WITH_GATEWAY" = "false" ] || [ "$PRESET" = "full" ]; then
+if [ "$MINIMAL" = true ] || [ -n "$USER_FEATURES" ] ||
+  [ "$WITH_GATEWAY" = "false" ] || [ "$PRESET" = "full" ]; then
   INSTALL_MODE="source"
 fi
 
@@ -604,8 +641,8 @@ if [ "$INSTALL_MODE" = "" ]; then
       printf "\n  Choice [P/s]: "
       read -r install_choice
       case "$install_choice" in
-        [Ss]*) INSTALL_MODE="source" ;;
-        *)     INSTALL_MODE="prebuilt" ;;
+      [Ss]*) INSTALL_MODE="source" ;;
+      *) INSTALL_MODE="prebuilt" ;;
       esac
     else
       # Non-interactive (curl | bash): default to pre-built silently
@@ -650,69 +687,69 @@ fi
 
 if [ "${SOURCE_SKIPPED:-false}" != true ]; then
 
-echo
-printf "%s\n" "$(bold "ZeroClaw — source install")"
-if [ "$PREFIX" != "$HOME" ]; then
-  printf "  prefix: %s\n" "$(bold "$PREFIX")"
-fi
-echo
+  echo
+  printf "%s\n" "$(bold "ZeroClaw — source install")"
+  if [ "$PREFIX" != "$HOME" ]; then
+    printf "  prefix: %s\n" "$(bold "$PREFIX")"
+  fi
+  echo
 
-if [ -f "Cargo.toml" ] && grep -q "zeroclaw" "Cargo.toml" 2>/dev/null; then
-  INSTALL_DIR="$(pwd)"
-  info "Building from $(pwd)"
-elif [ -d "$INSTALL_DIR/.git" ]; then
-  info "Updating source in $INSTALL_DIR"
-  git -C "$INSTALL_DIR" pull --ff-only --quiet 2>/dev/null || {
-    warn "Fast-forward pull failed — resetting to origin/master"
-    git -C "$INSTALL_DIR" fetch origin master --quiet
-    git -C "$INSTALL_DIR" reset --hard origin/master --quiet
-  }
-  cd "$INSTALL_DIR"
-else
-  info "Cloning into $INSTALL_DIR"
-  mkdir -p "$(dirname "$INSTALL_DIR")"
-  git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
-  cd "$INSTALL_DIR"
-fi
-
-# ── Parse Cargo.toml ──────────────────────────────────────────────
-
-parse_cargo_toml "Cargo.toml"
-
-printf "  Version: %s (MSRV: %s, edition: %s)\n" "$(bold "$VERSION")" "$MSRV" "$EDITION"
-
-# ── Preflight: Rust ───────────────────────────────────────────────
-
-NEED_RUST=false
-if ! command -v rustc >/dev/null 2>&1 || ! command -v cargo >/dev/null 2>&1; then
-  NEED_RUST=true
-elif [ "$PREFIX" != "$HOME" ] && [ ! -d "$RUSTUP_HOME/toolchains" ]; then
-  NEED_RUST=true
-fi
-
-if [ "$NEED_RUST" = true ]; then
-  if [ "$DRY_RUN" = true ]; then
-    warn "[dry-run] Would install Rust via rustup into $RUSTUP_HOME"
+  if [ -f "Cargo.toml" ] && grep -q "zeroclaw" "Cargo.toml" 2>/dev/null; then
+    INSTALL_DIR="$(pwd)"
+    info "Building from $(pwd)"
+  elif [ -d "$INSTALL_DIR/.git" ]; then
+    info "Updating source in $INSTALL_DIR"
+    git -C "$INSTALL_DIR" pull --ff-only --quiet 2>/dev/null || {
+      warn "Fast-forward pull failed — resetting to origin/master"
+      git -C "$INSTALL_DIR" fetch origin master --quiet
+      git -C "$INSTALL_DIR" reset --hard origin/master --quiet
+    }
+    cd "$INSTALL_DIR"
   else
-    warn "Installing Rust via rustup into $CARGO_HOME"
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
-      --no-modify-path --default-toolchain stable
-    . "$CARGO_HOME/env"
+    info "Cloning into $INSTALL_DIR"
+    mkdir -p "$(dirname "$INSTALL_DIR")"
+    git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
+    cd "$INSTALL_DIR"
   fi
-fi
 
-if [ "$DRY_RUN" != true ]; then
-  RUST_VERSION=$(rustc --version | awk '{print $2}')
-  if ! version_gte "$RUST_VERSION" "$MSRV"; then
-    die "Rust $RUST_VERSION is too old. ZeroClaw requires $MSRV+ (edition $EDITION). Run: rustup update stable"
+  # ── Parse Cargo.toml ──────────────────────────────────────────────
+
+  parse_cargo_toml "Cargo.toml"
+
+  printf "  Version: %s (MSRV: %s, edition: %s)\n" "$(bold "$VERSION")" "$MSRV" "$EDITION"
+
+  # ── Preflight: Rust ───────────────────────────────────────────────
+
+  NEED_RUST=false
+  if ! command -v rustc >/dev/null 2>&1 || ! command -v cargo >/dev/null 2>&1; then
+    NEED_RUST=true
+  elif [ "$PREFIX" != "$HOME" ] && [ ! -d "$RUSTUP_HOME/toolchains" ]; then
+    NEED_RUST=true
   fi
-  info "Rust $RUST_VERSION (>= $MSRV)"
-fi
 
-# ── Preflight: 32-bit ARM ────────────────────────────────────────
+  if [ "$NEED_RUST" = true ]; then
+    if [ "$DRY_RUN" = true ]; then
+      warn "[dry-run] Would install Rust via rustup into $RUSTUP_HOME"
+    else
+      warn "Installing Rust via rustup into $CARGO_HOME"
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+        --no-modify-path --default-toolchain stable
+      . "$CARGO_HOME/env"
+    fi
+  fi
 
-case "$(uname -m)" in
-  armv7l|armv6l|armhf)
+  if [ "$DRY_RUN" != true ]; then
+    RUST_VERSION=$(rustc --version | awk '{print $2}')
+    if ! version_gte "$RUST_VERSION" "$MSRV"; then
+      die "Rust $RUST_VERSION is too old. ZeroClaw requires $MSRV+ (edition $EDITION). Run: rustup update stable"
+    fi
+    info "Rust $RUST_VERSION (>= $MSRV)"
+  fi
+
+  # ── Preflight: 32-bit ARM ────────────────────────────────────────
+
+  case "$(uname -m)" in
+  armv7l | armv6l | armhf)
     die "32-bit ARM detected — the default feature 'observability-prometheus'
 requires 64-bit atomics and will not compile on this architecture.
 
@@ -722,206 +759,210 @@ Example (full agent without prometheus):
 See all available features:
   $0 --list-features"
     ;;
-esac
-
-# ── Build feature flags ──────────────────────────────────────────
-#
-# Cargo cannot remove individual entries from `default`, so toggling
-# `gateway` off requires `--no-default-features` plus an explicit list
-# of the rest. Derive that list from $DEFAULT_FEATURES (parsed from
-# Cargo.toml above) so it stays in sync automatically.
-
-CARGO_FLAGS=""
-
-if [ "$MINIMAL" = true ]; then
-  CARGO_FLAGS="--no-default-features"
-fi
-
-# `--without-gateway` overrides the default-features set: switch to
-# --no-default-features and re-add everything in `default` except gateway.
-if [ "$WITH_GATEWAY" = "false" ] && [ "$MINIMAL" != true ]; then
-  CARGO_FLAGS="--no-default-features"
-  defaults_no_gateway=$(printf '%s' "$DEFAULT_FEATURES" | tr ',' '\n' | grep -vx gateway | paste -sd, -)
-  USER_FEATURES="${USER_FEATURES:+$USER_FEATURES,}$defaults_no_gateway"
-fi
-
-# `--with-gateway` is a no-op when default features are on (gateway is
-# already there), and additive when --no-default-features is in play.
-if [ "$WITH_GATEWAY" = "true" ]; then
-  case "$CARGO_FLAGS" in
-    *--no-default-features*) USER_FEATURES="${USER_FEATURES:+$USER_FEATURES,}gateway" ;;
   esac
-fi
 
-# Interactive feature picker — only when the operator did not pin
-# features via the CLI and is running under a TTY. Skipped on
-# `--minimal`, `--preset`, `--features`, `--with-gateway` /
-# `--without-gateway`, and any non-interactive run (curl | bash).
-if [ -t 0 ] \
-    && [ "$MINIMAL" != true ] \
-    && [ -z "$USER_FEATURES" ] \
-    && [ -z "$PRESET" ] \
-    && [ -z "$WITH_GATEWAY" ]; then
-  PICKED=$(interactive_feature_picker "Cargo.toml")
-  # Extract TUI preference (pseudo-entry, not a cargo feature)
-  case ",$PICKED," in
+  # ── Build feature flags ──────────────────────────────────────────
+  #
+  # Cargo cannot remove individual entries from `default`, so toggling
+  # `gateway` off requires `--no-default-features` plus an explicit list
+  # of the rest. Derive that list from $DEFAULT_FEATURES (parsed from
+  # Cargo.toml above) so it stays in sync automatically.
+
+  CARGO_FLAGS=""
+
+  if [ "$MINIMAL" = true ]; then
+    CARGO_FLAGS="--no-default-features"
+  fi
+
+  # `--without-gateway` overrides the default-features set: switch to
+  # --no-default-features and re-add everything in `default` except gateway.
+  if [ "$WITH_GATEWAY" = "false" ] && [ "$MINIMAL" != true ]; then
+    CARGO_FLAGS="--no-default-features"
+    defaults_no_gateway=$(printf '%s' "$DEFAULT_FEATURES" | tr ',' '\n' | grep -vx gateway | paste -sd, -)
+    USER_FEATURES="${USER_FEATURES:+$USER_FEATURES,}$defaults_no_gateway"
+  fi
+
+  # `--with-gateway` is a no-op when default features are on (gateway is
+  # already there), and additive when --no-default-features is in play.
+  if [ "$WITH_GATEWAY" = "true" ]; then
+    case "$CARGO_FLAGS" in
+    *--no-default-features*) USER_FEATURES="${USER_FEATURES:+$USER_FEATURES,}gateway" ;;
+    esac
+  fi
+
+  # Interactive feature picker — only when the operator did not pin
+  # features via the CLI and is running under a TTY. Skipped on
+  # `--minimal`, `--preset`, `--features`, `--with-gateway` /
+  # `--without-gateway`, and any non-interactive run (curl | bash).
+  if [ -t 0 ] &&
+    [ "$MINIMAL" != true ] &&
+    [ -z "$USER_FEATURES" ] &&
+    [ -z "$PRESET" ] &&
+    [ -z "$WITH_GATEWAY" ]; then
+    PICKED=$(interactive_feature_picker "Cargo.toml")
+    # Extract TUI preference (pseudo-entry, not a cargo feature)
+    case ",$PICKED," in
     *,"$TUI_BIN_NAME",*) ;;
     *) WITHOUT_TUI=true ;;
-  esac
-  PICKED=$(printf '%s' "$PICKED" | tr ',' '\n' | grep -vx "$TUI_BIN_NAME" | paste -sd, -)
-  if [ -n "$PICKED" ]; then
-    USER_FEATURES="$PICKED"
-    info "Picked features: $USER_FEATURES"
+    esac
+    PICKED=$(printf '%s' "$PICKED" | tr ',' '\n' | grep -vx "$TUI_BIN_NAME" | paste -sd, -)
+    if [ -n "$PICKED" ]; then
+      USER_FEATURES="$PICKED"
+      info "Picked features: $USER_FEATURES"
+    fi
   fi
-fi
-
-if [ -n "$USER_FEATURES" ]; then
-  # Normalize: treat commas, spaces, tabs as delimiters; deduplicate; trim empty
-  USER_FEATURES=$(printf '%s' "$USER_FEATURES" | tr ',[:space:]' '\n' | grep -v '^$' | sort -u | paste -sd, - || true)
 
   if [ -n "$USER_FEATURES" ]; then
-    # Validate each feature
-    OLD_IFS="$IFS"
-    IFS=','
-    for feat in $USER_FEATURES; do
-      [ -n "$feat" ] && validate_feature "$feat"
-    done
-    IFS="$OLD_IFS"
-    CARGO_FLAGS="$CARGO_FLAGS --features $USER_FEATURES"
-  fi
-fi
+    # Normalize: treat commas, spaces, tabs as delimiters; deduplicate; trim empty
+    USER_FEATURES=$(printf '%s' "$USER_FEATURES" | tr ',[:space:]' '\n' | grep -v '^$' | sort -u | paste -sd, - || true)
 
-# ── Detect existing installs ──────────────────────────────────────
-
-PATH_BIN=$(PATH="$ORIGINAL_PATH" command -v zeroclaw 2>/dev/null || true)
-if [ -n "$PATH_BIN" ]; then
-  PATH_VERSION=$("$PATH_BIN" --version 2>/dev/null | awk '{print $NF}' || echo "unknown")
-  TARGET_BIN="$CARGO_HOME/bin/zeroclaw"
-  if [ "$PATH_BIN" != "$TARGET_BIN" ]; then
-    warn "zeroclaw found at $PATH_BIN (v$PATH_VERSION)"
-    warn "This install targets $TARGET_BIN"
-    warn "The old binary will shadow the new one unless removed or PATH is reordered"
-  else
-    warn "Existing install: $PATH_BIN (v$PATH_VERSION)"
-  fi
-  if [ "$MINIMAL" = true ] && [ "$DRY_RUN" != true ]; then
-    if [ -t 0 ]; then
-      printf "  --minimal will produce a reduced binary (no agent runtime by default). Continue? [Y/n] "
-      read -r confirm
-      case "$confirm" in
-        [Nn]*) echo "Aborted."; exit 0 ;;
-      esac
+    if [ -n "$USER_FEATURES" ]; then
+      # Validate each feature
+      OLD_IFS="$IFS"
+      IFS=','
+      for feat in $USER_FEATURES; do
+        [ -n "$feat" ] && validate_feature "$feat"
+      done
+      IFS="$OLD_IFS"
+      CARGO_FLAGS="$CARGO_FLAGS --features $USER_FEATURES"
     fi
   fi
-  if [ "$PRESET" = "full" ] && [ "$DRY_RUN" != true ] && [ -t 1 ]; then
-    info "--preset full: building from source with the full default feature set."
+
+  # ── Detect existing installs ──────────────────────────────────────
+
+  PATH_BIN=$(PATH="$ORIGINAL_PATH" command -v zeroclaw 2>/dev/null || true)
+  if [ -n "$PATH_BIN" ]; then
+    PATH_VERSION=$("$PATH_BIN" --version 2>/dev/null | awk '{print $NF}' || echo "unknown")
+    TARGET_BIN="$CARGO_HOME/bin/zeroclaw"
+    if [ "$PATH_BIN" != "$TARGET_BIN" ]; then
+      warn "zeroclaw found at $PATH_BIN (v$PATH_VERSION)"
+      warn "This install targets $TARGET_BIN"
+      warn "The old binary will shadow the new one unless removed or PATH is reordered"
+    else
+      warn "Existing install: $PATH_BIN (v$PATH_VERSION)"
+    fi
+    if [ "$MINIMAL" = true ] && [ "$DRY_RUN" != true ]; then
+      if [ -t 0 ]; then
+        printf "  --minimal will produce a reduced binary (no agent runtime by default). Continue? [Y/n] "
+        read -r confirm
+        case "$confirm" in
+        [Nn]*)
+          echo "Aborted."
+          exit 0
+          ;;
+        esac
+      fi
+    fi
+    if [ "$PRESET" = "full" ] && [ "$DRY_RUN" != true ] && [ -t 1 ]; then
+      info "--preset full: building from source with the full default feature set."
+    fi
   fi
-fi
 
-# ── Build profile RAM heuristic (Linux low-mem hosts) ─────────────
+  # ── Build profile RAM heuristic (Linux low-mem hosts) ─────────────
 
-apply_low_mem_lto_default
+  apply_low_mem_lto_default
 
+  # ── Build and install ─────────────────────────────────────────────
 
-# ── Build and install ─────────────────────────────────────────────
+  echo
+  printf "%s\n" "$(bold "Building ZeroClaw v$VERSION")"
+  if [ -n "$CARGO_FLAGS" ]; then
+    info "Feature flags: $CARGO_FLAGS"
+  else
+    info "Feature flags: (defaults)"
+  fi
+  echo
 
-echo
-printf "%s\n" "$(bold "Building ZeroClaw v$VERSION")"
-if [ -n "$CARGO_FLAGS" ]; then
-  info "Feature flags: $CARGO_FLAGS"
-else
-  info "Feature flags: (defaults)"
-fi
-echo
+  if [ "$DRY_RUN" = true ]; then
+    # shellcheck disable=SC2086
+    info "[dry-run] Would run: cargo install --path . --locked --force $CARGO_FLAGS"
+  else
+    # shellcheck disable=SC2086
+    cargo install --path . --locked --force $CARGO_FLAGS
+  fi
 
-if [ "$DRY_RUN" = true ]; then
-  # shellcheck disable=SC2086
-  info "[dry-run] Would run: cargo install --path . --locked --force $CARGO_FLAGS"
-else
-  # shellcheck disable=SC2086
-  cargo install --path . --locked --force $CARGO_FLAGS
-fi
-
-# ── Web dashboard (gateway feature only) ──────────────────────────
-# When the install includes the `gateway` feature, build `web/dist` so
-# the dashboard route serves something. Skips silently when the build
-# excluded gateway (`--without-gateway`, `--minimal` without explicit
-# gateway in --features, etc).
-WANT_GATEWAY=true
-case "$CARGO_FLAGS" in
+  # ── Web dashboard (gateway feature only) ──────────────────────────
+  # When the install includes the `gateway` feature, build `web/dist` so
+  # the dashboard route serves something. Skips silently when the build
+  # excluded gateway (`--without-gateway`, `--minimal` without explicit
+  # gateway in --features, etc).
+  WANT_GATEWAY=true
+  case "$CARGO_FLAGS" in
   *--no-default-features*)
     case ",$USER_FEATURES," in
-      *,gateway,*) ;;
-      *) WANT_GATEWAY=false ;;
-    esac ;;
-esac
-if [ "$WANT_GATEWAY" = true ]; then
-  if [ "$DRY_RUN" = true ]; then
-    info "[dry-run] Would build web dashboard"
-  else
-    build_web_dashboard "$INSTALL_DIR"
+    *,gateway,*) ;;
+    *) WANT_GATEWAY=false ;;
+    esac
+    ;;
+  esac
+  if [ "$WANT_GATEWAY" = true ]; then
+    if [ "$DRY_RUN" = true ]; then
+      info "[dry-run] Would build web dashboard"
+    else
+      build_web_dashboard "$INSTALL_DIR"
+    fi
   fi
-fi
 
-# ── TUI (requires agent-runtime for daemon RPC) ──────────────────
-# The TUI connects to zeroclaw-runtime's RPC server. Without agent-runtime,
-# there's no daemon to connect to — skip the TUI build.
+  # ── TUI (requires agent-runtime for daemon RPC) ──────────────────
+  # The TUI connects to zeroclaw-runtime's RPC server. Without agent-runtime,
+  # there's no daemon to connect to — skip the TUI build.
 
-WANT_TUI=true
-if [ "$WITHOUT_TUI" = true ]; then
-  WANT_TUI=false
-else
-  # agent-runtime is a default feature. If defaults are stripped
-  # (--minimal, --without-gateway), check whether it was re-added.
-  case "$CARGO_FLAGS" in
+  WANT_TUI=true
+  if [ "$WITHOUT_TUI" = true ]; then
+    WANT_TUI=false
+  else
+    # agent-runtime is a default feature. If defaults are stripped
+    # (--minimal, --without-gateway), check whether it was re-added.
+    case "$CARGO_FLAGS" in
     *--no-default-features*)
       case ",$USER_FEATURES," in
-        *,agent-runtime,*) ;;
-        *) WANT_TUI=false ;;
-      esac ;;
-  esac
-fi
-
-if [ "$WANT_TUI" = true ]; then
-  if [ "$DRY_RUN" = true ]; then
-    info "[dry-run] Would run: cargo install --path apps/tui --locked --force"
-  else
-    echo
-    printf "%s\n" "$(bold "Building $TUI_BIN_NAME")"
-    echo
-    cargo install --path apps/tui --locked --force
+      *,agent-runtime,*) ;;
+      *) WANT_TUI=false ;;
+      esac
+      ;;
+    esac
   fi
-fi
 
-# ── Summary ───────────────────────────────────────────────────────
-
-if [ "$DRY_RUN" != true ]; then
-  BIN="$CARGO_HOME/bin/zeroclaw"
-  if [ -f "$BIN" ]; then
-    SIZE=$(du -h "$BIN" | awk '{print $1}')
-    NEW_VERSION=$("$BIN" --version 2>/dev/null | awk '{print $NF}' || echo "$VERSION")
-    echo
-    info "Installed: $BIN (v$NEW_VERSION, $SIZE)"
-
-    ACTIVE_BIN=$(PATH="$ORIGINAL_PATH" command -v zeroclaw 2>/dev/null || true)
-    if [ -n "$ACTIVE_BIN" ] && [ "$ACTIVE_BIN" != "$BIN" ]; then
-      ACTIVE_VERSION=$("$ACTIVE_BIN" --version 2>/dev/null | awk '{print $NF}' || echo "unknown")
+  if [ "$WANT_TUI" = true ]; then
+    if [ "$DRY_RUN" = true ]; then
+      info "[dry-run] Would run: cargo install --path apps/$TUI_BIN_NAME --locked --force"
+    else
       echo
-      warn "$(bold "WARNING:") zeroclaw in your PATH is $ACTIVE_BIN (v$ACTIVE_VERSION)"
-      warn "It will shadow the v$NEW_VERSION binary you just installed at $BIN"
-      warn "Fix: remove the old binary or put $CARGO_HOME/bin earlier in your PATH"
+      printf "%s\n" "$(bold "Building $TUI_BIN_NAME")"
+      echo
+      cargo install --path apps/$TUI_BIN_NAME --locked --force
     fi
-  else
-    warn "Binary not found at expected path: $BIN"
   fi
-  TUI_BIN="$CARGO_HOME/bin/$TUI_BIN_NAME"
-  if [ -f "$TUI_BIN" ]; then
-    TUI_SIZE=$(du -h "$TUI_BIN" | awk '{print $1}')
-    info "Installed: $TUI_BIN ($TUI_SIZE)"
-  fi
-fi
 
-fi  # end source build block
+  # ── Summary ───────────────────────────────────────────────────────
+
+  if [ "$DRY_RUN" != true ]; then
+    BIN="$CARGO_HOME/bin/zeroclaw"
+    if [ -f "$BIN" ]; then
+      SIZE=$(du -h "$BIN" | awk '{print $1}')
+      NEW_VERSION=$("$BIN" --version 2>/dev/null | awk '{print $NF}' || echo "$VERSION")
+      echo
+      info "Installed: $BIN (v$NEW_VERSION, $SIZE)"
+
+      ACTIVE_BIN=$(PATH="$ORIGINAL_PATH" command -v zeroclaw 2>/dev/null || true)
+      if [ -n "$ACTIVE_BIN" ] && [ "$ACTIVE_BIN" != "$BIN" ]; then
+        ACTIVE_VERSION=$("$ACTIVE_BIN" --version 2>/dev/null | awk '{print $NF}' || echo "unknown")
+        echo
+        warn "$(bold "WARNING:") zeroclaw in your PATH is $ACTIVE_BIN (v$ACTIVE_VERSION)"
+        warn "It will shadow the v$NEW_VERSION binary you just installed at $BIN"
+        warn "Fix: remove the old binary or put $CARGO_HOME/bin earlier in your PATH"
+      fi
+    else
+      warn "Binary not found at expected path: $BIN"
+    fi
+    TUI_BIN="$CARGO_HOME/bin/$TUI_BIN_NAME"
+    if [ -f "$TUI_BIN" ]; then
+      TUI_SIZE=$(du -h "$TUI_BIN" | awk '{print $1}')
+      info "Installed: $TUI_BIN ($TUI_SIZE)"
+    fi
+  fi
+
+fi # end source build block
 
 BIN="$CARGO_HOME/bin/zeroclaw"
 
@@ -972,23 +1013,23 @@ if [ "$SKIP_ONBOARD" = false ] && [ "$DRY_RUN" != true ] && [ -f "$BIN" ]; then
     printf "  Choice [1-3, default 1]: "
     read -r onboard_choice
     case "${onboard_choice:-1}" in
-      1|"")
-        echo
-        "$BIN" onboard || warn "Onboard wizard exited with an error — run 'zeroclaw onboard' manually"
-        ;;
-      2)
-        echo
-        info "Starting gateway daemon for browser-based onboarding..."
-        info "Open the dashboard in your browser; pair with the code shown in logs."
-        info "Stop the daemon with Ctrl+C when done; then run 'zeroclaw service install' for always-on."
-        "$BIN" daemon || warn "Daemon exited with an error — run 'zeroclaw daemon' manually"
-        ;;
-      3)
-        info "Skipped onboarding. Run 'zeroclaw onboard' (CLI) or 'zeroclaw daemon' (browser) when ready."
-        ;;
-      *)
-        warn "Unknown choice '$onboard_choice' — skipping. Run 'zeroclaw onboard' to configure."
-        ;;
+    1 | "")
+      echo
+      "$BIN" onboard || warn "Onboard wizard exited with an error — run 'zeroclaw onboard' manually"
+      ;;
+    2)
+      echo
+      info "Starting gateway daemon for browser-based onboarding..."
+      info "Open the dashboard in your browser; pair with the code shown in logs."
+      info "Stop the daemon with Ctrl+C when done; then run 'zeroclaw service install' for always-on."
+      "$BIN" daemon || warn "Daemon exited with an error — run 'zeroclaw daemon' manually"
+      ;;
+    3)
+      info "Skipped onboarding. Run 'zeroclaw onboard' (CLI) or 'zeroclaw daemon' (browser) when ready."
+      ;;
+    *)
+      warn "Unknown choice '$onboard_choice' — skipping. Run 'zeroclaw onboard' to configure."
+      ;;
     esac
   else
     info "Non-interactive — skipping onboard prompt. Run 'zeroclaw onboard' to configure."
