@@ -822,6 +822,7 @@ impl RpcClient {
                 "session_id": session_id,
                 "tui_id": tui_id,
                 "exclude_memory": true,
+                "chat_mode": "acp",
             }),
         )
         .await

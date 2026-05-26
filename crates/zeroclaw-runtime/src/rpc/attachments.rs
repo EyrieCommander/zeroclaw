@@ -395,7 +395,12 @@ mod tests {
         store
             .insert(
                 "s1".into(),
-                super::super::session::RpcSession::new(make_test_agent(), "a", workspace),
+                super::super::session::RpcSession::new(
+                    make_test_agent(),
+                    "a",
+                    workspace,
+                    crate::rpc::types::ChatMode::Chat,
+                ),
             )
             .await
             .unwrap();

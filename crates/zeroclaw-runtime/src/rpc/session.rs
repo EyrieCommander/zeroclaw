@@ -38,13 +38,17 @@ pub struct RpcSession {
     pub agent_alias: String,
     pub workspace_dir: String,
     pub overrides: SessionOverrides,
-    /// Content-addressed upload index. Key is `sha256:<hex>`.
-    /// Evaporates with the session.
     pub uploads: HashMap<String, UploadEntry>,
+    pub chat_mode: crate::rpc::types::ChatMode,
 }
 
 impl RpcSession {
-    pub fn new(agent: Agent, alias: &str, workspace: &str) -> Self {
+    pub fn new(
+        agent: Agent,
+        alias: &str,
+        workspace: &str,
+        chat_mode: crate::rpc::types::ChatMode,
+    ) -> Self {
         Self {
             agent: Arc::new(Mutex::new(agent)),
             created_at: Instant::now(),
@@ -53,6 +57,7 @@ impl RpcSession {
             workspace_dir: workspace.to_string(),
             overrides: SessionOverrides::default(),
             uploads: HashMap::new(),
+            chat_mode,
         }
     }
 }
@@ -172,6 +177,41 @@ impl SessionStore {
         if let Some(s) = self.sessions.lock().await.get(id) {
             s.agent.lock().await.seed_history(msgs);
         }
+    }
+
+    pub async fn seed_conversation_history(
+        &self,
+        id: &str,
+        msgs: Vec<zeroclaw_api::model_provider::ConversationMessage>,
+    ) {
+        if let Some(s) = self.sessions.lock().await.get(id) {
+            s.agent.lock().await.seed_conversation_history(msgs);
+        }
+    }
+
+    pub async fn chat_mode(&self, id: &str) -> Option<crate::rpc::types::ChatMode> {
+        self.sessions
+            .lock()
+            .await
+            .get(id)
+            .map(|s| s.chat_mode.clone())
+    }
+
+    pub async fn history_len(&self, id: &str) -> Option<usize> {
+        let sessions = self.sessions.lock().await;
+        let s = sessions.get(id)?;
+        Some(s.agent.lock().await.history().len())
+    }
+
+    pub async fn history_slice_from(
+        &self,
+        id: &str,
+        from: usize,
+    ) -> Option<Vec<zeroclaw_api::model_provider::ConversationMessage>> {
+        let sessions = self.sessions.lock().await;
+        let s = sessions.get(id)?;
+        let h = s.agent.lock().await;
+        Some(h.history()[from..].to_vec())
     }
 
     pub async fn remove(&self, id: &str) -> bool {
@@ -305,7 +345,10 @@ mod tests {
         assert_eq!(store.count().await, 0);
 
         store
-            .insert("s1".into(), RpcSession::new(make_agent(), "a", "."))
+            .insert(
+                "s1".into(),
+                RpcSession::new(make_agent(), "a", ".", crate::rpc::types::ChatMode::Chat),
+            )
             .await
             .unwrap();
         assert_eq!(store.count().await, 1);
@@ -315,11 +358,17 @@ mod tests {
     async fn insert_rejects_over_limit() {
         let store = make_store(1);
         store
-            .insert("s1".into(), RpcSession::new(make_agent(), "a", "."))
+            .insert(
+                "s1".into(),
+                RpcSession::new(make_agent(), "a", ".", crate::rpc::types::ChatMode::Chat),
+            )
             .await
             .unwrap();
         let err = store
-            .insert("s2".into(), RpcSession::new(make_agent(), "a", "."))
+            .insert(
+                "s2".into(),
+                RpcSession::new(make_agent(), "a", ".", crate::rpc::types::ChatMode::Chat),
+            )
             .await;
         assert!(err.is_err());
     }
@@ -328,7 +377,10 @@ mod tests {
     async fn get_agent_returns_arc() {
         let store = make_store(4);
         store
-            .insert("s1".into(), RpcSession::new(make_agent(), "a", "."))
+            .insert(
+                "s1".into(),
+                RpcSession::new(make_agent(), "a", ".", crate::rpc::types::ChatMode::Chat),
+            )
             .await
             .unwrap();
         assert!(store.get_agent("s1").await.is_some());
@@ -339,7 +391,10 @@ mod tests {
     async fn remove_cleans_up() {
         let store = make_store(4);
         store
-            .insert("s1".into(), RpcSession::new(make_agent(), "a", "."))
+            .insert(
+                "s1".into(),
+                RpcSession::new(make_agent(), "a", ".", crate::rpc::types::ChatMode::Chat),
+            )
             .await
             .unwrap();
 
@@ -383,11 +438,17 @@ mod tests {
     async fn list_ids() {
         let store = make_store(4);
         store
-            .insert("b".into(), RpcSession::new(make_agent(), "a", "."))
+            .insert(
+                "b".into(),
+                RpcSession::new(make_agent(), "a", ".", crate::rpc::types::ChatMode::Chat),
+            )
             .await
             .unwrap();
         store
-            .insert("a".into(), RpcSession::new(make_agent(), "a", "."))
+            .insert(
+                "a".into(),
+                RpcSession::new(make_agent(), "a", ".", crate::rpc::types::ChatMode::Chat),
+            )
             .await
             .unwrap();
         let mut ids = store.list_ids().await;
@@ -399,7 +460,10 @@ mod tests {
     async fn touch_updates_last_active() {
         let store = make_store(4);
         store
-            .insert("s1".into(), RpcSession::new(make_agent(), "a", "."))
+            .insert(
+                "s1".into(),
+                RpcSession::new(make_agent(), "a", ".", crate::rpc::types::ChatMode::Chat),
+            )
             .await
             .unwrap();
 

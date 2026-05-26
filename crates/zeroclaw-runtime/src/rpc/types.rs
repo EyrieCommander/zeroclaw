@@ -145,16 +145,19 @@ rpc_type! {
         pub cwd: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub session_id: Option<String>,
-        /// Optional TUI identity token. When present the daemon looks up the
-        /// TUI's captured shell environment in `TuiRegistry` and passes it to
-        /// the agent so that tools inherit the user's real `PATH` etc.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub tui_id: Option<String>,
-        /// When true, strip memory tools from the agent and use a NoneMemory
-        /// backend. Set by ACP pane sessions; Chat pane sessions leave this
-        /// unset (defaults false) so the agent retains full memory access.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub exclude_memory: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub chat_mode: Option<ChatMode>,
+    }
+}
+
+rpc_type! {
+    pub enum ChatMode {
+        Chat,
+        Acp,
     }
 }
 

@@ -111,6 +111,27 @@ impl RpcContext {
             acp_session_store: None,
         })
     }
+
+    #[cfg(test)]
+    pub fn for_persistence_tests(
+        config: Config,
+        sessions: Arc<SessionStore>,
+        session_backend: Option<Arc<dyn SessionBackend>>,
+        acp_session_store: Option<Arc<AcpSessionStore>>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            config: Arc::new(RwLock::new(config)),
+            sessions,
+            session_backend,
+            memory: None,
+            cost_tracker: None,
+            event_tx: None,
+            reload_tx: None,
+            approval_pending: Arc::new(ApprovalPendingMap::default()),
+            tui_registry: Arc::new(TuiRegistry::new_unsigned()),
+            acp_session_store,
+        })
+    }
 }
 
 #[cfg(test)]

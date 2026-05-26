@@ -597,8 +597,6 @@ impl RpcDispatcher {
 
         let config = self.ctx.config.read().clone();
         let cwd_path = req.cwd.as_deref().map(std::path::Path::new);
-        // If the client passed a tui_id, look up the TUI's captured shell env
-        // so that tools inherit the user's real PATH, SSH_AUTH_SOCK, etc.
         let tui_env = req
             .tui_id
             .as_deref()
@@ -614,8 +612,6 @@ impl RpcDispatcher {
         .await
         .map_err(|e| rpc_err(INTERNAL_ERROR, format!("Failed to create agent: {e}")))?;
 
-        // Register the RPC approval channel so tool-call approvals route
-        // through session/approve instead of being auto-denied.
         let approval_ch = Arc::new(crate::rpc::approval_channel::RpcApprovalChannel::new(
             "rpc",
             session_id.clone(),
@@ -630,25 +626,66 @@ impl RpcDispatcher {
                 .to_string_lossy()
                 .to_string()
         });
+        let chat_mode = req
+            .chat_mode
+            .clone()
+            .unwrap_or(crate::rpc::types::ChatMode::Chat);
         self.ctx
             .sessions
             .insert(
                 session_id.clone(),
-                super::session::RpcSession::new(agent, &req.agent_alias, &cwd),
+                super::session::RpcSession::new(agent, &req.agent_alias, &cwd, chat_mode.clone()),
             )
             .await
             .map_err(|_| rpc_err(SESSION_LIMIT_REACHED, "Session limit reached"))?;
 
-        // Restore persisted history if available.
         let mut message_count = 0;
-        if let Some(ref backend) = self.ctx.session_backend {
-            let session_key = format!("rpc_{session_id}");
-            // Persist agent alias so session/list can find this session.
-            let _ = backend.set_session_agent_alias(&session_key, &req.agent_alias);
-            let stored = backend.load(&session_key);
-            if !stored.is_empty() {
-                self.ctx.sessions.seed_history(&session_id, &stored).await;
-                message_count = stored.len();
+        match chat_mode {
+            crate::rpc::types::ChatMode::Acp => {
+                if let Some(ref store) = self.ctx.acp_session_store {
+                    match store.load_session(&session_id) {
+                        Ok(Some(data)) => {
+                            message_count = data.messages.len();
+                            self.ctx
+                                .sessions
+                                .seed_conversation_history(&session_id, data.messages)
+                                .await;
+                        }
+                        Ok(None) => {
+                            if let Err(e) =
+                                store.create_session(&session_id, &req.agent_alias, &cwd)
+                            {
+                                ::zeroclaw_log::record!(
+                                    WARN,
+                                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                                        .with_outcome(::zeroclaw_log::EventOutcome::Unknown)
+                                        .with_attrs(::serde_json::json!({"session_id": session_id, "error": e.to_string()})),
+                                    "Failed to create ACP session row"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            ::zeroclaw_log::record!(
+                                WARN,
+                                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                                    .with_outcome(::zeroclaw_log::EventOutcome::Unknown)
+                                    .with_attrs(::serde_json::json!({"session_id": session_id, "error": e.to_string()})),
+                                "Failed to load ACP session"
+                            );
+                        }
+                    }
+                }
+            }
+            crate::rpc::types::ChatMode::Chat => {
+                if let Some(ref backend) = self.ctx.session_backend {
+                    let session_key = format!("rpc_{session_id}");
+                    let _ = backend.set_session_agent_alias(&session_key, &req.agent_alias);
+                    let stored = backend.load(&session_key);
+                    if !stored.is_empty() {
+                        self.ctx.sessions.seed_history(&session_id, &stored).await;
+                        message_count = stored.len();
+                    }
+                }
             }
         }
 
@@ -756,6 +793,18 @@ impl RpcDispatcher {
         self.ctx.sessions.register_cancel_token(sid, cancel.clone());
         self.ctx.sessions.touch(sid).await;
 
+        let chat_mode = self
+            .ctx
+            .sessions
+            .chat_mode(sid)
+            .await
+            .unwrap_or(crate::rpc::types::ChatMode::Chat);
+        let pre_history_len = if matches!(chat_mode, crate::rpc::types::ChatMode::Acp) {
+            self.ctx.sessions.history_len(sid).await.unwrap_or(0)
+        } else {
+            0
+        };
+
         // Capture attribution fields and max_context_tokens for the turn span.
         let (agent_alias, model_provider, model, max_ctx) = {
             let alias = self
@@ -804,18 +853,51 @@ impl RpcDispatcher {
 
         self.ctx.sessions.remove_cancel_token(sid);
 
-        // Persist.
-        if let Some(ref backend) = self.ctx.session_backend {
-            let key = format!("rpc_{sid}");
-            let _ = backend.append(&key, &ChatMessage::user(&prompt));
-            match &outcome {
-                Ok(TurnOutcome::Completed { text, .. }) => {
-                    let _ = backend.append(&key, &ChatMessage::assistant(text));
+        match chat_mode {
+            crate::rpc::types::ChatMode::Acp => {
+                if let Some(ref store) = self.ctx.acp_session_store
+                    && matches!(
+                        outcome,
+                        Ok(TurnOutcome::Completed { .. }) | Ok(TurnOutcome::Cancelled { .. })
+                    )
+                {
+                    if let Some(new_msgs) = self
+                        .ctx
+                        .sessions
+                        .history_slice_from(sid, pre_history_len)
+                        .await
+                        && !new_msgs.is_empty()
+                        && let Err(e) = store.append_turn(sid, &new_msgs)
+                    {
+                        ::zeroclaw_log::record!(
+                            WARN,
+                            ::zeroclaw_log::Event::new(
+                                module_path!(),
+                                ::zeroclaw_log::Action::Note
+                            )
+                            .with_outcome(::zeroclaw_log::EventOutcome::Unknown)
+                            .with_attrs(
+                                ::serde_json::json!({"session_id": sid, "error": e.to_string()})
+                            ),
+                            "Failed to persist ACP turn"
+                        );
+                    }
                 }
-                Ok(TurnOutcome::Cancelled { partial_text }) if !partial_text.is_empty() => {
-                    let _ = backend.append(&key, &ChatMessage::assistant(partial_text));
+            }
+            crate::rpc::types::ChatMode::Chat => {
+                if let Some(ref backend) = self.ctx.session_backend {
+                    let key = format!("rpc_{sid}");
+                    let _ = backend.append(&key, &ChatMessage::user(&prompt));
+                    match &outcome {
+                        Ok(TurnOutcome::Completed { text, .. }) => {
+                            let _ = backend.append(&key, &ChatMessage::assistant(text));
+                        }
+                        Ok(TurnOutcome::Cancelled { partial_text }) if !partial_text.is_empty() => {
+                            let _ = backend.append(&key, &ChatMessage::assistant(partial_text));
+                        }
+                        _ => {}
+                    }
                 }
-                _ => {}
             }
         }
 
@@ -2535,6 +2617,113 @@ mod tests {
         assert!(
             has_any_memory_tool,
             "non-ACP session MUST expose at least one memory tool — tool list: {tool_names:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // chat_mode persistence routing: ACP vs Chat must not cross stores
+    // -----------------------------------------------------------------------
+
+    use zeroclaw_infra::session_backend::SessionBackend;
+
+    fn make_persistence_test_dispatcher(
+        config: zeroclaw_config::schema::Config,
+        data_dir: &std::path::Path,
+    ) -> (
+        RpcDispatcher,
+        Arc<crate::rpc::session::SessionStore>,
+        Arc<zeroclaw_infra::session_sqlite::SqliteSessionBackend>,
+        Arc<zeroclaw_infra::acp_session_store::AcpSessionStore>,
+    ) {
+        use zeroclaw_infra::session_queue::SessionActorQueue;
+        let queue = Arc::new(SessionActorQueue::new(4, 10, 60));
+        let sessions = Arc::new(crate::rpc::session::SessionStore::new(16, queue));
+        let chat_backend =
+            Arc::new(zeroclaw_infra::session_sqlite::SqliteSessionBackend::new(data_dir).unwrap());
+        let acp_store =
+            Arc::new(zeroclaw_infra::acp_session_store::AcpSessionStore::new(data_dir).unwrap());
+        let ctx = RpcContext::for_persistence_tests(
+            config,
+            Arc::clone(&sessions),
+            Some(chat_backend.clone() as Arc<dyn zeroclaw_infra::session_backend::SessionBackend>),
+            Some(Arc::clone(&acp_store)),
+        );
+        let (tx, _rx) = tokio::sync::mpsc::channel(64);
+        let dispatcher = RpcDispatcher::new(ctx, tx, "test-peer".into());
+        (dispatcher, sessions, chat_backend, acp_store)
+    }
+
+    /// chat_mode=acp creates a row in acp-sessions.db, sessions.db stays empty
+    /// for that session_id.
+    #[tokio::test]
+    async fn acp_session_new_writes_to_acp_store_only() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config = make_acp_test_config(&tmp);
+        let data_dir = config.data_dir.clone();
+        let (dispatcher, _sessions, chat_backend, acp_store) =
+            make_persistence_test_dispatcher(config, &data_dir);
+
+        let sid = "acp-routing-001";
+        let params = json!({
+            "agent_alias": "test-agent",
+            "exclude_memory": true,
+            "chat_mode": "acp",
+            "session_id": sid,
+        });
+
+        dispatcher
+            .handle_session_new_for_test(&params)
+            .await
+            .expect("session/new should succeed");
+
+        assert!(
+            acp_store.load_session(sid).unwrap().is_some(),
+            "ACP session must be persisted to acp_session_store"
+        );
+
+        assert!(
+            chat_backend.load(&format!("rpc_{sid}")).is_empty(),
+            "ACP session must NOT touch chat session_backend"
+        );
+    }
+
+    /// chat_mode omitted (or =chat) creates rows via session_backend,
+    /// acp-sessions.db stays empty for that session_id.
+    #[tokio::test]
+    async fn chat_session_new_writes_to_chat_backend_only() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config = make_acp_test_config(&tmp);
+        let data_dir = config.data_dir.clone();
+        let (dispatcher, _sessions, chat_backend, acp_store) =
+            make_persistence_test_dispatcher(config, &data_dir);
+
+        let sid = "chat-routing-001";
+        let params = json!({
+            "agent_alias": "test-agent",
+            "session_id": sid,
+        });
+
+        dispatcher
+            .handle_session_new_for_test(&params)
+            .await
+            .expect("session/new should succeed");
+
+        assert!(
+            acp_store.load_session(sid).unwrap().is_none(),
+            "Chat session must NOT touch acp_session_store"
+        );
+
+        let key = format!("rpc_{sid}");
+        let metadata = chat_backend.list_sessions_with_metadata();
+        let entry = metadata
+            .iter()
+            .find(|m| m.key == key)
+            .expect("Chat session must be registered in session_backend metadata");
+        assert_eq!(
+            entry.agent_alias.as_deref(),
+            Some("test-agent"),
+            "Chat session must stamp its agent_alias in session_backend (got: {:?})",
+            entry.agent_alias
         );
     }
 }
