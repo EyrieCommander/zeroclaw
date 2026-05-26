@@ -169,13 +169,18 @@ pub async fn process_file_entry(
     // silently produced no inline image part and the model received text
     // only — observed as the agent hallucinating about prior screenshots.)
     //
-    // The `display_path` preference is the user's original path (file picks
-    // over Unix transport): the file lives at a stable location they chose,
-    // so referencing it directly is fine and avoids copying the path-string
-    // to the agent's view of the world. Clipboard pastes and WSS uploads
-    // both fall back to the workspace `/uploads/...` copy.
+    // The `display_path` preference is the user's original path only for
+    // stable file picks (Unix transport, non-clipboard). Clipboard pastes
+    // use a /tmp path that the TUI deletes after the turn completes, so
+    // on the next turn the multimodal pipeline would find the file gone
+    // and emit a WARN. Always use the workspace /uploads/ copy for clipboard.
     let kind = attachment_kind(&mime_type);
-    let display_path = original_path.as_deref().unwrap_or(&workspace_path);
+    let is_clipboard = matches!(entry.source, FileSource::Clipboard);
+    let display_path = if is_clipboard {
+        &workspace_path
+    } else {
+        original_path.as_deref().unwrap_or(&workspace_path)
+    };
     let marker = if kind == "IMAGE" {
         format!("[IMAGE:{display_path}]")
     } else {

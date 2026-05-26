@@ -82,6 +82,10 @@ pub struct Agent {
     /// are stripped from the tool set. Used by ACP sessions.
     #[allow(dead_code)]
     exclude_memory: bool,
+    /// Per-session cache for resolved local image data URIs.
+    /// Avoids re-reading the same image file on every turn/tool-iteration
+    /// when the multimodal pipeline re-walks the full conversation history.
+    image_cache: zeroclaw_providers::multimodal::LocalImageCache,
 }
 
 /// Bundle of late-bound channel-map handles owned by an Agent. Cloning is
@@ -515,6 +519,7 @@ impl AgentBuilder {
             approval_manager: self.approval_manager,
             channel_handles: AgentChannelHandles::default(),
             exclude_memory,
+            image_cache: zeroclaw_providers::multimodal::LocalImageCache::new(),
         })
     }
 }
@@ -1221,12 +1226,13 @@ impl Agent {
     }
 
     async fn prepare_provider_messages(
-        &self,
+        &mut self,
         messages: &[ChatMessage],
     ) -> Result<Vec<ChatMessage>> {
-        let prepared = zeroclaw_providers::multimodal::prepare_messages_for_provider(
+        let prepared = zeroclaw_providers::multimodal::prepare_messages_for_provider_cached(
             messages,
             &self.multimodal_config,
+            &mut self.image_cache,
         )
         .await?;
         Ok(prepared.messages)

@@ -1,6 +1,6 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::Client;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use zeroclaw_api::model_provider::ChatMessage;
 use zeroclaw_config::schema::{MultimodalConfig, build_runtime_proxy_client_with_timeouts};
@@ -13,6 +13,57 @@ const ALLOWED_IMAGE_MIME_TYPES: &[&str] = &[
     "image/gif",
     "image/bmp",
 ];
+
+/// Per-path cache for resolved local image data URIs.
+///
+/// Keyed by absolute path. The cached value stores the file size and
+/// modification time at the time of resolution; if either changes the
+/// entry is considered stale and the file is re-read. Files under an
+/// `uploads/` directory are content-addressed (SHA-256 name) and
+/// therefore immutable — their metadata is stored as `(0, 0)` so they
+/// are never re-checked after the first successful read.
+///
+/// The cache lives on the `Agent` and is reused across turns and tool
+/// iterations, so each unique local image is read from disk at most once
+/// per session (or once per modification for mutable files).
+#[derive(Debug, Default)]
+pub struct LocalImageCache {
+    /// path → (file_len, mtime_secs, data_uri)
+    entries: HashMap<String, (u64, i64, String)>,
+}
+
+impl LocalImageCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Look up a cached data URI. Returns `Some(&data_uri)` if the entry
+    /// exists and the file metadata still matches, `None` otherwise.
+    fn get(&self, path: &str, len: u64, mtime: i64) -> Option<&str> {
+        if let Some((cached_len, cached_mtime, data_uri)) = self.entries.get(path) {
+            // Immutable uploads are stored with sentinel (0, 0) — always valid.
+            if (*cached_len == 0 && *cached_mtime == 0)
+                || (*cached_len == len && *cached_mtime == mtime)
+            {
+                return Some(data_uri.as_str());
+            }
+        }
+        None
+    }
+
+    fn insert(&mut self, path: String, len: u64, mtime: i64, data_uri: String) {
+        self.entries.insert(path, (len, mtime, data_uri));
+    }
+
+    /// Number of cached entries (for diagnostics).
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct PreparedMessages {
@@ -306,6 +357,7 @@ async fn normalize_native_tool_result_json(
     max_bytes: usize,
     remote_client: &Client,
     ctx: &ImageNormalizeCtx<'_>,
+    cache: Option<&mut LocalImageCache>,
 ) -> Option<(String, bool)> {
     let Ok(serde_json::Value::Object(mut obj)) = serde_json::from_str::<serde_json::Value>(content)
     else {
@@ -321,7 +373,7 @@ async fn normalize_native_tool_result_json(
         return None;
     }
 
-    let normalized = normalize_image_references(&refs, config, max_bytes, remote_client, ctx).await;
+    let normalized = normalize_image_references(&refs, config, max_bytes, remote_client, ctx, cache).await;
     let new_inner = compose_multimodal_content(
         &cleaned_text,
         &normalized.data_uris,
@@ -339,6 +391,25 @@ async fn normalize_native_tool_result_json(
 pub async fn prepare_messages_for_provider(
     messages: &[ChatMessage],
     config: &MultimodalConfig,
+) -> anyhow::Result<PreparedMessages> {
+    prepare_messages_inner(messages, config, None).await
+}
+
+/// Like [`prepare_messages_for_provider`] but reuses a [`LocalImageCache`]
+/// across calls so each unique local image file is read from disk at most
+/// once per session (or once per modification for mutable files).
+pub async fn prepare_messages_for_provider_cached(
+    messages: &[ChatMessage],
+    config: &MultimodalConfig,
+    cache: &mut LocalImageCache,
+) -> anyhow::Result<PreparedMessages> {
+    prepare_messages_inner(messages, config, Some(cache)).await
+}
+
+async fn prepare_messages_inner(
+    messages: &[ChatMessage],
+    config: &MultimodalConfig,
+    mut cache: Option<&mut LocalImageCache>,
 ) -> anyhow::Result<PreparedMessages> {
     let (max_images, max_image_size_mb) = config.effective_limits();
     let max_bytes = max_image_size_mb.saturating_mul(1024 * 1024);
@@ -415,6 +486,7 @@ pub async fn prepare_messages_for_provider(
                     message_index: index,
                     role: &message.role,
                 },
+                cache.as_deref_mut(),
             )
             .await
         {
@@ -441,6 +513,7 @@ pub async fn prepare_messages_for_provider(
                 message_index: index,
                 role: &message.role,
             },
+            cache.as_deref_mut(),
         )
         .await;
         let content = compose_multimodal_content(
@@ -505,7 +578,6 @@ pub async fn prepare_messages_for_provider(
         messages: capped_messages,
     })
 }
-
 /// Strip images from user messages that are more than `max_turns` turns back
 /// from the end of `messages`.  A "turn" here is counted as a user-role
 /// message, so `max_turns = 2` keeps images in the two most recent user
@@ -648,12 +720,13 @@ async fn normalize_image_references(
     max_bytes: usize,
     remote_client: &Client,
     ctx: &ImageNormalizeCtx<'_>,
+    mut cache: Option<&mut LocalImageCache>,
 ) -> NormalizedImageReferences {
     let mut data_uris = Vec::with_capacity(refs.len());
     let mut skipped_count = 0usize;
 
     for reference in refs {
-        match normalize_image_reference(reference, config, max_bytes, remote_client).await {
+        match normalize_image_reference(reference, config, max_bytes, remote_client, cache.as_deref_mut()).await {
             Ok(data_uri) => data_uris.push(data_uri),
             Err(error) => {
                 skipped_count += 1;
@@ -714,6 +787,7 @@ async fn normalize_image_references(
         skipped_count,
     }
 }
+
 
 fn compose_multimodal_content(
     text: &str,
@@ -793,6 +867,7 @@ async fn normalize_image_reference(
     config: &MultimodalConfig,
     max_bytes: usize,
     remote_client: &Client,
+    cache: Option<&mut LocalImageCache>,
 ) -> anyhow::Result<String> {
     if source.starts_with("data:") {
         return normalize_data_uri(source, max_bytes);
@@ -809,7 +884,10 @@ async fn normalize_image_reference(
         return normalize_remote_image(source, max_bytes, remote_client).await;
     }
 
-    normalize_local_image(source, max_bytes).await
+    match cache {
+        Some(c) => normalize_local_image_cached(source, max_bytes, c).await,
+        None => normalize_local_image(source, max_bytes).await,
+    }
 }
 
 fn normalize_data_uri(source: &str, max_bytes: usize) -> anyhow::Result<String> {
@@ -950,6 +1028,79 @@ async fn normalize_local_image(source: &str, max_bytes: usize) -> anyhow::Result
 
     Ok(format!("data:{mime};base64,{}", STANDARD.encode(bytes)))
 }
+
+/// Cache-aware local image loader. On a hit (path + metadata unchanged) returns
+/// the stored data URI without touching the filesystem. Files under `/uploads/`
+/// are content-addressed and treated as immutable — checked once, never re-read.
+async fn normalize_local_image_cached(
+    source: &str,
+    max_bytes: usize,
+    cache: &mut LocalImageCache,
+) -> anyhow::Result<String> {
+    let path = Path::new(source);
+    if !path.exists() || !path.is_file() {
+        return Err(MultimodalError::ImageSourceNotFound {
+            input: source.to_string(),
+        }
+        .into());
+    }
+
+    let metadata = tokio::fs::metadata(path)
+        .await
+        .map_err(|error| MultimodalError::LocalReadFailed {
+            input: source.to_string(),
+            reason: error.to_string(),
+        })?;
+
+    let file_len = metadata.len();
+    let is_immutable = source.contains("/uploads/");
+    let mtime: i64 = if is_immutable {
+        0
+    } else {
+        metadata
+            .modified()
+            .ok()
+            .and_then(|t| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_secs() as i64)
+            })
+            .unwrap_or(0)
+    };
+    let cache_len = if is_immutable { 0 } else { file_len };
+
+    if let Some(cached) = cache.get(source, cache_len, mtime) {
+        return Ok(cached.to_string());
+    }
+
+    validate_size(
+        source,
+        usize::try_from(file_len).unwrap_or(usize::MAX),
+        max_bytes,
+    )?;
+
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|error| MultimodalError::LocalReadFailed {
+            input: source.to_string(),
+            reason: error.to_string(),
+        })?;
+
+    validate_size(source, bytes.len(), max_bytes)?;
+
+    let mime =
+        detect_mime(Some(path), &bytes, None).ok_or_else(|| MultimodalError::UnsupportedMime {
+            input: source.to_string(),
+            mime: "unknown".to_string(),
+        })?;
+
+    validate_mime(source, &mime)?;
+
+    let data_uri = format!("data:{mime};base64,{}", STANDARD.encode(&bytes));
+    cache.insert(source.to_string(), cache_len, mtime, data_uri.clone());
+    Ok(data_uri)
+}
+
 
 fn validate_size(source: &str, size_bytes: usize, max_bytes: usize) -> anyhow::Result<()> {
     if size_bytes > max_bytes {
