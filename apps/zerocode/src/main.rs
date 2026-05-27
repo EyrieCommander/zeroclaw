@@ -161,18 +161,31 @@ async fn run_until_exit(
     term: &mut config_manager::Term,
     target: &ConnectTarget,
 ) -> anyhow::Result<()> {
+    // Shared state that survives the reconnect cycle. Quickstart's
+    // Stage 2 writes the new agent's alias here so the next
+    // `app::run` iteration drops the user into Chat once the daemon
+    // is back up.
+    let reconnect_state: app::SharedReconnectState =
+        Arc::new(std::sync::Mutex::new(app::CrossReconnectState::default()));
+
     #[cfg(unix)]
     {
         let mut sigterm =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         tokio::select! {
-            r = run_with_reconnect(Arc::clone(&rpc), term, target) => r,
+            r = run_with_reconnect(Arc::clone(&rpc), term, target, Arc::clone(&reconnect_state)) => r,
             _ = sigterm.recv() => Ok(()),
         }
     }
     #[cfg(not(unix))]
     {
-        run_with_reconnect(Arc::new(rpc.clone()), term, target).await
+        run_with_reconnect(
+            Arc::new(rpc.clone()),
+            term,
+            target,
+            Arc::clone(&reconnect_state),
+        )
+        .await
     }
 }
 
@@ -180,19 +193,21 @@ async fn run_with_reconnect(
     rpc: Arc<client::RpcClient>,
     term: &mut config_manager::Term,
     target: &ConnectTarget,
+    reconnect_state: app::SharedReconnectState,
 ) -> anyhow::Result<()> {
     loop {
         let label = target.label();
-        let should_reconnect = match app::run(Arc::clone(&rpc), term, &label).await {
-            Ok(reconnect) => reconnect,
-            Err(_) if rpc.is_disconnected() => {
-                // RPC error caused by a dead connection — treat as
-                // disconnect and enter the reconnect loop instead of
-                // propagating a fatal error.
-                true
-            }
-            Err(e) => return Err(e),
-        };
+        let should_reconnect =
+            match app::run(Arc::clone(&rpc), term, &label, Arc::clone(&reconnect_state)).await {
+                Ok(reconnect) => reconnect,
+                Err(_) if rpc.is_disconnected() => {
+                    // RPC error caused by a dead connection — treat as
+                    // disconnect and enter the reconnect loop instead of
+                    // propagating a fatal error.
+                    true
+                }
+                Err(e) => return Err(e),
+            };
         if !should_reconnect {
             return Ok(());
         }

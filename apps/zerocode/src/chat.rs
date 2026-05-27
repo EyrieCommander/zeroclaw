@@ -158,6 +158,13 @@ impl Chat {
         }
     }
 
+    /// Public entry point for "start a session against this specific
+    /// agent." Used by the Quickstart pane on Stage 2 to route the
+    /// user into the freshly-created agent's chat.
+    pub(crate) async fn focus_agent(&mut self, agent_alias: &str) {
+        self.pick_or_start_session(agent_alias).await;
+    }
+
     /// Start the session, optionally with a caller-supplied `cwd`.
     ///
     /// - Unix: always passes the local CWD (ignores `cwd_override`).

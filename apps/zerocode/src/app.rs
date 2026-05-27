@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -20,6 +21,18 @@ use crate::mouse;
 use crate::quickstart_pane;
 use crate::theme;
 use crate::widgets::{CtxBar, HelpContext, HelpEntry, HelpNode};
+
+/// State that must survive a reconnect — used by Quickstart's
+/// Stage-2 flow to route the user into the freshly-created agent's
+/// chat after the daemon comes back up.
+#[derive(Debug, Default)]
+pub struct CrossReconnectState {
+    /// Agent alias the next `run()` invocation should switch the
+    /// Chat tab onto. Consumed (cleared) after the first read.
+    pub start_chat_with: Option<String>,
+}
+
+pub type SharedReconnectState = Arc<Mutex<CrossReconnectState>>;
 
 /// How often the UI redraws when no input arrives (for live panes).
 const TICK: Duration = Duration::from_millis(200);
@@ -78,6 +91,7 @@ pub async fn run(
     rpc: Arc<RpcClient>,
     term: &mut config_manager::Term,
     connect_label: &str,
+    reconnect_state: SharedReconnectState,
 ) -> Result<bool> {
     let mut mode = Mode::Dashboard;
     let mut show_help = false;
@@ -94,10 +108,24 @@ pub async fn run(
     acp_pane.init().await?;
     let mut chat_pane = chat::Chat::new(Arc::clone(&rpc_arc), chat::PaneKind::Chat);
     chat_pane.init().await?;
+    // Consume any post-reconnect intent — Quickstart's Stage 2 sets
+    // this before triggering disconnect/reconnect so the next run
+    // lands the user directly in the freshly-created agent's chat.
+    let pending_start_chat = {
+        let mut guard = reconnect_state.lock().expect("reconnect state poisoned");
+        guard.start_chat_with.take()
+    };
     let mut logs_pane = logs::Logs::new(&rpc);
     logs_pane.init().await?;
-    let mut quickstart = quickstart_pane::QuickstartPane::new(Arc::clone(&rpc_arc));
+    let mut quickstart =
+        quickstart_pane::QuickstartPane::new(Arc::clone(&rpc_arc), Arc::clone(&reconnect_state));
     quickstart.init().await?;
+
+    // Apply any pending Stage-2 intent from the previous run.
+    if let Some(alias) = pending_start_chat {
+        chat_pane.focus_agent(&alias).await;
+        mode = Mode::Chat;
+    }
 
     loop {
         // Draw
@@ -293,7 +321,9 @@ pub async fn run(
                         Mode::Chat => {
                             chat_pane.handle_mouse(mouse, content_area);
                         }
-                        Mode::Quickstart => {}
+                        Mode::Quickstart => {
+                            quickstart.handle_mouse(mouse, content_area).await;
+                        }
                     }
                 }
             }

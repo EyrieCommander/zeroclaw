@@ -64,7 +64,6 @@ pub mod method {
     // Quickstart
     pub const QUICKSTART_STATE: &str = "quickstart/state";
     pub const QUICKSTART_FIELDS: &str = "quickstart/fields";
-    #[allow(dead_code)]
     pub const QUICKSTART_VALIDATE: &str = "quickstart/validate";
     pub const QUICKSTART_APPLY: &str = "quickstart/apply";
     pub const QUICKSTART_DISMISS: &str = "quickstart/dismiss";
@@ -825,7 +824,6 @@ impl RpcClient {
         .await
     }
 
-    #[allow(dead_code)]
     pub async fn quickstart_validate(
         &self,
         submission: &zeroclaw_config::presets::BuilderSubmission,
@@ -1323,7 +1321,6 @@ pub struct QuickstartStateResult {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-#[allow(dead_code)]
 pub enum QuickstartValidateResult {
     Ok,
     Errors { errors: Vec<QuickstartError> },

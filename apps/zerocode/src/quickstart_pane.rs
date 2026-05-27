@@ -68,9 +68,42 @@ impl Selector {
 fn opt(value: &str, label: &'static str, help: &'static str) -> PickerOption {
     PickerOption {
         value: value.to_string(),
-        label,
-        help,
+        label: label.to_string(),
+        help: help.to_string(),
+        use_existing: false,
     }
+}
+
+fn existing_opt(alias: String) -> PickerOption {
+    PickerOption {
+        label: format!("Use existing: {alias}"),
+        value: alias,
+        help: "Reuse this alias instead of creating a new one.".to_string(),
+        use_existing: true,
+    }
+}
+
+fn in_rect(col: u16, row: u16, r: Rect) -> bool {
+    col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height
+}
+
+fn synth_enter() -> KeyEvent {
+    KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE)
+}
+
+fn action_row_line(label: &str, is_cursor: bool) -> Line<'static> {
+    let glyph = if is_cursor { " › " } else { "   " };
+    let style = if is_cursor {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Cyan)
+    };
+    Line::from(vec![
+        Span::styled(glyph, Style::default().fg(Color::Yellow)),
+        Span::styled(label.to_string(), style),
+    ])
 }
 
 fn risk_options() -> [PickerOption; 3] {
@@ -191,17 +224,36 @@ struct ChannelDraft {
     channel_type: String,
     alias: String,
     token: Option<String>,
+    mode: SelectorMode,
+}
+
+/// Per-selector choice mode. Maps to `SelectorChoice<T>` at submit
+/// time: `Mode::Fresh` → `SelectorChoice::Fresh(...)`,
+/// `Mode::Existing` → `SelectorChoice::Existing(alias)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum SelectorMode {
+    #[default]
+    Fresh,
+    Existing,
 }
 
 #[derive(Debug, Clone)]
 struct FormState {
     provider_type: String,
     provider_alias: String,
+    provider_mode: SelectorMode,
     default_model: String,
     api_key: Option<String>,
     risk: String,
+    risk_mode: SelectorMode,
     runtime: String,
+    runtime_mode: SelectorMode,
     memory: MemoryKind,
+    memory_mode: SelectorMode,
+    /// When `memory_mode == Existing`, this carries the alias the user
+    /// picked (e.g. `sqlite-laptop`). Ignored when `memory_mode` is
+    /// `Fresh`.
+    memory_existing_alias: String,
     channels: Vec<ChannelDraft>,
     agent_name: String,
 }
@@ -211,11 +263,16 @@ impl FormState {
         Self {
             provider_type: String::new(),
             provider_alias: String::new(),
+            provider_mode: SelectorMode::Fresh,
             default_model: String::new(),
             api_key: None,
             risk: "balanced".to_string(),
+            risk_mode: SelectorMode::Fresh,
             runtime: "balanced".to_string(),
+            runtime_mode: SelectorMode::Fresh,
             memory: MemoryKind::Sqlite,
+            memory_mode: SelectorMode::Fresh,
+            memory_existing_alias: String::new(),
             channels: Vec::new(),
             agent_name: String::new(),
         }
@@ -223,11 +280,16 @@ impl FormState {
 
     fn is_satisfied(&self, sel: Selector) -> bool {
         match sel {
-            Selector::ModelProvider => {
-                !self.provider_type.is_empty()
-                    && !self.provider_alias.is_empty()
-                    && !self.default_model.is_empty()
-            }
+            Selector::ModelProvider => match self.provider_mode {
+                SelectorMode::Fresh => {
+                    !self.provider_type.is_empty()
+                        && !self.provider_alias.is_empty()
+                        && !self.default_model.is_empty()
+                }
+                SelectorMode::Existing => {
+                    !self.provider_type.is_empty() && !self.provider_alias.is_empty()
+                }
+            },
             Selector::RiskProfile => !self.risk.is_empty(),
             Selector::RuntimeProfile => !self.runtime.is_empty(),
             Selector::Memory => true,
@@ -272,29 +334,50 @@ impl FormState {
     }
 
     fn to_submission(&self) -> BuilderSubmission {
-        BuilderSubmission {
-            model_provider: SelectorChoice::Fresh(ModelProviderChoice {
+        let model_provider = match self.provider_mode {
+            SelectorMode::Fresh => SelectorChoice::Fresh(ModelProviderChoice {
                 provider_type: self.provider_type.clone(),
                 alias: self.provider_alias.clone(),
                 default_model: self.default_model.clone(),
                 api_key: self.api_key.clone(),
                 base_url: None,
             }),
-            risk_profile: SelectorChoice::Fresh(self.risk.clone()),
-            runtime_profile: SelectorChoice::Fresh(self.runtime.clone()),
-            memory: SelectorChoice::Fresh(match self.memory {
+            SelectorMode::Existing => {
+                SelectorChoice::Existing(format!("{}.{}", self.provider_type, self.provider_alias))
+            }
+        };
+        let risk_profile = match self.risk_mode {
+            SelectorMode::Fresh => SelectorChoice::Fresh(self.risk.clone()),
+            SelectorMode::Existing => SelectorChoice::Existing(self.risk.clone()),
+        };
+        let runtime_profile = match self.runtime_mode {
+            SelectorMode::Fresh => SelectorChoice::Fresh(self.runtime.clone()),
+            SelectorMode::Existing => SelectorChoice::Existing(self.runtime.clone()),
+        };
+        let memory = match self.memory_mode {
+            SelectorMode::Fresh => SelectorChoice::Fresh(match self.memory {
                 MemoryKind::Sqlite => MemoryChoice::Sqlite,
                 MemoryKind::None => MemoryChoice::None,
             }),
+            SelectorMode::Existing => SelectorChoice::Existing(self.memory_existing_alias.clone()),
+        };
+        BuilderSubmission {
+            model_provider,
+            risk_profile,
+            runtime_profile,
+            memory,
             channels: self
                 .channels
                 .iter()
-                .map(|c| {
-                    SelectorChoice::Fresh(ChannelQuickStart {
+                .map(|c| match c.mode {
+                    SelectorMode::Fresh => SelectorChoice::Fresh(ChannelQuickStart {
                         channel_type: c.channel_type.clone(),
                         alias: c.alias.clone(),
                         token: c.token.clone(),
-                    })
+                    }),
+                    SelectorMode::Existing => {
+                        SelectorChoice::Existing(format!("{}.{}", c.channel_type, c.alias))
+                    }
                 })
                 .collect(),
             agent: AgentIdentity {
@@ -381,13 +464,21 @@ struct PickerOption {
     /// Wire-side value written back into [`FormState`].
     value: String,
     /// Display label.
-    label: &'static str,
+    label: String,
     /// One-line help / blurb.
-    help: &'static str,
+    help: String,
+    /// `true` when this option points at an already-configured alias
+    /// (`SelectorChoice::Existing`). `false` for fresh presets / type
+    /// rows that build a `SelectorChoice::Fresh`.
+    use_existing: bool,
 }
 
 pub struct QuickstartPane {
     rpc: Arc<RpcClient>,
+    /// Shared state that survives the daemon-reload reconnect. Used
+    /// by Stage 2 to hand the new agent's alias to the next
+    /// `app::run` iteration so the user lands directly in Chat.
+    reconnect_state: crate::app::SharedReconnectState,
     form: FormState,
     list_state: ListState,
     run_id: String,
@@ -397,14 +488,28 @@ pub struct QuickstartPane {
     applied_alias: Option<String>,
     busy: bool,
     active_modal: Option<Modal>,
+    /// Rect of the modal body painted by the most recent `draw` call.
+    /// `None` when no modal is up. Used by `handle_mouse` to detect
+    /// clicks inside vs. outside the modal.
+    modal_rect: Option<Rect>,
+    /// Per-row hit-rects inside the modal body, in cursor order. Empty
+    /// for text-input modals (no row cursor) and channel-list modals
+    /// (cursor maps to entries the mouse handler computes lazily).
+    modal_row_rects: Vec<Rect>,
+    /// Hit-rect of the main selector list, populated each draw so
+    /// clicks on selector rows route through `move_selection` /
+    /// `open_modal_for`.
+    selector_list_rect: Option<Rect>,
+    selector_row_rects: Vec<Rect>,
 }
 
 impl QuickstartPane {
-    pub fn new(rpc: Arc<RpcClient>) -> Self {
+    pub fn new(rpc: Arc<RpcClient>, reconnect_state: crate::app::SharedReconnectState) -> Self {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
         Self {
             rpc,
+            reconnect_state,
             form: FormState::default_form(),
             list_state,
             run_id: generate_run_id(),
@@ -414,6 +519,10 @@ impl QuickstartPane {
             applied_alias: None,
             busy: false,
             active_modal: None,
+            modal_rect: None,
+            modal_row_rects: Vec::new(),
+            selector_list_rect: None,
+            selector_row_rects: Vec::new(),
         }
     }
 
@@ -452,13 +561,26 @@ impl QuickstartPane {
         self.draw_status_strip(frame, chunks[2]);
 
         if let Some(modal) = &self.active_modal {
-            draw_modal(frame, area, modal, &self.form.channels);
+            let (rect, rows) = draw_modal(frame, area, modal, &self.form.channels);
+            self.modal_rect = Some(rect);
+            self.modal_row_rects = rows;
+        } else {
+            self.modal_rect = None;
+            self.modal_row_rects.clear();
         }
     }
 
     pub async fn handle_key(&mut self, key: KeyEvent) -> bool {
         if self.active_modal.is_some() {
             self.handle_modal_key(key).await;
+            return false;
+        }
+        // After Apply, `applied_alias` is set and the daemon is in the
+        // middle of reloading. Suppress all main-list key handling
+        // until the connection drops and the next `app::run`
+        // iteration consumes the armed Stage-2 intent. Pressing Enter
+        // here does nothing — there's no reachable RPC to act on.
+        if self.applied_alias.is_some() {
             return false;
         }
         match key.code {
@@ -499,6 +621,117 @@ impl QuickstartPane {
             .await;
     }
 
+    /// Mouse handler. Recognises:
+    ///   - left-click on a modal row → moves modal cursor + synthesises
+    ///     Enter (committing that row);
+    ///   - left-click outside an active modal → closes the modal;
+    ///   - left-click on a selector row → moves the selector cursor +
+    ///     opens that selector's modal;
+    ///   - scroll up/down → moves the cursor on whichever surface is
+    ///     active (modal if open, otherwise selector list).
+    pub async fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent, _content: Rect) {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let col = mouse.column;
+        let row = mouse.row;
+
+        if self.active_modal.is_some() {
+            let modal_rect = self.modal_rect;
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    // Click on a tracked row → set cursor + activate.
+                    if let Some((idx, _r)) = self
+                        .modal_row_rects
+                        .iter()
+                        .enumerate()
+                        .find(|(_, r)| in_rect(col, row, **r))
+                    {
+                        self.set_modal_cursor(idx);
+                        // Synthesise the same Enter behaviour the
+                        // keyboard takes.
+                        self.handle_modal_key(synth_enter()).await;
+                        return;
+                    }
+                    // Click anywhere outside the modal body → close.
+                    if let Some(mr) = modal_rect
+                        && !in_rect(col, row, mr)
+                    {
+                        self.active_modal = None;
+                        self.modal_rect = None;
+                        self.modal_row_rects.clear();
+                    }
+                }
+                MouseEventKind::ScrollUp => self.nudge_modal_cursor(-1),
+                MouseEventKind::ScrollDown => self.nudge_modal_cursor(1),
+                _ => {}
+            }
+            return;
+        }
+
+        // No modal: selector list + status strip clicks.
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some((idx, _r)) = self
+                    .selector_row_rects
+                    .iter()
+                    .enumerate()
+                    .find(|(_, r)| in_rect(col, row, **r))
+                {
+                    self.list_state.select(Some(idx));
+                    if let Some(sel) = Selector::ALL.get(idx).copied() {
+                        self.last_step = Some(sel.step());
+                        self.open_modal_for(sel);
+                    }
+                }
+            }
+            MouseEventKind::ScrollUp => self.move_selection(-1),
+            MouseEventKind::ScrollDown => self.move_selection(1),
+            _ => {}
+        }
+    }
+
+    /// Move the cursor of the currently active modal by `delta`. No-op
+    /// for modals that don't have a row cursor (TextInput).
+    fn nudge_modal_cursor(&mut self, delta: i32) {
+        let Some(modal) = self.active_modal.as_mut() else {
+            return;
+        };
+        let (cur, len) = match modal {
+            Modal::Picker(p) => (&mut p.cursor, p.options.len()),
+            Modal::FieldForm(f) => (&mut f.cursor, f.fields.len()),
+            Modal::ChannelList(cl) => (&mut cl.cursor, self.modal_row_rects.len()),
+            Modal::TextInput(_) => return,
+        };
+        if len == 0 {
+            return;
+        }
+        let next = (*cur as i32 + delta).rem_euclid(len as i32);
+        *cur = next as usize;
+    }
+
+    /// Directly set the cursor of the currently active modal. No-op
+    /// for TextInput. Out-of-range indices are clamped.
+    fn set_modal_cursor(&mut self, idx: usize) {
+        let Some(modal) = self.active_modal.as_mut() else {
+            return;
+        };
+        match modal {
+            Modal::Picker(p) => {
+                if idx < p.options.len() {
+                    p.cursor = idx;
+                }
+            }
+            Modal::FieldForm(f) => {
+                if idx < f.fields.len() {
+                    f.cursor = idx;
+                }
+            }
+            Modal::ChannelList(cl) => {
+                cl.cursor = idx;
+            }
+            Modal::TextInput(_) => {}
+        }
+    }
+
     fn move_selection(&mut self, delta: i32) {
         let len = Selector::ALL.len() as i32;
         let current = self.list_state.selected().unwrap_or(0) as i32;
@@ -521,10 +754,16 @@ impl QuickstartPane {
                 }));
             }
             Selector::ModelProvider => {
+                let mut options: Vec<PickerOption> = provider_type_options().to_vec();
+                if let Some(snap) = &self.state_snapshot {
+                    for alias in &snap.model_providers {
+                        options.push(existing_opt(alias.clone()));
+                    }
+                }
                 self.active_modal = Some(Modal::Picker(PickerModal {
                     selector: sel,
                     purpose: PickerPurpose::ProviderType,
-                    options: provider_type_options().to_vec(),
+                    options,
                     cursor: 0,
                 }));
             }
@@ -535,12 +774,33 @@ impl QuickstartPane {
     }
 
     fn open_picker_modal(&mut self, sel: Selector) {
-        let options: Vec<PickerOption> = match sel {
+        let mut options: Vec<PickerOption> = match sel {
             Selector::RiskProfile => risk_options().to_vec(),
             Selector::RuntimeProfile => runtime_options().to_vec(),
             Selector::Memory => memory_options().to_vec(),
             _ => return,
         };
+        // Append "Use existing" rows for any aliases the daemon
+        // reported under this selector's section. Preset rows always
+        // come first; existing rows sit underneath so users who just
+        // want the recommended default never have to scroll.
+        if let Some(snap) = &self.state_snapshot {
+            let existing: &[String] = match sel {
+                Selector::RiskProfile => &snap.risk_profiles,
+                Selector::RuntimeProfile => &snap.runtime_profiles,
+                Selector::Memory => &snap.storage,
+                _ => &[],
+            };
+            for alias in existing {
+                // Skip aliases that match a preset row — re-applying
+                // the same preset is overwrite-by-design, so listing
+                // it twice adds noise.
+                if options.iter().any(|o| o.value == *alias) {
+                    continue;
+                }
+                options.push(existing_opt(alias.clone()));
+            }
+        }
         let cursor = match sel {
             Selector::RiskProfile => options
                 .iter()
@@ -579,15 +839,23 @@ impl QuickstartPane {
                 }
                 KeyCode::Enter => {
                     let chosen = p.options[p.cursor].value.clone();
+                    let use_existing = p.options[p.cursor].use_existing;
                     let selector = p.selector;
                     let purpose = p.purpose;
-                    match purpose {
-                        PickerPurpose::DirectChoice => {
-                            self.apply_picker_choice(selector, chosen);
+                    match (purpose, use_existing) {
+                        (PickerPurpose::DirectChoice, _) => {
+                            self.apply_picker_choice(selector, chosen, use_existing);
                             self.active_modal = None;
-                            self.last_errors.clear();
+                            self.revalidate().await;
                         }
-                        PickerPurpose::ProviderType => {
+                        (PickerPurpose::ProviderType, true) => {
+                            // chosen is `<type>.<alias>`. Adopt the
+                            // alias ref; skip the field form.
+                            self.adopt_existing_provider(chosen);
+                            self.active_modal = None;
+                            self.revalidate().await;
+                        }
+                        (PickerPurpose::ProviderType, false) => {
                             self.active_modal = None;
                             self.open_field_form(
                                 selector,
@@ -596,7 +864,12 @@ impl QuickstartPane {
                             )
                             .await;
                         }
-                        PickerPurpose::ChannelType => {
+                        (PickerPurpose::ChannelType, true) => {
+                            self.adopt_existing_channel(chosen);
+                            self.active_modal = None;
+                            self.revalidate().await;
+                        }
+                        (PickerPurpose::ChannelType, false) => {
                             self.active_modal = None;
                             self.open_field_form(selector, QuickstartFieldSection::Channel, chosen)
                                 .await;
@@ -613,7 +886,7 @@ impl QuickstartPane {
                     if !value.is_empty() {
                         self.apply_text_choice(selector, value);
                         self.active_modal = None;
-                        self.last_errors.clear();
+                        self.revalidate().await;
                     }
                 }
                 KeyCode::Backspace => {
@@ -658,7 +931,7 @@ impl QuickstartPane {
                     } else {
                         self.active_modal = None;
                     }
-                    self.last_errors.clear();
+                    self.revalidate().await;
                 }
                 KeyCode::Backspace => {
                     if let Some(row) = f.fields.get_mut(f.cursor) {
@@ -692,10 +965,16 @@ impl QuickstartPane {
                     KeyCode::Enter => {
                         if cl.cursor == drafts {
                             // "+ Add channel" row → open channel-type picker.
+                            let mut options: Vec<PickerOption> = channel_type_options().to_vec();
+                            if let Some(snap) = &self.state_snapshot {
+                                for alias in &snap.channels {
+                                    options.push(existing_opt(alias.clone()));
+                                }
+                            }
                             self.active_modal = Some(Modal::Picker(PickerModal {
                                 selector: Selector::Channels,
                                 purpose: PickerPurpose::ChannelType,
-                                options: channel_type_options().to_vec(),
+                                options,
                                 cursor: 0,
                             }));
                         } else if cl.cursor == drafts + 1 {
@@ -715,6 +994,53 @@ impl QuickstartPane {
         // (provider alias, channel alias) without a churn-y rewrite.
         if sel == Selector::AgentIdentity {
             self.form.agent_name = value;
+        }
+    }
+
+    fn adopt_existing_provider(&mut self, dotted_ref: String) {
+        if let Some((ty, alias)) = dotted_ref.split_once('.') {
+            self.form.provider_type = ty.to_string();
+            self.form.provider_alias = alias.to_string();
+            self.form.provider_mode = SelectorMode::Existing;
+            // Default model / api-key aren't carried in the "existing"
+            // path — the runtime resolves the alias against the live
+            // config at apply time. Leave them empty so they don't
+            // overwrite the existing alias's values.
+            self.form.default_model.clear();
+            self.form.api_key = None;
+        }
+    }
+
+    fn adopt_existing_channel(&mut self, dotted_ref: String) {
+        if let Some((ty, alias)) = dotted_ref.split_once('.') {
+            self.form.channels.push(ChannelDraft {
+                channel_type: ty.to_string(),
+                alias: alias.to_string(),
+                token: None,
+                mode: SelectorMode::Existing,
+            });
+        }
+    }
+
+    /// Debounced-ish validation: after a selector commit, ask the
+    /// runtime whether the assembled submission would pass. Errors
+    /// land in `last_errors` and surface in the status strip. The
+    /// `quickstart/validate` path is read-only and cheap; we run it
+    /// once per commit rather than per keystroke.
+    async fn revalidate(&mut self) {
+        let submission = self.form.to_submission();
+        match self.rpc.quickstart_validate(&submission).await {
+            Ok(crate::client::QuickstartValidateResult::Ok) => {
+                self.last_errors.clear();
+            }
+            Ok(crate::client::QuickstartValidateResult::Errors { errors }) => {
+                self.last_errors = errors;
+            }
+            Err(_) => {
+                // Validation failures on the wire are non-fatal —
+                // the user can still Create and let the apply path
+                // surface real errors. Leave `last_errors` alone.
+            }
         }
     }
 
@@ -791,6 +1117,7 @@ impl QuickstartPane {
                 };
                 self.form.provider_type = f.type_key.clone();
                 self.form.provider_alias = f.alias.clone();
+                self.form.provider_mode = SelectorMode::Fresh;
                 self.form.default_model = pick("model");
                 self.form.api_key = api_key;
             }
@@ -818,6 +1145,7 @@ impl QuickstartPane {
                     channel_type: f.type_key.clone(),
                     alias: f.alias.clone(),
                     token,
+                    mode: SelectorMode::Fresh,
                 });
             }
             _ => {}
@@ -825,13 +1153,33 @@ impl QuickstartPane {
         true
     }
 
-    fn apply_picker_choice(&mut self, sel: Selector, value: String) {
+    fn apply_picker_choice(&mut self, sel: Selector, value: String, use_existing: bool) {
+        let mode = if use_existing {
+            SelectorMode::Existing
+        } else {
+            SelectorMode::Fresh
+        };
         match sel {
-            Selector::RiskProfile => self.form.risk = value,
-            Selector::RuntimeProfile => self.form.runtime = value,
+            Selector::RiskProfile => {
+                self.form.risk = value;
+                self.form.risk_mode = mode;
+            }
+            Selector::RuntimeProfile => {
+                self.form.runtime = value;
+                self.form.runtime_mode = mode;
+            }
             Selector::Memory => {
-                if let Some(m) = MemoryKind::from_wire(&value) {
+                if use_existing {
+                    // Existing memory alias — keep the displayed
+                    // backend kind as-is (it's only used for the
+                    // status-line summary) but record the alias the
+                    // user picked so to_submission emits Existing.
+                    self.form.memory_mode = SelectorMode::Existing;
+                    self.form.memory_existing_alias = value;
+                } else if let Some(m) = MemoryKind::from_wire(&value) {
                     self.form.memory = m;
+                    self.form.memory_mode = SelectorMode::Fresh;
+                    self.form.memory_existing_alias.clear();
                 }
             }
             _ => {}
@@ -848,6 +1196,14 @@ impl QuickstartPane {
         let submission = self.form.to_submission();
         match self.rpc.quickstart_apply(&submission).await {
             Ok(QuickstartApplyResult::Applied { agent, .. }) => {
+                // Arm the Stage-2 hand-off **before** the daemon reload
+                // kicks in. The socket dies shortly after this returns,
+                // the TUI freezes during the disconnect, and the next
+                // `app::run` iteration reads this back to route the
+                // user into the new agent's Chat tab automatically.
+                if let Ok(mut guard) = self.reconnect_state.lock() {
+                    guard.start_chat_with = Some(agent.alias.clone());
+                }
                 self.applied_alias = Some(agent.alias);
                 self.last_errors.clear();
             }
@@ -908,6 +1264,17 @@ impl QuickstartPane {
             .borders(Borders::ALL)
             .padding(Padding::horizontal(1))
             .title(" Selectors ");
+        let inner = block.inner(area);
+        // Record per-row rects for mouse hit testing. Each ListItem is
+        // one row; clipping at `inner.height` lines up with what the
+        // List widget will actually paint.
+        self.selector_list_rect = Some(inner);
+        self.selector_row_rects = (0..Selector::ALL.len())
+            .map(|i| {
+                let y = inner.y.saturating_add(i as u16);
+                Rect::new(inner.x, y, inner.width, 1)
+            })
+            .collect();
         let list = List::default()
             .items(items)
             .block(block)
@@ -925,7 +1292,7 @@ impl QuickstartPane {
         let label = if self.busy {
             "Submitting…".to_string()
         } else if let Some(alias) = &self.applied_alias {
-            format!("Created `{alias}`.")
+            format!("Created `{alias}`. Reloading daemon — Chat will open when reconnected…")
         } else if !self.last_errors.is_empty() {
             format!(
                 "{} error(s) — fix selectors and resubmit",
@@ -969,15 +1336,96 @@ fn generate_run_id() -> String {
     format!("{now:x}-{pid:x}")
 }
 
-fn draw_modal(frame: &mut Frame, area: Rect, modal: &Modal, channels: &[ChannelDraft]) {
-    let (title, body_lines, footer) = match modal {
-        Modal::Picker(p) => {
-            let lines: Vec<Line> = p
-                .options
-                .iter()
-                .enumerate()
-                .map(|(i, opt)| {
-                    let is_cursor = i == p.cursor;
+/// Paint the modal and return `(inner_rect, row_to_cursor)` so the
+/// pane's mouse handler can resolve a click to a cursor index. The
+/// `row_to_cursor` vec maps each body row (top → bottom) to either
+/// `Some(cursor_index)` for clickable rows or `None` for help /
+/// blank lines.
+fn draw_modal(
+    frame: &mut Frame,
+    area: Rect,
+    modal: &Modal,
+    channels: &[ChannelDraft],
+) -> (Rect, Vec<Rect>) {
+    let (title, body_lines, footer, cursor_lines): (String, Vec<Line>, &str, Vec<usize>) =
+        match modal {
+            Modal::Picker(p) => {
+                let mut cursor_lines = Vec::with_capacity(p.options.len());
+                let lines: Vec<Line> = p
+                    .options
+                    .iter()
+                    .enumerate()
+                    .map(|(i, opt)| {
+                        cursor_lines.push(i);
+                        let is_cursor = i == p.cursor;
+                        let glyph = if is_cursor { " › " } else { "   " };
+                        let label_style = if is_cursor {
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::White)
+                        };
+                        Line::from(vec![
+                            Span::styled(glyph, Style::default().fg(Color::Yellow)),
+                            Span::styled(opt.label.as_str(), label_style),
+                            Span::raw("  "),
+                            Span::styled(opt.help.as_str(), Style::default().fg(Color::DarkGray)),
+                        ])
+                    })
+                    .collect();
+                (
+                    format!(" {} ", p.selector.title()),
+                    lines,
+                    "↑/↓ move   Enter pick   Esc cancel",
+                    cursor_lines,
+                )
+            }
+            Modal::TextInput(t) => {
+                let display = if t.is_secret {
+                    "•".repeat(t.buf.chars().count())
+                } else {
+                    t.buf.clone()
+                };
+                let lines = vec![
+                    Line::from(Span::styled(t.help, Style::default().fg(Color::DarkGray))),
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled(
+                            format!("{}: ", t.label),
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(display, Style::default().fg(Color::White)),
+                        Span::styled("█", Style::default().fg(Color::Yellow)),
+                    ]),
+                ];
+                (
+                    format!(" {} ", t.selector.title()),
+                    lines,
+                    "Enter accept   Esc cancel",
+                    Vec::new(),
+                )
+            }
+            Modal::FieldForm(f) => {
+                let mut lines: Vec<Line> = Vec::new();
+                let mut cursor_lines = Vec::with_capacity(f.fields.len());
+                lines.push(Line::from(vec![
+                    Span::styled("Type: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        f.type_key.as_str(),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("    Alias: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(f.alias.as_str(), Style::default().fg(Color::White)),
+                ]));
+                lines.push(Line::from(""));
+                for (i, row) in f.fields.iter().enumerate() {
+                    cursor_lines.push(lines.len());
+                    let is_cursor = i == f.cursor;
                     let glyph = if is_cursor { " › " } else { "   " };
                     let label_style = if is_cursor {
                         Style::default()
@@ -986,171 +1434,98 @@ fn draw_modal(frame: &mut Frame, area: Rect, modal: &Modal, channels: &[ChannelD
                     } else {
                         Style::default().fg(Color::White)
                     };
-                    Line::from(vec![
-                        Span::styled(glyph, Style::default().fg(Color::Yellow)),
-                        Span::styled(opt.label, label_style),
-                        Span::raw("  "),
-                        Span::styled(opt.help, Style::default().fg(Color::DarkGray)),
-                    ])
-                })
-                .collect();
-            (
-                format!(" {} ", p.selector.title()),
-                lines,
-                "↑/↓ move   Enter pick   Esc cancel",
-            )
-        }
-        Modal::TextInput(t) => {
-            let display = if t.is_secret {
-                "•".repeat(t.buf.chars().count())
-            } else {
-                t.buf.clone()
-            };
-            let lines = vec![
-                Line::from(Span::styled(t.help, Style::default().fg(Color::DarkGray))),
-                Line::from(""),
-                Line::from(vec![
-                    Span::styled(
-                        format!("{}: ", t.label),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(display, Style::default().fg(Color::White)),
-                    Span::styled("█", Style::default().fg(Color::Yellow)),
-                ]),
-            ];
-            (
-                format!(" {} ", t.selector.title()),
-                lines,
-                "Enter accept   Esc cancel",
-            )
-        }
-        Modal::FieldForm(f) => {
-            let mut lines: Vec<Line> = Vec::new();
-            lines.push(Line::from(vec![
-                Span::styled("Type: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    f.type_key.as_str(),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("    Alias: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(f.alias.as_str(), Style::default().fg(Color::White)),
-            ]));
-            lines.push(Line::from(""));
-            for (i, row) in f.fields.iter().enumerate() {
-                let is_cursor = i == f.cursor;
-                let glyph = if is_cursor { " › " } else { "   " };
-                let label_style = if is_cursor {
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::White)
-                };
-                let display = if row.descriptor.is_secret {
-                    "•".repeat(row.buf.chars().count())
-                } else {
-                    row.buf.clone()
-                };
-                let display = if display.is_empty() {
-                    row.descriptor
-                        .default
-                        .as_deref()
-                        .map(|d| format!("(default: {d})"))
-                        .unwrap_or_else(|| "<empty>".to_string())
-                } else {
-                    display
-                };
-                lines.push(Line::from(vec![
-                    Span::styled(glyph, Style::default().fg(Color::Yellow)),
-                    Span::styled(format!("{:14}", row.descriptor.label), label_style),
-                    Span::styled("  ", Style::default()),
-                    Span::styled(display, Style::default().fg(Color::Gray)),
-                    if is_cursor {
-                        Span::styled("█", Style::default().fg(Color::Yellow))
+                    let display = if row.descriptor.is_secret {
+                        "•".repeat(row.buf.chars().count())
                     } else {
-                        Span::raw("")
-                    },
-                ]));
-                if is_cursor && !row.descriptor.help.is_empty() {
-                    lines.push(Line::from(Span::styled(
-                        format!("    {}", row.descriptor.help),
-                        Style::default().fg(Color::DarkGray),
-                    )));
-                }
-            }
-            (
-                format!(" {} ", f.selector.title()),
-                lines,
-                "Tab/↑/↓ move   Enter accept   Esc cancel",
-            )
-        }
-        Modal::ChannelList(cl) => {
-            let mut lines: Vec<Line> = Vec::new();
-            let drafts = channels.len();
-            let row_count = drafts + 2;
-            if drafts == 0 {
-                lines.push(Line::from(Span::styled(
-                    "No channels configured. An agent without channels still works via `zeroclaw agent <name>` from the CLI.",
-                    Style::default().fg(Color::DarkGray),
-                )));
-                lines.push(Line::from(""));
-            } else {
-                for (i, c) in channels.iter().enumerate() {
-                    let is_cursor = i == cl.cursor;
-                    let glyph = if is_cursor { " › " } else { "   " };
-                    let style = if is_cursor {
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD)
+                        row.buf.clone()
+                    };
+                    let display = if display.is_empty() {
+                        row.descriptor
+                            .default
+                            .as_deref()
+                            .map(|d| format!("(default: {d})"))
+                            .unwrap_or_else(|| "<empty>".to_string())
                     } else {
-                        Style::default().fg(Color::White)
+                        display
                     };
                     lines.push(Line::from(vec![
                         Span::styled(glyph, Style::default().fg(Color::Yellow)),
-                        Span::styled(format!("{}.{}", c.channel_type, c.alias), style),
-                        Span::styled(
-                            if c.token.is_some() {
-                                "  (token set)"
-                            } else {
-                                ""
-                            },
-                            Style::default().fg(Color::DarkGray),
-                        ),
+                        Span::styled(format!("{:14}", row.descriptor.label), label_style),
+                        Span::styled("  ", Style::default()),
+                        Span::styled(display, Style::default().fg(Color::Gray)),
+                        if is_cursor {
+                            Span::styled("█", Style::default().fg(Color::Yellow))
+                        } else {
+                            Span::raw("")
+                        },
                     ]));
+                    if is_cursor && !row.descriptor.help.is_empty() {
+                        lines.push(Line::from(Span::styled(
+                            format!("    {}", row.descriptor.help),
+                            Style::default().fg(Color::DarkGray),
+                        )));
+                    }
                 }
-                lines.push(Line::from(""));
+                (
+                    format!(" {} ", f.selector.title()),
+                    lines,
+                    "Tab/↑/↓ move   Enter accept   Esc cancel",
+                    cursor_lines,
+                )
             }
-            let add_idx = drafts;
-            let done_idx = drafts + 1;
-            let action_row = |label: &str, idx: usize| {
-                let is_cursor = idx == cl.cursor;
-                let glyph = if is_cursor { " › " } else { "   " };
-                let style = if is_cursor {
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD)
+            Modal::ChannelList(cl) => {
+                let mut lines: Vec<Line> = Vec::new();
+                let mut cursor_lines: Vec<usize> = Vec::new();
+                let drafts = channels.len();
+                let row_count = drafts + 2;
+                if drafts == 0 {
+                    lines.push(Line::from(Span::styled(
+                    "No channels configured. An agent without channels still works via `zeroclaw agent <name>` from the CLI.",
+                    Style::default().fg(Color::DarkGray),
+                )));
+                    lines.push(Line::from(""));
                 } else {
-                    Style::default().fg(Color::Cyan)
-                };
-                Line::from(vec![
-                    Span::styled(glyph, Style::default().fg(Color::Yellow)),
-                    Span::styled(label.to_string(), style),
-                ])
-            };
-            lines.push(action_row("+ Add channel", add_idx));
-            lines.push(action_row("Done", done_idx));
-            let _ = row_count; // already encoded by the cursor styling above.
-            (
-                " Channels ".to_string(),
-                lines,
-                "↑/↓ move   Enter activate   d delete   Esc close",
-            )
-        }
-    };
+                    for (i, c) in channels.iter().enumerate() {
+                        cursor_lines.push(lines.len());
+                        let is_cursor = i == cl.cursor;
+                        let glyph = if is_cursor { " › " } else { "   " };
+                        let style = if is_cursor {
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::White)
+                        };
+                        lines.push(Line::from(vec![
+                            Span::styled(glyph, Style::default().fg(Color::Yellow)),
+                            Span::styled(format!("{}.{}", c.channel_type, c.alias), style),
+                            Span::styled(
+                                if c.token.is_some() {
+                                    "  (token set)"
+                                } else {
+                                    ""
+                                },
+                                Style::default().fg(Color::DarkGray),
+                            ),
+                        ]));
+                    }
+                    lines.push(Line::from(""));
+                }
+                let add_idx = drafts;
+                let done_idx = drafts + 1;
+                cursor_lines.push(lines.len());
+                lines.push(action_row_line("+ Add channel", cl.cursor == add_idx));
+                cursor_lines.push(lines.len());
+                lines.push(action_row_line("Done", cl.cursor == done_idx));
+                let _ = row_count; // already encoded by the cursor styling above.
+                (
+                    " Channels ".to_string(),
+                    lines,
+                    "↑/↓ move   Enter activate   d delete   Esc close",
+                    cursor_lines,
+                )
+            }
+        };
 
     let box_w = area.width.saturating_sub(8).min(80);
     let box_h = (body_lines.len() as u16 + 4).min(area.height.saturating_sub(4));
@@ -1191,4 +1566,21 @@ fn draw_modal(frame: &mut Frame, area: Rect, modal: &Modal, channels: &[ChannelD
         Paragraph::new(Span::styled(footer, Style::default().fg(Color::DarkGray))),
         footer_rect,
     );
+
+    // Translate cursor → body-line indices into screen-row hit-rects.
+    // Body lines past `body_rect.height` got clipped, so anything off
+    // the painted area gets a zero-sized rect (so a click can't hit
+    // it accidentally).
+    let row_rects: Vec<Rect> = cursor_lines
+        .into_iter()
+        .map(|line_idx| {
+            let dy = line_idx as u16;
+            if dy >= body_rect.height {
+                Rect::new(0, 0, 0, 0)
+            } else {
+                Rect::new(body_rect.x, body_rect.y + dy, body_rect.width, 1)
+            }
+        })
+        .collect();
+    (rect, row_rects)
 }
