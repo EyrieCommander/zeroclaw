@@ -18,7 +18,9 @@ use axum::{
 };
 use serde::Serialize;
 use zeroclaw_config::presets::BuilderSubmission;
-use zeroclaw_runtime::quickstart::{AppliedAgent, QuickstartError, apply, validate_only};
+use zeroclaw_runtime::quickstart::{
+    AppliedAgent, QuickstartError, Surface, apply_with_surface, validate_only_with_surface,
+};
 
 use super::AppState;
 use super::api::require_auth;
@@ -95,7 +97,7 @@ pub async fn handle_validate(
         return e.into_response();
     }
     let cfg = state.config.read().clone();
-    let body = match validate_only(&submission, &cfg) {
+    let body = match validate_only_with_surface(&submission, &cfg, Surface::Web) {
         Ok(()) => ValidateResult::Ok,
         Err(errors) => ValidateResult::Errors { errors },
     };
@@ -111,7 +113,7 @@ pub async fn handle_apply(
         return e.into_response();
     }
     let mut working = state.config.read().clone();
-    let result = apply(submission, &mut working).await;
+    let result = apply_with_surface(submission, &mut working, Surface::Web).await;
     let body = match result {
         Ok(agent) => {
             *state.config.write() = working;
@@ -136,16 +138,40 @@ pub async fn handle_apply(
 /// PID respawn, no service-manager dependency.
 fn signal_daemon_reload(state: &AppState) -> bool {
     let Some(reload_tx) = state.reload_tx.clone() else {
+        ::zeroclaw_log::record!(
+            WARN,
+            ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                .with_outcome(::zeroclaw_log::EventOutcome::Unknown)
+                .with_attrs(::serde_json::json!({
+                    "reason": "no_supervisor",
+                })),
+            "quickstart: daemon reload not available (standalone gateway)"
+        );
         return false;
     };
+    ::zeroclaw_log::record!(
+        INFO,
+        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Start),
+        "quickstart: daemon reload signalled"
+    );
     let shutdown_tx = state.shutdown_tx.clone();
     state
         .pending_reload
         .store(false, std::sync::atomic::Ordering::Relaxed);
+    let started = std::time::Instant::now();
     zeroclaw_spawn::spawn!(async move {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let _ = shutdown_tx.send(true);
         let _ = reload_tx.send(true);
+        ::zeroclaw_log::record!(
+            INFO,
+            ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Complete)
+                .with_outcome(::zeroclaw_log::EventOutcome::Success)
+                .with_attrs(::serde_json::json!({
+                    "elapsed_ms": started.elapsed().as_millis() as u64,
+                })),
+            "quickstart: daemon reload dispatched"
+        );
     });
     true
 }

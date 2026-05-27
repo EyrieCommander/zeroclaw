@@ -935,7 +935,7 @@ async fn run_quickstart_cli(
         AgentIdentity, BuilderSubmission, ChannelQuickStart, MemoryChoice, ModelProviderChoice,
         SelectorChoice,
     };
-    use zeroclaw_runtime::quickstart::apply;
+    use zeroclaw_runtime::quickstart::{Surface, apply_with_surface};
 
     let provider_type = model_provider.ok_or_else(|| {
         anyhow::anyhow!("--model-provider is required (anthropic / openai / openrouter / ollama)")
@@ -965,7 +965,7 @@ async fn run_quickstart_cli(
 
     let _dirs = crate::config::schema::resolve_runtime_dirs().await?;
     let mut cfg = crate::config::schema::Config::load_or_init().await?;
-    match apply(submission, &mut cfg).await {
+    match apply_with_surface(submission, &mut cfg, Surface::Cli).await {
         Ok(applied) => {
             println!("Quickstart complete. Created agent `{}`.", applied.alias);
             println!();

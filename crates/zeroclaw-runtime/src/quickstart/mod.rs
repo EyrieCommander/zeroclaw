@@ -16,6 +16,70 @@ use zeroclaw_config::presets::{
 };
 use zeroclaw_config::schema::Config;
 
+/// Which surface invoked the Quickstart. Stamped on every event in
+/// the apply path so SSE/dashboard consumers can filter by origin
+/// without parsing message strings.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Surface {
+    Web,
+    Tui,
+    Cli,
+    Test,
+}
+
+impl Surface {
+    fn as_str(self) -> &'static str {
+        match self {
+            Surface::Web => "web",
+            Surface::Tui => "tui",
+            Surface::Cli => "cli",
+            Surface::Test => "test",
+        }
+    }
+}
+
+/// Per-run attribution carried through the apply path so every emitted
+/// event lands with the same correlation id. Constructed by `apply`
+/// and `validate_only`; threaded down into `apply_into` and the
+/// per-selector helpers via `&RunCtx`.
+struct RunCtx {
+    run_id: String,
+    surface: Surface,
+}
+
+impl RunCtx {
+    fn new(surface: Surface) -> Self {
+        // Fall back to nanosecond timestamp if a system without a clock
+        // is somehow in play. Either way the id is unique per process.
+        let run_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| format!("{:x}{:x}", d.as_secs(), d.subsec_nanos()))
+            .unwrap_or_else(|_| format!("{:x}", std::process::id()));
+        Self { run_id, surface }
+    }
+
+    fn base_attrs(&self) -> serde_json::Value {
+        serde_json::json!({
+            "quickstart.run_id": self.run_id,
+            "quickstart.surface": self.surface.as_str(),
+        })
+    }
+}
+
+/// Layer per-event attrs on top of the run-scoped base. Both must be
+/// JSON objects; non-object inputs return `base` unchanged.
+fn merge_attrs(base: serde_json::Value, extra: serde_json::Value) -> serde_json::Value {
+    let (mut base_map, extra_map) = match (base, extra) {
+        (serde_json::Value::Object(b), serde_json::Value::Object(e)) => (b, e),
+        (b, _) => return b,
+    };
+    for (k, v) in extra_map {
+        base_map.insert(k, v);
+    }
+    serde_json::Value::Object(base_map)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppliedAgent {
     pub alias: String,
@@ -68,33 +132,84 @@ pub fn validate_only(
     submission: &BuilderSubmission,
     config: &Config,
 ) -> Result<(), Vec<QuickstartError>> {
+    validate_only_with_surface(submission, config, Surface::Web)
+}
+
+pub fn validate_only_with_surface(
+    submission: &BuilderSubmission,
+    config: &Config,
+    surface: Surface,
+) -> Result<(), Vec<QuickstartError>> {
+    let ctx = RunCtx::new(surface);
     let mut staged = config.clone();
     let mut errors = Vec::new();
-    apply_into(&mut staged, submission, &mut errors);
-    if errors.is_empty() {
-        Ok(())
+    apply_into(&mut staged, submission, &mut errors, Some(&ctx));
+    let ok = errors.is_empty();
+    let attrs = merge_attrs(
+        ctx.base_attrs(),
+        serde_json::json!({"error_count": errors.len()}),
+    );
+    let outcome = if ok {
+        ::zeroclaw_log::EventOutcome::Success
     } else {
-        Err(errors)
+        ::zeroclaw_log::EventOutcome::Failure
+    };
+    if ok {
+        ::zeroclaw_log::record!(
+            INFO,
+            ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Validate)
+                .with_outcome(outcome)
+                .with_attrs(attrs),
+            "quickstart: validate_only"
+        );
+    } else {
+        ::zeroclaw_log::record!(
+            WARN,
+            ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Validate)
+                .with_outcome(outcome)
+                .with_attrs(attrs),
+            "quickstart: validate_only"
+        );
     }
+    if ok { Ok(()) } else { Err(errors) }
 }
 
 pub async fn apply(
     submission: BuilderSubmission,
     config: &mut Config,
 ) -> Result<AppliedAgent, Vec<QuickstartError>> {
+    apply_with_surface(submission, config, Surface::Web).await
+}
+
+pub async fn apply_with_surface(
+    submission: BuilderSubmission,
+    config: &mut Config,
+    surface: Surface,
+) -> Result<AppliedAgent, Vec<QuickstartError>> {
+    let ctx = RunCtx::new(surface);
+    let started = std::time::Instant::now();
+
     ::zeroclaw_log::record!(
         INFO,
-        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Start),
+        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Start)
+            .with_attrs(ctx.base_attrs()),
         "quickstart: apply"
     );
+
     let mut errors = Vec::new();
-    let applied = apply_into(config, &submission, &mut errors);
+    let applied = apply_into(config, &submission, &mut errors, Some(&ctx));
     if !errors.is_empty() {
         ::zeroclaw_log::record!(
             WARN,
             ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
                 .with_outcome(::zeroclaw_log::EventOutcome::Failure)
-                .with_attrs(::serde_json::json!({"error_count": errors.len()})),
+                .with_attrs(merge_attrs(
+                    ctx.base_attrs(),
+                    serde_json::json!({
+                        "error_count": errors.len(),
+                        "elapsed_ms": started.elapsed().as_millis() as u64,
+                    }),
+                )),
             "quickstart: apply rejected"
         );
         return Err(errors);
@@ -110,8 +225,59 @@ pub async fn apply(
                 format!("failed to flip quickstart-completed: {err}"),
             )]
         })?;
+    ::zeroclaw_log::record!(
+        INFO,
+        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+            .with_attrs(merge_attrs(
+                ctx.base_attrs(),
+                serde_json::json!({"flag": "quickstart_completed"}),
+            )),
+        "quickstart: completion flag flipped"
+    );
 
-    config.save_dirty().await.map_err(|err| {
+    let dirty_count = config.dirty_paths.len();
+    let write_started = std::time::Instant::now();
+    ::zeroclaw_log::record!(
+        DEBUG,
+        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Write)
+            .with_attrs(merge_attrs(
+                ctx.base_attrs(),
+                serde_json::json!({"dirty_path_count": dirty_count}),
+            )),
+        "quickstart: persist start"
+    );
+    let write_result = config.save_dirty().await;
+    let write_ms = write_started.elapsed().as_millis() as u64;
+    match &write_result {
+        Ok(_) => ::zeroclaw_log::record!(
+            INFO,
+            ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Write)
+                .with_outcome(::zeroclaw_log::EventOutcome::Success)
+                .with_attrs(merge_attrs(
+                    ctx.base_attrs(),
+                    serde_json::json!({
+                        "dirty_path_count": dirty_count,
+                        "elapsed_ms": write_ms,
+                    }),
+                )),
+            "quickstart: persist complete"
+        ),
+        Err(err) => ::zeroclaw_log::record!(
+            WARN,
+            ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Write)
+                .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                .with_attrs(merge_attrs(
+                    ctx.base_attrs(),
+                    serde_json::json!({
+                        "dirty_path_count": dirty_count,
+                        "elapsed_ms": write_ms,
+                        "error": err.to_string(),
+                    }),
+                )),
+            "quickstart: persist failed"
+        ),
+    }
+    write_result.map_err(|err| {
         vec![QuickstartError::new(
             QuickstartStep::Agent,
             "",
@@ -123,10 +289,14 @@ pub async fn apply(
         INFO,
         ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Complete)
             .with_outcome(::zeroclaw_log::EventOutcome::Success)
-            .with_attrs(::serde_json::json!({
-                "agent": applied.alias,
-                "channels": applied.channels.len(),
-            })),
+            .with_attrs(merge_attrs(
+                ctx.base_attrs(),
+                serde_json::json!({
+                    "agent": applied.alias,
+                    "channels": applied.channels.len(),
+                    "elapsed_ms": started.elapsed().as_millis() as u64,
+                }),
+            )),
         "quickstart: apply complete"
     );
     Ok(applied)
@@ -144,8 +314,11 @@ fn apply_into(
     config: &mut Config,
     submission: &BuilderSubmission,
     errors: &mut Vec<QuickstartError>,
+    ctx: Option<&RunCtx>,
 ) -> Option<AppliedAgent> {
     let provider_ref = apply_model_provider(config, &submission.model_provider, errors)?;
+    emit_selector_pick(ctx, "model_provider", selector_mode(&submission.model_provider), &provider_ref);
+
     let risk_alias = apply_named_preset(
         config,
         &submission.risk_profile,
@@ -154,6 +327,8 @@ fn apply_into(
         write_risk_preset,
         errors,
     )?;
+    emit_selector_pick(ctx, "risk_profile", selector_mode(&submission.risk_profile), &risk_alias);
+
     let runtime_alias = apply_named_preset(
         config,
         &submission.runtime_profile,
@@ -162,8 +337,27 @@ fn apply_into(
         write_runtime_preset,
         errors,
     )?;
+    emit_selector_pick(ctx, "runtime_profile", selector_mode(&submission.runtime_profile), &runtime_alias);
+
     let memory_backend = apply_memory(config, &submission.memory, errors)?;
+    emit_selector_pick(ctx, "memory", selector_mode(&submission.memory), &memory_backend);
+
     let channel_refs = apply_channels(config, &submission.channels, errors);
+    if let Some(ctx) = ctx {
+        ::zeroclaw_log::record!(
+            DEBUG,
+            ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                .with_attrs(merge_attrs(
+                    ctx.base_attrs(),
+                    serde_json::json!({
+                        "selector": "channels",
+                        "count": channel_refs.len(),
+                    }),
+                )),
+            "quickstart: selector channels"
+        );
+    }
+
     if !errors.is_empty() {
         return None;
     }
@@ -176,6 +370,8 @@ fn apply_into(
         &channel_refs,
         errors,
     )?;
+    emit_selector_pick(ctx, "agent", "create_new", &alias);
+
     Some(AppliedAgent {
         alias,
         model_provider: provider_ref,
@@ -184,6 +380,33 @@ fn apply_into(
         channels: channel_refs,
         memory_backend,
     })
+}
+
+/// Surface representation of a selector's submission mode for
+/// observability. We never inspect the wrapped value here — only
+/// whether the user picked an existing alias or created fresh.
+fn selector_mode<T>(choice: &SelectorChoice<T>) -> &'static str {
+    match choice {
+        SelectorChoice::Existing(_) => "use_existing",
+        SelectorChoice::Fresh(_) => "create_new",
+    }
+}
+
+fn emit_selector_pick(ctx: Option<&RunCtx>, selector: &str, mode: &str, value: &str) {
+    let Some(ctx) = ctx else { return };
+    ::zeroclaw_log::record!(
+        DEBUG,
+        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+            .with_attrs(merge_attrs(
+                ctx.base_attrs(),
+                serde_json::json!({
+                    "selector": selector,
+                    "mode": mode,
+                    "value": value,
+                }),
+            )),
+        "quickstart: selector pick"
+    );
 }
 
 // ── Model provider ─────────────────────────────────────────────────
