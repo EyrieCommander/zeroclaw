@@ -13,6 +13,42 @@ const DEFAULT_SHELL_TIMEOUT_SECS: u64 = 60;
 /// Maximum output size in bytes (1MB).
 const MAX_OUTPUT_BYTES: usize = 1_048_576;
 
+/// Drop guard that SIGTERMs then SIGKILLs the process group whose leader
+/// is `pid`. The shell tool puts every command in its own process group
+/// (`process_group(0)`) so a single signal reaps the foreground bash plus
+/// any backgrounded jobs and subshells. Fires on every exit path from
+/// `execute` — success, timeout, or outer-future drop (session/cancel).
+#[cfg(unix)]
+struct ChildGroupGuard {
+    pgid: Option<i32>,
+}
+
+#[cfg(unix)]
+impl ChildGroupGuard {
+    fn new(child_pid: Option<u32>) -> Self {
+        Self {
+            pgid: child_pid.and_then(|p| i32::try_from(p).ok()),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ChildGroupGuard {
+    fn drop(&mut self) {
+        let Some(pgid) = self.pgid else {
+            return;
+        };
+        // SAFETY: libc call with valid arguments. Negative pid = pgid.
+        unsafe {
+            libc::kill(-pgid, libc::SIGTERM);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        unsafe {
+            libc::kill(-pgid, libc::SIGKILL);
+        }
+    }
+}
+
 /// Environment variables safe to pass to shell commands.
 /// Only functional variables are included — never API keys or secrets.
 #[cfg(not(target_os = "windows"))]
@@ -285,7 +321,36 @@ impl Tool for ShellTool {
         }
 
         let timeout_secs = self.timeout_secs;
-        let result = tokio::time::timeout(Duration::from_secs(timeout_secs), cmd.output()).await;
+        // Run in own process group so `ChildGroupGuard` can reap the
+        // whole subtree (backgrounded jobs, subshells) on any exit path.
+        #[cfg(unix)]
+        cmd.process_group(0);
+        cmd.kill_on_drop(true);
+        // `output()` pipes stdio implicitly; `spawn()` does not.
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+
+        let child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                return Ok(ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(format!("Failed to spawn command: {e}")),
+                });
+            }
+        };
+
+        // RAII: kill the whole process group on any exit (success,
+        // timeout, outer future drop).
+        #[cfg(unix)]
+        let _group_guard = ChildGroupGuard::new(child.id());
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(timeout_secs),
+            child.wait_with_output(),
+        )
+        .await;
 
         match result {
             Ok(Ok(output)) => {

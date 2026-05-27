@@ -1232,6 +1232,25 @@ pub enum SessionUpdateEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_context_tokens: Option<u64>,
     },
+    /// Terminal event for a turn. Replaces the response of `session/prompt`.
+    /// `outcome` distinguishes a clean finish from a user-initiated cancel.
+    TurnComplete {
+        session_id: String,
+        outcome: TurnCompletionOutcome,
+        /// Final assistant text (Completed) or partial accumulated text
+        /// at cancel point (Cancelled).
+        content: String,
+    },
+}
+
+/// Wire-stable subset of [`crate::rpc::turn::TurnOutcome`] for
+/// `TurnComplete`. `messages` is intentionally not on the wire — the TUI
+/// rebuilds from streamed chunks.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnCompletionOutcome {
+    Completed,
+    Cancelled,
 }
 
 // ══════════════════════════════════════════════════════════════════════

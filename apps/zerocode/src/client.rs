@@ -144,6 +144,13 @@ pub enum SessionUpdate {
         input_tokens: Option<u64>,
         max_context_tokens: Option<u64>,
     },
+    /// Terminal event for a turn. Replaces the JSON-RPC response of
+    /// `session/prompt`. `cancelled` is true on user-initiated cancel.
+    TurnComplete {
+        session_id: String,
+        cancelled: bool,
+        content: String,
+    },
 }
 
 pub fn parse_session_update(params: &serde_json::Value) -> Option<SessionUpdate> {
@@ -180,6 +187,15 @@ pub fn parse_session_update(params: &serde_json::Value) -> Option<SessionUpdate>
             session_id: sid,
             input_tokens: params.get("input_tokens").and_then(|v| v.as_u64()),
             max_context_tokens: params.get("max_context_tokens").and_then(|v| v.as_u64()),
+        }),
+        "turn_complete" => Some(SessionUpdate::TurnComplete {
+            session_id: sid,
+            cancelled: params.get("outcome").and_then(|v| v.as_str()) == Some("cancelled"),
+            content: params
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
         }),
         _ => None,
     }
@@ -587,20 +603,6 @@ impl RpcClient {
         .map_err(|_| anyhow::Error::msg(format!("RPC {method}: timed out after 5s")))?
         .map_err(|e| anyhow::Error::msg(format!("RPC {method}: {} ({})", e.message, e.code)))?;
         serde_json::from_value(result).with_context(|| format!("deserializing {method} result"))
-    }
-
-    /// Call an RPC method using a shared Arc<RpcOutbound> — usable from spawned tasks.
-    pub async fn call_static<T: serde::de::DeserializeOwned + Send + 'static>(
-        rpc: &Arc<RpcOutbound>,
-        method: &'static str,
-        params: serde_json::Value,
-    ) -> anyhow::Result<T> {
-        let result = rpc
-            .request(method, params)
-            .await
-            .map_err(|e| anyhow::Error::msg(format!("RPC {method}: {} ({})", e.message, e.code)))?;
-        serde_json::from_value(result)
-            .map_err(|e| anyhow::Error::msg(format!("deserializing {method} result: {e}")))
     }
 
     // ── Connection state ─────────────────────────────────────────
@@ -1478,12 +1480,6 @@ pub struct SessionNewResult {
     pub session_id: String,
     #[serde(default)]
     pub workspace_dir: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct SessionPromptResult {
-    pub content: String,
 }
 
 #[derive(Debug, serde::Deserialize)]

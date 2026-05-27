@@ -17,7 +17,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::attachment::build_attachments_json;
 use crate::client::{
-    ApprovalDecision, RpcClient, RpcNotification, SessionEntry, SessionPromptResult, SessionUpdate,
+    ApprovalDecision, RpcClient, RpcNotification, SessionEntry, SessionUpdate,
     method, parse_session_update,
 };
 use crate::diff;
@@ -78,8 +78,6 @@ pub(crate) struct Chat {
     rpc: Arc<RpcClient>,
     rpc_out: Arc<RpcOutbound>,
     notif_rx: broadcast::Receiver<RpcNotification>,
-    turn_result_tx: mpsc::Sender<anyhow::Result<SessionPromptResult>>,
-    turn_result_rx: mpsc::Receiver<anyhow::Result<SessionPromptResult>>,
     /// Background-fetched git branch updates: (session_id, branch).
     git_branch_tx: mpsc::Sender<(String, Option<String>)>,
     git_branch_rx: mpsc::Receiver<(String, Option<String>)>,
@@ -91,14 +89,11 @@ pub(crate) struct Chat {
 
 impl Chat {
     pub(crate) fn new(rpc: Arc<RpcClient>, pane_kind: PaneKind) -> Self {
-        let (turn_result_tx, turn_result_rx) = mpsc::channel(4);
         let (git_branch_tx, git_branch_rx) = mpsc::channel(4);
         Self {
             rpc: rpc.clone(),
             rpc_out: rpc.rpc.clone(),
             notif_rx: rpc.subscribe_notifications(),
-            turn_result_tx,
-            turn_result_rx,
             git_branch_tx,
             git_branch_rx,
             git_branch_inflight: false,
@@ -234,17 +229,6 @@ impl Chat {
         }
     }
 
-    fn drain_turn_results(&mut self) {
-        while let Ok(result) = self.turn_result_rx.try_recv() {
-            if let ChatPhase::Active(ref mut state) = self.phase {
-                match result {
-                    Ok(r) => state.commit_turn(r.content),
-                    Err(e) => state.commit_turn(format!("[error: {e}]")),
-                }
-            }
-        }
-    }
-
     fn drain_git_branch_results(&mut self) {
         while let Ok((sid, branch)) = self.git_branch_rx.try_recv() {
             self.git_branch_inflight = false;
@@ -295,7 +279,6 @@ impl Chat {
 
     pub(crate) fn draw(&mut self, frame: &mut Frame, area: Rect) {
         self.drain_notifications();
-        self.drain_turn_results();
         self.drain_git_branch_results();
         self.maybe_refresh_git_branch();
 
@@ -522,8 +505,9 @@ impl Chat {
                     state.push_user_message(text, att_names);
                     let sid = state.session_id.clone();
                     let rpc_arc = self.rpc_out.clone();
-                    let tx = self.turn_result_tx.clone();
                     let transport = self.rpc.transport();
+                    // Fire-and-forget. Turn end arrives via TurnComplete
+                    // notification handled in apply_update.
                     tokio::spawn(async move {
                         let mut params = serde_json::json!({
                             "session_id": sid,
@@ -534,19 +518,10 @@ impl Chat {
                                 Ok(att_json) => {
                                     params["attachments"] = serde_json::Value::Array(att_json);
                                 }
-                                Err(e) => {
-                                    let _ = tx.send(Err(e)).await;
-                                    return;
-                                }
+                                Err(_) => return,
                             }
                         }
-                        let result = RpcClient::call_static::<SessionPromptResult>(
-                            &rpc_arc,
-                            method::SESSION_PROMPT,
-                            params,
-                        )
-                        .await;
-                        let _ = tx.send(result).await;
+                        rpc_arc.notify(method::SESSION_PROMPT, params).await;
                     });
                     return false;
                 }
@@ -2072,7 +2047,8 @@ impl ChatState {
             | SessionUpdate::ToolCall { session_id, .. }
             | SessionUpdate::ToolResult { session_id, .. }
             | SessionUpdate::ApprovalRequest { session_id, .. }
-            | SessionUpdate::ContextUsage { session_id, .. } => session_id.as_str(),
+            | SessionUpdate::ContextUsage { session_id, .. }
+            | SessionUpdate::TurnComplete { session_id, .. } => session_id.as_str(),
         };
         if update_sid != self.session_id {
             return;
@@ -2193,6 +2169,19 @@ impl ChatState {
                 if max_context_tokens.is_some() {
                     self.context_max_tokens = max_context_tokens;
                 }
+            }
+            SessionUpdate::TurnComplete {
+                content, cancelled, ..
+            } => {
+                // Single source of truth for turn end. RPC errors on
+                // session/prompt cannot reach this — only the daemon can.
+                if cancelled {
+                    self.entries.push(ChatEntry::SystemMessage(Arc::<str>::from(
+                        "[turn cancelled]",
+                    )));
+                    self.mark_dirty_append();
+                }
+                self.commit_turn(content);
             }
         }
     }

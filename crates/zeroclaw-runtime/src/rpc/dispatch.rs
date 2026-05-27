@@ -376,20 +376,27 @@ impl RpcDispatcher {
             Method::SessionNew => self.handle_session_new(&req.params).await,
             Method::SessionClose => self.handle_session_close(&req.params).await,
             Method::SessionPrompt => {
-                // Spawn so the read loop stays live for session/approve while
-                // the turn is in flight — serial dispatch would deadlock.
-                if !is_notification {
-                    let handle = self.spawn_handle();
-                    let id_clone = id;
-                    let params_clone = req.params.clone();
-                    zeroclaw_spawn::spawn!(async move {
-                        let result = handle.handle_session_prompt(&params_clone).await;
+                // Always spawn — turn completion is signaled by a
+                // TurnComplete notification, not by this method's response.
+                // The response (empty {} or error) is kept only so legacy
+                // request-form callers don't park forever.
+                let handle = self.spawn_handle();
+                let id_clone = id;
+                let params_clone = req.params.clone();
+                let is_notif = is_notification;
+                zeroclaw_spawn::spawn!(async move {
+                    let result = handle.handle_session_prompt(&params_clone).await;
+                    if !is_notif {
                         match result {
-                            Ok(v) => handle.send_result(id_clone, v).await,
+                            Ok(_) => {
+                                handle
+                                    .send_result(id_clone, serde_json::json!({}))
+                                    .await
+                            }
                             Err(e) => handle.send_error(id_clone, e.code, &e.message).await,
                         }
-                    });
-                }
+                    }
+                });
                 return;
             }
             Method::SessionConfigure => self.handle_session_configure(&req.params).await,
@@ -942,17 +949,55 @@ impl RpcDispatcher {
         }
 
         match outcome {
-            Ok(TurnOutcome::Completed { text, .. }) => to_result(SessionPromptResult {
-                session_id: req.session_id,
-                stop_reason: "end_turn".to_string(),
-                content: text,
-            }),
-            Ok(TurnOutcome::Cancelled { partial_text }) => to_result(SessionPromptResult {
-                session_id: req.session_id,
-                stop_reason: "cancelled".to_string(),
-                content: partial_text,
-            }),
+            Ok(TurnOutcome::Completed { text, .. }) => {
+                self.emit_turn_complete(
+                    &req.session_id,
+                    crate::rpc::types::TurnCompletionOutcome::Completed,
+                    text.clone(),
+                )
+                .await;
+                to_result(SessionPromptResult {
+                    session_id: req.session_id,
+                    stop_reason: "end_turn".to_string(),
+                    content: text,
+                })
+            }
+            Ok(TurnOutcome::Cancelled { partial_text }) => {
+                self.emit_turn_complete(
+                    &req.session_id,
+                    crate::rpc::types::TurnCompletionOutcome::Cancelled,
+                    partial_text.clone(),
+                )
+                .await;
+                to_result(SessionPromptResult {
+                    session_id: req.session_id,
+                    stop_reason: "cancelled".to_string(),
+                    content: partial_text,
+                })
+            }
             Err(e) => Err(rpc_err(INTERNAL_ERROR, e.to_string())),
+        }
+    }
+
+    /// Emit the terminal `session/update` notification for a turn.
+    /// The TUI uses this — not the JSON-RPC response — to flip
+    /// `turn_in_flight` back to false.
+    async fn emit_turn_complete(
+        &self,
+        session_id: &str,
+        outcome: crate::rpc::types::TurnCompletionOutcome,
+        content: String,
+    ) {
+        let update = SessionUpdateEvent::TurnComplete {
+            session_id: session_id.to_string(),
+            outcome,
+            content,
+        };
+        if let Ok(params) = serde_json::to_value(update) {
+            let n = JsonRpcNotification::new(notification::SESSION_UPDATE, params);
+            if let Ok(s) = serde_json::to_string(&n) {
+                let _ = self.rpc.send_raw(s).await;
+            }
         }
     }
 
