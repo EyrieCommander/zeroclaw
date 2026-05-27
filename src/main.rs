@@ -916,25 +916,29 @@ fn apply_homebrew_onboard_config_dir() {
     );
 }
 
-/// `zeroclaw quickstart` CLI entry — step-by-step prompt walker.
+/// `zeroclaw quickstart` CLI entry — checklist UX, not a wizard.
 ///
-/// Walks the same selectors the TUI Quickstart pane walks
-/// (Provider → Risk → Runtime → Memory → Channels → Agent), one
-/// dialoguer prompt at a time. Esc on a list / confirm rewinds one
-/// step; Enter advances. `$EDITOR` is shelled out for multi-line
-/// fields (system prompt). Option lists come from the canonical
-/// registries via `zeroclaw_runtime::quickstart::snapshot_state` —
-/// the CLI never carries its own provider / channel list. On the
-/// final confirmation the assembled `BuilderSubmission` is sent
-/// through `apply_with_surface(..., Surface::Cli)` — the same write
-/// path the gateway and TUI surfaces use.
+/// Mirrors the TUI Quickstart pane's structure: a single screen
+/// listing all six selectors with `[ ]` / `[✓]` status and a one-line
+/// summary, the user picks which selector to fill (any order), each
+/// selector opens its own picker / field-form / channel-list sub-flow,
+/// and `c` creates the agent once every selector is `[✓]`. There are
+/// no pre-checked defaults anywhere — every selector starts `[ ]` and
+/// is only satisfied by an explicit user choice (either a "Use
+/// existing" pick of an already-configured alias, or a fully-filled
+/// "Create new" entry).
+///
+/// All option lists, field shapes, presets, and the apply path come
+/// directly from `zeroclaw_runtime::quickstart` — the same module the
+/// gateway and TUI surfaces consume. No RPC, no daemon: the CLI is
+/// compiled in-process with `zeroclaw-runtime` and calls
+/// `snapshot_state` / `field_shape` / `apply_with_surface` as plain
+/// functions.
 ///
 /// Flag pre-fills (`--model-provider`, `--model`, `--api-key`,
-/// `--agent`) are honoured when present. Missing flags are no
-/// longer a hard error: the walker asks for them. This is the
-/// behaviour the plan calls for ("scripted-flag matrices belong
-/// in `zeroclaw config set`"; Quickstart itself is interactive
-/// only).
+/// `--agent`) silently seed the relevant selector's value and mark it
+/// `[✓]` if the seed is enough to satisfy the selector; the user can
+/// still open that selector and overwrite it.
 #[cfg(feature = "agent-runtime")]
 async fn run_quickstart_cli(
     model_provider: Option<String>,
@@ -947,51 +951,102 @@ async fn run_quickstart_cli(
         AgentIdentity, BuilderSubmission, ChannelQuickStart, MemoryChoice, ModelProviderChoice,
         RISK_PRESETS, RUNTIME_PRESETS, SelectorChoice,
     };
+    use zeroclaw_config::traits::PropKind;
     use zeroclaw_runtime::quickstart::{
-        QuickstartTypeOption, Surface, apply_with_surface, snapshot_state,
+        FieldSection, QuickstartTypeOption, Surface, apply_with_surface, field_shape,
+        snapshot_state,
     };
 
-    // Boot a config snapshot (no daemon required) — gives us the
-    // canonical registries the walker shows in pickers.
+    // ── Form state ──────────────────────────────────────────────
+    //
+    // Every field is `Option<…>` and starts `None`. A selector is
+    // `[✓]` iff its constituent fields are all `Some(_)` and
+    // non-empty. The form is mutated by the selector sub-flows and
+    // read by the main checklist render loop.
+    #[derive(Default)]
+    struct Form {
+        provider: Option<ProviderChoice>,
+        risk: Option<PresetChoice>,
+        runtime: Option<PresetChoice>,
+        memory: Option<MemoryChoice>,
+        channels: Vec<ChannelChoice>,
+        // Tracks whether the user explicitly visited Channels and
+        // confirmed "no channels". An empty `channels` Vec with
+        // `channels_visited == false` is *not* satisfied — the
+        // selector still shows `[ ]`.
+        channels_visited: bool,
+        agent: Option<AgentChoice>,
+    }
+    enum ProviderChoice {
+        Fresh {
+            kind: String,
+            display_name: String,
+            alias: String,
+            default_model: String,
+            api_key: Option<String>,
+            base_url: Option<String>,
+        },
+        Existing {
+            alias_ref: String,
+        },
+    }
+    enum PresetChoice {
+        Fresh(&'static str),
+        Existing(String),
+    }
+    enum ChannelChoice {
+        Fresh {
+            kind: String,
+            display_name: String,
+            alias: String,
+            extras: std::collections::BTreeMap<String, String>,
+        },
+        Existing {
+            alias_ref: String,
+        },
+    }
+    struct AgentChoice {
+        name: String,
+        system_prompt: String,
+    }
+
+    impl Form {
+        fn provider_done(&self) -> bool {
+            self.provider.is_some()
+        }
+        fn risk_done(&self) -> bool {
+            self.risk.is_some()
+        }
+        fn runtime_done(&self) -> bool {
+            self.runtime.is_some()
+        }
+        fn memory_done(&self) -> bool {
+            self.memory.is_some()
+        }
+        fn channels_done(&self) -> bool {
+            self.channels_visited
+        }
+        fn agent_done(&self) -> bool {
+            self.agent
+                .as_ref()
+                .is_some_and(|a| !a.name.trim().is_empty())
+        }
+        fn all_done(&self) -> bool {
+            self.provider_done()
+                && self.risk_done()
+                && self.runtime_done()
+                && self.memory_done()
+                && self.channels_done()
+                && self.agent_done()
+        }
+    }
+
+    // ── Load config + canonical registries ──────────────────────
     let _dirs = crate::config::schema::resolve_runtime_dirs().await?;
     let mut cfg = Box::pin(crate::config::schema::Config::load_or_init()).await?;
     let state = snapshot_state(&cfg);
-
-    // The walker is a small state machine: each step records its
-    // chosen value into a slot, then advances `cursor` by one. Esc
-    // (any `Answer::Back`-equivalent dialoguer signal) decrements
-    // `cursor` so the user can fix an earlier answer. We keep all
-    // collected values in scoped `Option`s and rebuild from them on
-    // each iteration.
-    #[derive(Clone, Copy, Debug)]
-    enum Step {
-        Provider,
-        Model,
-        ApiKey,
-        Risk,
-        Runtime,
-        Memory,
-        Channels,
-        AgentName,
-        SystemPrompt,
-        Review,
-    }
-    const STEPS: &[Step] = &[
-        Step::Provider,
-        Step::Model,
-        Step::ApiKey,
-        Step::Risk,
-        Step::Runtime,
-        Step::Memory,
-        Step::Channels,
-        Step::AgentName,
-        Step::SystemPrompt,
-        Step::Review,
-    ];
-
     let providers: &[QuickstartTypeOption] = &state.model_provider_types;
     let channel_types: &[QuickstartTypeOption] = &state.channel_types;
-
     if providers.is_empty() {
         anyhow::bail!(
             "Quickstart could not enumerate model providers — \
@@ -999,49 +1054,216 @@ async fn run_quickstart_cli(
         );
     }
 
-    // Pre-fill from flags so a fully-flagged invocation walks
-    // straight through without re-prompting.
-    let provider_seed_idx = model_provider.as_deref().and_then(|seed| {
-        providers
-            .iter()
-            .position(|p| p.kind.eq_ignore_ascii_case(seed))
-    });
-    let mut provider_idx: Option<usize> = provider_seed_idx;
-    let mut model_value: Option<String> = model.clone();
-    let mut api_key_value: Option<String> = api_key.clone();
-    let mut risk_idx: Option<usize> = RISK_PRESETS
-        .iter()
-        .position(|p| p.preset_name == "balanced");
-    let mut runtime_idx: Option<usize> = RUNTIME_PRESETS
-        .iter()
-        .position(|p| p.preset_name == "balanced");
-    let mut memory_choice: Option<MemoryChoice> = Some(MemoryChoice::Sqlite);
-    let mut channels: Vec<ChannelQuickStart> = Vec::new();
-    let mut agent_name: Option<String> = agent.clone();
-    let mut system_prompt: Option<String> = None;
+    let mut form = Form::default();
 
-    let mut cursor: usize = 0;
-    let total = STEPS.len();
-    let mut last_back_reason: Option<&'static str> = None;
+    // ── Seed from flags (silent — no UI hit) ────────────────────
+    //
+    // Flag-seeded values are recorded into the form so the
+    // selector renders `[✓]` immediately, but only when the seed
+    // is enough to satisfy the selector on its own. A bare
+    // `--model-provider anthropic` without `--model` cannot
+    // produce a complete `ProviderChoice::Fresh`, so it is
+    // discarded rather than left half-built — the user opens the
+    // selector and starts fresh.
+    if let (Some(mp), Some(m)) = (model_provider.as_deref(), model.as_deref())
+        && let Some(found) = providers.iter().find(|p| p.kind.eq_ignore_ascii_case(mp))
+    {
+        let needs_key = !found.local && api_key.is_none();
+        if !needs_key {
+            form.provider = Some(ProviderChoice::Fresh {
+                kind: found.kind.clone(),
+                display_name: found.display_name.clone(),
+                alias: found.kind.clone(),
+                default_model: m.to_string(),
+                api_key: api_key.clone(),
+                base_url: None,
+            });
+        }
+    }
+    if let Some(a) = agent.as_deref() {
+        let trimmed = a.trim();
+        if !trimmed.is_empty() {
+            form.agent = Some(AgentChoice {
+                name: trimmed.to_string(),
+                system_prompt: String::new(),
+            });
+        }
+    }
+
+    // ── Main checklist loop ─────────────────────────────────────
+    #[derive(Clone, Copy)]
+    enum Action {
+        Provider,
+        Risk,
+        Runtime,
+        Memory,
+        Channels,
+        Agent,
+        Create,
+        Quit,
+    }
 
     println!();
     println!("Quickstart — create one working agent end-to-end.");
-    println!("Enter accepts, Esc rewinds one step, Ctrl-C aborts.");
     println!();
 
-    'walker: loop {
-        if cursor >= total {
-            break 'walker;
-        }
-        let step = STEPS[cursor];
-        if let Some(msg) = last_back_reason.take() {
-            println!("(back: {msg})");
-        }
-        println!("── step {} of {}: {step:?} ──", cursor + 1, total);
+    loop {
+        // Render selector list with current status / summary.
+        let glyph = |ok: bool| if ok { "[✓]" } else { "[ ]" };
+        let provider_summary = match &form.provider {
+            None => "not yet chosen".to_string(),
+            Some(ProviderChoice::Fresh {
+                display_name,
+                alias,
+                default_model,
+                ..
+            }) => format!("{display_name} (alias: {alias}, model: {default_model})"),
+            Some(ProviderChoice::Existing { alias_ref }) => {
+                format!("use existing {alias_ref}")
+            }
+        };
+        let preset_summary = |p: &Option<PresetChoice>| -> String {
+            match p {
+                None => "not yet chosen".to_string(),
+                Some(PresetChoice::Fresh(name)) => format!("preset: {name}"),
+                Some(PresetChoice::Existing(a)) => format!("use existing {a}"),
+            }
+        };
+        let memory_summary = match &form.memory {
+            None => "not yet chosen".to_string(),
+            Some(MemoryChoice::Sqlite) => "sqlite".to_string(),
+            Some(MemoryChoice::None) => "none".to_string(),
+        };
+        let channels_summary = if !form.channels_visited {
+            "not yet visited".to_string()
+        } else if form.channels.is_empty() {
+            "none (chat via `zeroclaw agent` only)".to_string()
+        } else {
+            form.channels
+                .iter()
+                .map(|c| match c {
+                    ChannelChoice::Fresh { kind, alias, .. } => format!("{kind}.{alias}"),
+                    ChannelChoice::Existing { alias_ref } => alias_ref.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let agent_summary = match &form.agent {
+            None => "not yet named".to_string(),
+            Some(a) => format!(
+                "alias: {}, system prompt: {} chars",
+                a.name,
+                a.system_prompt.len()
+            ),
+        };
 
-        match step {
-            Step::Provider => {
-                let items: Vec<String> = providers
+        let mut labels: Vec<String> = vec![
+            format!(
+                "{} Model provider     — {provider_summary}",
+                glyph(form.provider_done())
+            ),
+            format!(
+                "{} Risk profile       — {}",
+                glyph(form.risk_done()),
+                preset_summary(&form.risk)
+            ),
+            format!(
+                "{} Runtime profile    — {}",
+                glyph(form.runtime_done()),
+                preset_summary(&form.runtime)
+            ),
+            format!(
+                "{} Memory             — {memory_summary}",
+                glyph(form.memory_done())
+            ),
+            format!(
+                "{} Channels (0..N)    — {channels_summary}",
+                glyph(form.channels_done())
+            ),
+            format!(
+                "{} Agent identity     — {agent_summary}",
+                glyph(form.agent_done())
+            ),
+        ];
+        let create_enabled = form.all_done();
+        labels.push(if create_enabled {
+            "── Create agent".to_string()
+        } else {
+            "── Create agent (locked — fill every selector first)".to_string()
+        });
+        labels.push("── Quit (no config written)".to_string());
+
+        let actions = [
+            Action::Provider,
+            Action::Risk,
+            Action::Runtime,
+            Action::Memory,
+            Action::Channels,
+            Action::Agent,
+            Action::Create,
+            Action::Quit,
+        ];
+
+        let pick = FuzzySelect::new()
+            .with_prompt("Open a selector (Enter), or pick Create / Quit")
+            .items(&labels)
+            .default(0)
+            .interact_opt()?;
+        let action = match pick {
+            Some(i) => actions[i],
+            None => Action::Quit, // Esc on the main checklist quits.
+        };
+
+        match action {
+            Action::Quit => {
+                println!("Quickstart cancelled. No config written.");
+                return Ok(());
+            }
+            Action::Create => {
+                if !create_enabled {
+                    println!("  Not all selectors are filled yet.");
+                    continue;
+                }
+                break;
+            }
+            Action::Provider => {
+                // Step 1: pick Existing or Fresh, when there are
+                // existing providers to choose from.
+                let mut mode_labels: Vec<String> = Vec::new();
+                let mut mode_kinds: Vec<&str> = Vec::new();
+                if !state.model_providers.is_empty() {
+                    mode_labels.push("Use existing".to_string());
+                    mode_kinds.push("existing");
+                }
+                mode_labels.push("Create new".to_string());
+                mode_kinds.push("fresh");
+                let mode = if mode_labels.len() == 1 {
+                    Some(0)
+                } else {
+                    FuzzySelect::new()
+                        .with_prompt("Model provider")
+                        .items(&mode_labels)
+                        .default(0)
+                        .interact_opt()?
+                };
+                let Some(mi) = mode else { continue };
+                if mode_kinds[mi] == "existing" {
+                    let labels: Vec<String> = state.model_providers.clone();
+                    let Some(i) = FuzzySelect::new()
+                        .with_prompt("Pick a configured provider")
+                        .items(&labels)
+                        .default(0)
+                        .interact_opt()?
+                    else {
+                        continue;
+                    };
+                    form.provider = Some(ProviderChoice::Existing {
+                        alias_ref: labels[i].clone(),
+                    });
+                    continue;
+                }
+                // Fresh: type → alias → field form.
+                let prov_labels: Vec<String> = providers
                     .iter()
                     .map(|p| {
                         if p.local {
@@ -1051,342 +1273,337 @@ async fn run_quickstart_cli(
                         }
                     })
                     .collect();
-                let default = provider_idx.unwrap_or(0);
-                let mut select = FuzzySelect::new()
-                    .with_prompt("Model provider")
-                    .items(&items);
-                select = select.default(default);
-                match select.interact_opt()? {
-                    Some(i) => {
-                        provider_idx = Some(i);
-                        cursor += 1;
-                    }
-                    None => {
-                        // First step — Esc on root quits.
-                        anyhow::bail!("Quickstart cancelled.");
-                    }
-                }
-            }
-            Step::Model => {
-                let provider = &providers[provider_idx.expect("provider chosen")];
-                let mut input = Input::<String>::new()
-                    .with_prompt(format!("Default model id for {}", provider.display_name))
-                    .allow_empty(false);
-                if let Some(v) = &model_value {
-                    input = input.default(v.clone());
-                }
-                match input.interact_text() {
-                    Ok(v) => {
-                        model_value = Some(v);
-                        cursor += 1;
-                    }
-                    Err(_) => {
-                        last_back_reason = Some("model entry cancelled");
-                        cursor = cursor.saturating_sub(1);
-                    }
-                }
-            }
-            Step::ApiKey => {
-                let provider = &providers[provider_idx.expect("provider chosen")];
-                if provider.local {
-                    println!(
-                        "  {} runs locally — no API key required.",
-                        provider.display_name
-                    );
-                    api_key_value = None;
-                    cursor += 1;
-                } else if let Some(existing) = &api_key_value {
-                    // Came from `--api-key` — accept silently and move on.
-                    let _ = existing;
-                    cursor += 1;
-                } else {
-                    let pw = Password::new()
-                        .with_prompt(format!("API key for {}", provider.display_name))
-                        .allow_empty_password(true)
-                        .interact()?;
-                    api_key_value = if pw.is_empty() { None } else { Some(pw) };
-                    cursor += 1;
-                }
-            }
-            Step::Risk => {
-                let items: Vec<String> = RISK_PRESETS
-                    .iter()
-                    .map(|p| format!("{}  —  {}", p.label, p.help))
-                    .collect();
-                let default = risk_idx.unwrap_or(0);
-                match FuzzySelect::new()
-                    .with_prompt("Risk profile")
-                    .items(&items)
-                    .default(default)
+                let Some(pi) = FuzzySelect::new()
+                    .with_prompt("Provider type")
+                    .items(&prov_labels)
+                    .default(0)
                     .interact_opt()?
-                {
-                    Some(i) => {
-                        risk_idx = Some(i);
-                        cursor += 1;
-                    }
-                    None => {
-                        last_back_reason = Some("risk selection cancelled");
-                        cursor = cursor.saturating_sub(1);
-                    }
-                }
-            }
-            Step::Runtime => {
-                let items: Vec<String> = RUNTIME_PRESETS
-                    .iter()
-                    .map(|p| format!("{}  —  {}", p.label, p.help))
-                    .collect();
-                let default = runtime_idx.unwrap_or(0);
-                match FuzzySelect::new()
-                    .with_prompt("Runtime profile")
-                    .items(&items)
-                    .default(default)
-                    .interact_opt()?
-                {
-                    Some(i) => {
-                        runtime_idx = Some(i);
-                        cursor += 1;
-                    }
-                    None => {
-                        last_back_reason = Some("runtime selection cancelled");
-                        cursor = cursor.saturating_sub(1);
-                    }
-                }
-            }
-            Step::Memory => {
-                let items = ["SQLite (recommended)", "None"];
-                let default = match memory_choice {
-                    Some(MemoryChoice::None) => 1,
-                    _ => 0,
+                else {
+                    continue;
                 };
-                match FuzzySelect::new()
-                    .with_prompt("Memory")
-                    .items(items)
-                    .default(default)
-                    .interact_opt()?
-                {
-                    Some(0) => {
-                        memory_choice = Some(MemoryChoice::Sqlite);
-                        cursor += 1;
-                    }
-                    Some(_) => {
-                        memory_choice = Some(MemoryChoice::None);
-                        cursor += 1;
-                    }
-                    None => {
-                        last_back_reason = Some("memory selection cancelled");
-                        cursor = cursor.saturating_sub(1);
+                let chosen = &providers[pi];
+                let Ok(alias) = Input::<String>::new()
+                    .with_prompt(format!("Alias for {}", chosen.display_name))
+                    .default(chosen.kind.clone())
+                    .allow_empty(false)
+                    .interact_text()
+                else {
+                    continue;
+                };
+                // Field shape from the canonical schema.
+                let descriptors = field_shape(FieldSection::ModelProvider, &chosen.kind);
+                let mut default_model = String::new();
+                let mut api_key_buf: Option<String> = None;
+                let mut base_url_buf: Option<String> = None;
+                let mut aborted = false;
+                for d in &descriptors {
+                    let collected = prompt_for_field(d, None)?;
+                    let Some(value) = collected else {
+                        aborted = true;
+                        break;
+                    };
+                    if d.key.eq_ignore_ascii_case("model") {
+                        default_model = value;
+                    } else if d.is_secret && !value.is_empty() {
+                        api_key_buf = Some(value);
+                    } else if (d.key.eq_ignore_ascii_case("uri")
+                        || d.key.eq_ignore_ascii_case("base-url")
+                        || d.key.eq_ignore_ascii_case("base_url"))
+                        && !value.is_empty()
+                    {
+                        base_url_buf = Some(value);
                     }
                 }
-            }
-            Step::Channels => {
-                // Inner loop: pick a channel type, fill its alias + token,
-                // append. Esc on the "Add another?" prompt exits the
-                // channels loop and advances the outer walker.
-                loop {
-                    if !channels.is_empty() {
-                        println!("  configured channels:");
-                        for c in &channels {
-                            println!("    - {}.{}", c.channel_type, c.alias);
-                        }
-                    }
-                    let want_more = Confirm::new()
-                        .with_prompt(if channels.is_empty() {
-                            "Add a channel? (optional)"
-                        } else {
-                            "Add another channel?"
-                        })
-                        .default(channels.is_empty())
-                        .interact_opt()?;
-                    match want_more {
-                        Some(false) => break,
-                        None => {
-                            last_back_reason = Some("channels step cancelled");
-                            // Rewind to memory.
-                            cursor = cursor.saturating_sub(1);
-                            continue 'walker;
-                        }
-                        Some(true) => {}
-                    }
-                    if channel_types.is_empty() {
-                        println!("  No channel types compiled into this binary — skipping.");
-                        break;
-                    }
-                    let labels: Vec<String> = channel_types
-                        .iter()
-                        .map(|c| c.display_name.clone())
-                        .collect();
-                    let Some(ci) = FuzzySelect::new()
-                        .with_prompt("Channel type")
-                        .items(&labels)
-                        .default(0)
-                        .interact_opt()?
+                if aborted {
+                    continue;
+                }
+                if default_model.is_empty() {
+                    // Schema didn't surface a model field for this
+                    // provider — ask explicitly so the submission
+                    // is complete.
+                    let Ok(m) = Input::<String>::new()
+                        .with_prompt(format!("Default model id for {}", chosen.display_name))
+                        .allow_empty(false)
+                        .interact_text()
                     else {
                         continue;
                     };
-                    let chosen = &channel_types[ci];
-                    let alias: String = Input::new()
-                        .with_prompt(format!("Alias for {}", chosen.display_name))
-                        .default(chosen.kind.clone())
-                        .interact_text()?;
-                    let token_prompt = Password::new()
-                        .with_prompt(format!(
-                            "Bot token / secret for {} (leave blank for none)",
-                            chosen.display_name
-                        ))
-                        .allow_empty_password(true)
-                        .interact()?;
-                    let token = if token_prompt.is_empty() {
-                        None
-                    } else {
-                        Some(token_prompt)
-                    };
-                    channels.push(ChannelQuickStart {
-                        channel_type: chosen.kind.clone(),
-                        alias,
-                        token,
+                    default_model = m;
+                }
+                form.provider = Some(ProviderChoice::Fresh {
+                    kind: chosen.kind.clone(),
+                    display_name: chosen.display_name.clone(),
+                    alias,
+                    default_model,
+                    api_key: api_key_buf,
+                    base_url: base_url_buf,
+                });
+            }
+            Action::Risk => {
+                let chosen = pick_preset(
+                    "Risk profile",
+                    RISK_PRESETS
+                        .iter()
+                        .map(|p| (p.preset_name, p.label, p.help))
+                        .collect(),
+                    &state.risk_profiles,
+                )?;
+                if let Some(c) = chosen {
+                    form.risk = Some(match c {
+                        Ok(name) => PresetChoice::Fresh(name),
+                        Err(alias) => PresetChoice::Existing(alias),
                     });
                 }
-                cursor += 1;
             }
-            Step::AgentName => {
-                let provider = &providers[provider_idx.expect("provider chosen")];
-                let default = agent_name
-                    .clone()
-                    .unwrap_or_else(|| sanitize_alias(&provider.kind));
-                let mut input = Input::<String>::new()
-                    .with_prompt("Agent alias")
-                    .default(default)
-                    .allow_empty(false);
-                if let Some(v) = &agent_name {
-                    input = input.default(v.clone());
-                }
-                match input.interact_text() {
-                    Ok(v) => {
-                        agent_name = Some(v);
-                        cursor += 1;
-                    }
-                    Err(_) => {
-                        last_back_reason = Some("agent alias entry cancelled");
-                        cursor = cursor.saturating_sub(1);
-                    }
+            Action::Runtime => {
+                let chosen = pick_preset(
+                    "Runtime profile",
+                    RUNTIME_PRESETS
+                        .iter()
+                        .map(|p| (p.preset_name, p.label, p.help))
+                        .collect(),
+                    &state.runtime_profiles,
+                )?;
+                if let Some(c) = chosen {
+                    form.runtime = Some(match c {
+                        Ok(name) => PresetChoice::Fresh(name),
+                        Err(alias) => PresetChoice::Existing(alias),
+                    });
                 }
             }
-            Step::SystemPrompt => {
-                let want_editor = Confirm::new()
-                    .with_prompt(
-                        "Open $EDITOR to write a system prompt? (blank prompt if you skip)",
-                    )
-                    .default(false)
-                    .interact_opt()?;
-                match want_editor {
-                    Some(true) => {
-                        let initial = system_prompt.clone().unwrap_or_default();
-                        match Editor::new().edit(&initial)? {
-                            Some(edited) => {
-                                system_prompt = Some(edited);
-                                cursor += 1;
+            Action::Memory => {
+                let items = ["SQLite", "None"];
+                let Some(i) = FuzzySelect::new()
+                    .with_prompt("Memory backend")
+                    .items(items)
+                    .default(0)
+                    .interact_opt()?
+                else {
+                    continue;
+                };
+                form.memory = Some(if i == 0 {
+                    MemoryChoice::Sqlite
+                } else {
+                    MemoryChoice::None
+                });
+            }
+            Action::Channels => {
+                // Channels sub-flow: list current drafts + Add / Done.
+                loop {
+                    let mut items: Vec<String> = form
+                        .channels
+                        .iter()
+                        .map(|c| match c {
+                            ChannelChoice::Fresh { kind, alias, .. } => {
+                                format!("  {kind}.{alias} (remove)")
                             }
-                            None => {
-                                last_back_reason = Some("editor closed without saving");
-                                // Stay on this step so the user can retry / skip.
+                            ChannelChoice::Existing { alias_ref } => {
+                                format!("  {alias_ref} (remove)")
+                            }
+                        })
+                        .collect();
+                    items.push("+ Add a channel".to_string());
+                    items.push("Done (channels selector counts as visited)".to_string());
+                    let Some(i) = FuzzySelect::new()
+                        .with_prompt("Channels (optional, 0..N)")
+                        .items(&items)
+                        .default(items.len().saturating_sub(2))
+                        .interact_opt()?
+                    else {
+                        break;
+                    };
+                    if i < form.channels.len() {
+                        form.channels.remove(i);
+                        continue;
+                    }
+                    if i == form.channels.len() {
+                        // Add — pick Existing or Fresh.
+                        let mut mode_labels: Vec<String> = Vec::new();
+                        let mut mode_kinds: Vec<&str> = Vec::new();
+                        if !state.channels.is_empty() {
+                            mode_labels.push("Use existing".to_string());
+                            mode_kinds.push("existing");
+                        }
+                        mode_labels.push("Create new".to_string());
+                        mode_kinds.push("fresh");
+                        let mode = if mode_labels.len() == 1 {
+                            Some(0)
+                        } else {
+                            FuzzySelect::new()
+                                .with_prompt("Channel source")
+                                .items(&mode_labels)
+                                .default(0)
+                                .interact_opt()?
+                        };
+                        let Some(mi) = mode else { continue };
+                        if mode_kinds[mi] == "existing" {
+                            let labels: Vec<String> = state.channels.clone();
+                            let Some(ei) = FuzzySelect::new()
+                                .with_prompt("Pick a configured channel")
+                                .items(&labels)
+                                .default(0)
+                                .interact_opt()?
+                            else {
+                                continue;
+                            };
+                            form.channels.push(ChannelChoice::Existing {
+                                alias_ref: labels[ei].clone(),
+                            });
+                            continue;
+                        }
+                        if channel_types.is_empty() {
+                            println!("  No channel types are compiled into this binary.");
+                            continue;
+                        }
+                        let labels: Vec<String> = channel_types
+                            .iter()
+                            .map(|c| c.display_name.clone())
+                            .collect();
+                        let Some(ci) = FuzzySelect::new()
+                            .with_prompt("Channel type")
+                            .items(&labels)
+                            .default(0)
+                            .interact_opt()?
+                        else {
+                            continue;
+                        };
+                        let chosen = &channel_types[ci];
+                        let Ok(alias) = Input::<String>::new()
+                            .with_prompt(format!("Alias for {}", chosen.display_name))
+                            .default(chosen.kind.clone())
+                            .allow_empty(false)
+                            .interact_text()
+                        else {
+                            continue;
+                        };
+                        let descriptors = field_shape(FieldSection::Channel, &chosen.kind);
+                        let mut extras: std::collections::BTreeMap<String, String> =
+                            std::collections::BTreeMap::new();
+                        let mut aborted = false;
+                        for d in &descriptors {
+                            let Some(value) = prompt_for_field(d, None)? else {
+                                aborted = true;
+                                break;
+                            };
+                            if !value.is_empty() {
+                                extras.insert(d.key.clone(), value);
                             }
                         }
+                        if aborted {
+                            continue;
+                        }
+                        form.channels.push(ChannelChoice::Fresh {
+                            kind: chosen.kind.clone(),
+                            display_name: chosen.display_name.clone(),
+                            alias,
+                            extras,
+                        });
+                        continue;
                     }
-                    Some(false) => {
-                        system_prompt = Some(String::new());
-                        cursor += 1;
-                    }
-                    None => {
-                        last_back_reason = Some("system prompt step cancelled");
-                        cursor = cursor.saturating_sub(1);
-                    }
+                    // Done.
+                    form.channels_visited = true;
+                    break;
                 }
             }
-            Step::Review => {
-                let provider = &providers[provider_idx.expect("provider chosen")];
-                println!();
-                println!("Review:");
-                println!(
-                    "  Provider     : {} ({})",
-                    provider.display_name, provider.kind
-                );
-                println!("  Model        : {}", model_value.as_deref().unwrap_or(""));
-                println!(
-                    "  API key      : {}",
-                    if api_key_value.is_some() {
-                        "set"
-                    } else if provider.local {
-                        "n/a (local provider)"
-                    } else {
-                        "unset"
-                    }
-                );
-                println!(
-                    "  Risk         : {}",
-                    RISK_PRESETS[risk_idx.unwrap_or(0)].preset_name
-                );
-                println!(
-                    "  Runtime      : {}",
-                    RUNTIME_PRESETS[runtime_idx.unwrap_or(0)].preset_name
-                );
-                println!(
-                    "  Memory       : {}",
-                    match memory_choice {
-                        Some(MemoryChoice::Sqlite) => "sqlite",
-                        _ => "none",
-                    }
-                );
-                println!("  Channels     : {}", channels.len());
-                for c in &channels {
-                    println!("                 - {}.{}", c.channel_type, c.alias);
+            Action::Agent => {
+                let default_name = form
+                    .agent
+                    .as_ref()
+                    .map(|a| a.name.clone())
+                    .unwrap_or_default();
+                let mut input = Input::<String>::new()
+                    .with_prompt("Agent alias")
+                    .allow_empty(false);
+                if !default_name.is_empty() {
+                    input = input.default(default_name);
                 }
-                println!("  Agent alias  : {}", agent_name.as_deref().unwrap_or(""));
-                println!(
-                    "  System prompt: {} chars",
-                    system_prompt.as_deref().map(str::len).unwrap_or(0)
-                );
-                println!();
-                let go = Confirm::new()
-                    .with_prompt("Create this agent?")
-                    .default(true)
+                let Ok(name) = input.interact_text() else {
+                    continue;
+                };
+                let mut system_prompt = form
+                    .agent
+                    .as_ref()
+                    .map(|a| a.system_prompt.clone())
+                    .unwrap_or_default();
+                let edit = Confirm::new()
+                    .with_prompt("Edit system prompt in $EDITOR? (blank if you skip)")
+                    .default(false)
                     .interact_opt()?;
-                match go {
-                    Some(true) => break 'walker,
-                    Some(false) => {
-                        last_back_reason = Some("creation declined");
-                        cursor = cursor.saturating_sub(1);
-                    }
-                    None => {
-                        last_back_reason = Some("review cancelled");
-                        cursor = cursor.saturating_sub(1);
-                    }
+                if let Some(true) = edit
+                    && let Some(edited) = Editor::new().edit(&system_prompt)?
+                {
+                    system_prompt = edited;
                 }
+                form.agent = Some(AgentChoice {
+                    name,
+                    system_prompt,
+                });
             }
         }
-        println!();
     }
 
-    let provider = &providers[provider_idx.expect("provider chosen at exit")];
-    let model_str = model_value.expect("model entered at exit");
-    let risk_preset = RISK_PRESETS[risk_idx.expect("risk chosen at exit")].preset_name;
-    let runtime_preset = RUNTIME_PRESETS[runtime_idx.expect("runtime chosen at exit")].preset_name;
-    let agent_alias = agent_name.expect("agent alias entered at exit");
-
-    let submission = BuilderSubmission {
-        model_provider: SelectorChoice::Fresh(ModelProviderChoice {
-            provider_type: provider.kind.clone(),
-            alias: provider.kind.clone(),
-            default_model: model_str,
-            api_key: api_key_value,
-            base_url: None,
+    // ── Assemble submission ─────────────────────────────────────
+    let provider = form.provider.expect("provider satisfied");
+    let model_provider = match provider {
+        ProviderChoice::Fresh {
+            kind,
+            alias,
+            default_model,
+            api_key,
+            base_url,
+            ..
+        } => SelectorChoice::Fresh(ModelProviderChoice {
+            provider_type: kind,
+            alias,
+            default_model,
+            api_key,
+            base_url,
         }),
-        risk_profile: SelectorChoice::Fresh(risk_preset.to_string()),
-        runtime_profile: SelectorChoice::Fresh(runtime_preset.to_string()),
-        memory: SelectorChoice::Fresh(memory_choice.unwrap_or(MemoryChoice::Sqlite)),
-        channels: channels.into_iter().map(SelectorChoice::Fresh).collect(),
+        ProviderChoice::Existing { alias_ref } => SelectorChoice::Existing(alias_ref),
+    };
+    let risk_profile = match form.risk.expect("risk satisfied") {
+        PresetChoice::Fresh(n) => SelectorChoice::Fresh(n.to_string()),
+        PresetChoice::Existing(a) => SelectorChoice::Existing(a),
+    };
+    let runtime_profile = match form.runtime.expect("runtime satisfied") {
+        PresetChoice::Fresh(n) => SelectorChoice::Fresh(n.to_string()),
+        PresetChoice::Existing(a) => SelectorChoice::Existing(a),
+    };
+    let memory = SelectorChoice::Fresh(form.memory.expect("memory satisfied"));
+    let channels = form
+        .channels
+        .into_iter()
+        .map(|c| match c {
+            ChannelChoice::Fresh {
+                kind,
+                alias,
+                extras,
+                ..
+            } => SelectorChoice::Fresh(ChannelQuickStart {
+                channel_type: kind,
+                alias,
+                token: extras
+                    .into_iter()
+                    .find(|(k, _)| {
+                        k.eq_ignore_ascii_case("bot-token")
+                            || k.eq_ignore_ascii_case("token")
+                            || k.eq_ignore_ascii_case("access-token")
+                    })
+                    .map(|(_, v)| v),
+            }),
+            ChannelChoice::Existing { alias_ref } => SelectorChoice::Existing(alias_ref),
+        })
+        .collect();
+    let agent_choice = form.agent.expect("agent satisfied");
+    let submission = BuilderSubmission {
+        model_provider,
+        risk_profile,
+        runtime_profile,
+        memory,
+        channels,
         agent: AgentIdentity {
-            name: agent_alias.clone(),
-            system_prompt: system_prompt.unwrap_or_default(),
+            name: agent_choice.name.clone(),
+            system_prompt: agent_choice.system_prompt,
             personality_file: None,
         },
     };
@@ -1415,12 +1632,109 @@ async fn run_quickstart_cli(
     }
 }
 
+/// Render one schema-driven field descriptor as a dialoguer prompt
+/// and collect the user's answer. Returns `None` when the user
+/// cancels (Esc on a select / confirm), `Some(value)` otherwise.
+/// Used by both the model-provider field form and the channel field
+/// form so the two sub-flows share a single prompt implementation.
 #[cfg(feature = "agent-runtime")]
-fn sanitize_alias(seed: &str) -> String {
-    seed.chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-        .collect::<String>()
-        .to_lowercase()
+fn prompt_for_field(
+    desc: &zeroclaw_runtime::quickstart::FieldDescriptor,
+    seed: Option<&str>,
+) -> anyhow::Result<Option<String>> {
+    use dialoguer::{FuzzySelect, Input, Password};
+    use zeroclaw_config::traits::PropKind;
+    let prompt = if desc.help.is_empty() {
+        desc.label.clone()
+    } else {
+        format!("{} ({})", desc.label, desc.help)
+    };
+    if desc.is_secret {
+        let pw = Password::new()
+            .with_prompt(prompt)
+            .allow_empty_password(true)
+            .interact()?;
+        return Ok(Some(pw));
+    }
+    if let (PropKind::Enum, Some(variants)) = (&desc.kind, &desc.enum_variants) {
+        let Some(i) = FuzzySelect::new()
+            .with_prompt(prompt)
+            .items(variants)
+            .default(0)
+            .interact_opt()?
+        else {
+            return Ok(None);
+        };
+        return Ok(Some(variants[i].clone()));
+    }
+    let mut input = Input::<String>::new()
+        .with_prompt(prompt)
+        .allow_empty(!desc.required);
+    if let Some(s) = seed {
+        input = input.default(s.to_string());
+    } else if let Some(d) = desc.default.as_deref()
+        && !d.is_empty()
+    {
+        input = input.default(d.to_string());
+    }
+    Ok(Some(input.interact_text()?))
+}
+
+/// Pick a preset selector — used by both Risk and Runtime since
+/// their UX is identical (a fixed list of preset rows + the same
+/// "use existing alias" dual-mode). Returns `None` when the user
+/// cancels. Returns `Some(Ok(preset_name))` for a fresh preset
+/// pick or `Some(Err(existing_alias))` for a reuse pick so the
+/// caller can map into the right `SelectorChoice` variant.
+#[cfg(feature = "agent-runtime")]
+fn pick_preset(
+    prompt: &str,
+    presets: Vec<(&'static str, &'static str, &'static str)>,
+    existing: &[String],
+) -> anyhow::Result<Option<Result<&'static str, String>>> {
+    use dialoguer::FuzzySelect;
+    let mut mode_labels: Vec<String> = Vec::new();
+    let mut mode_kinds: Vec<&str> = Vec::new();
+    if !existing.is_empty() {
+        mode_labels.push("Use existing".to_string());
+        mode_kinds.push("existing");
+    }
+    mode_labels.push("Pick a preset".to_string());
+    mode_kinds.push("preset");
+    let mode = if mode_labels.len() == 1 {
+        Some(0)
+    } else {
+        FuzzySelect::new()
+            .with_prompt(prompt)
+            .items(&mode_labels)
+            .default(0)
+            .interact_opt()?
+    };
+    let Some(mi) = mode else { return Ok(None) };
+    if mode_kinds[mi] == "existing" {
+        let Some(i) = FuzzySelect::new()
+            .with_prompt(format!("Pick an existing {prompt}"))
+            .items(existing)
+            .default(0)
+            .interact_opt()?
+        else {
+            return Ok(None);
+        };
+        return Ok(Some(Err(existing[i].clone())));
+    }
+    let labels: Vec<String> = presets
+        .iter()
+        .map(|(_, label, help)| format!("{label}  —  {help}"))
+        .collect();
+    let Some(i) = FuzzySelect::new()
+        .with_prompt(format!("Pick a {prompt} preset"))
+        .items(&labels)
+        .default(0)
+        .interact_opt()?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(Ok(presets[i].0)))
 }
 
 #[cfg(feature = "agent-runtime")]

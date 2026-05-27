@@ -16,15 +16,17 @@ type Memory = "sqlite" | "none";
 
 const RISK_OPTS: Risk[] = ["locked-down", "balanced", "yolo"];
 const RUNTIME_OPTS: Runtime[] = ["tight", "balanced", "unbounded"];
+const MEMORY_OPTS: Memory[] = ["sqlite", "none"];
 
 interface FormState {
   providerType: string;
   providerAlias: string;
   defaultModel: string;
   apiKey: string;
-  risk: Risk;
-  runtime: Runtime;
-  memory: Memory;
+  /** Empty string = user hasn't picked yet ([ ]); a preset name = [✓]. */
+  risk: Risk | "";
+  runtime: Runtime | "";
+  memory: Memory | "";
   agentName: string;
 }
 
@@ -33,9 +35,9 @@ const DEFAULT_FORM: FormState = {
   providerAlias: "",
   defaultModel: "",
   apiKey: "",
-  risk: "balanced",
-  runtime: "balanced",
-  memory: "sqlite",
+  risk: "",
+  runtime: "",
+  memory: "",
   agentName: "",
 };
 
@@ -57,8 +59,9 @@ export default function Quickstart() {
   // registries (`zeroclaw_providers::list_model_providers()` and the
   // schema-side `ChannelsConfig` inventory). We render whatever it
   // returns — the web surface keeps no hardcoded provider/channel
-  // list of its own. The first option becomes the default selection
-  // so the form has a valid `providerType` once the list lands.
+  // list of its own. We deliberately do NOT pre-select the first
+  // row: the form starts empty (`[ ]` everywhere) and only earns
+  // `[✓]` once the user explicitly picks.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -66,16 +69,6 @@ export default function Quickstart() {
         const state = await getQuickstartState();
         if (cancelled) return;
         setQuickstartState(state);
-        setForm((f) => {
-          if (f.providerType) return f;
-          const first = state.model_provider_types[0];
-          if (!first) return f;
-          return {
-            ...f,
-            providerType: first.kind,
-            providerAlias: f.providerAlias || first.kind,
-          };
-        });
       } catch {
         // Endpoint failures leave the picker empty; the user sees
         // an empty <select> and the error surfaces on submit.
@@ -175,7 +168,7 @@ export default function Quickstart() {
         balanced defaults, and start chatting.
       </p>
 
-      <Section title="Model provider">
+      <Section title="Model provider" done={isProviderDone(form)}>
         <Field label="Provider type">
           <select
             className="input"
@@ -194,6 +187,9 @@ export default function Quickstart() {
               );
             }}
           >
+            <option value="" disabled>
+              — pick a provider —
+            </option>
             {quickstartState?.model_provider_types.map((opt: QuickstartTypeOption) => (
               <option key={opt.kind} value={opt.kind}>
                 {opt.display_name}
@@ -226,7 +222,7 @@ export default function Quickstart() {
         </Field>
       </Section>
 
-      <Section title="Risk profile">
+      <Section title="Risk profile" done={form.risk !== ""}>
         <Radio
           options={RISK_OPTS}
           value={form.risk}
@@ -234,7 +230,7 @@ export default function Quickstart() {
         />
       </Section>
 
-      <Section title="Runtime profile">
+      <Section title="Runtime profile" done={form.runtime !== ""}>
         <Radio
           options={RUNTIME_OPTS}
           value={form.runtime}
@@ -242,15 +238,15 @@ export default function Quickstart() {
         />
       </Section>
 
-      <Section title="Memory">
+      <Section title="Memory" done={form.memory !== ""}>
         <Radio
-          options={["sqlite", "none"]}
+          options={MEMORY_OPTS}
           value={form.memory}
           onChange={(v) => update("memory", v as Memory)}
         />
       </Section>
 
-      <Section title="Agent">
+      <Section title="Agent" done={form.agentName.trim() !== ""}>
         <Field label="Agent name">
           <input
             className="input"
@@ -273,12 +269,30 @@ export default function Quickstart() {
 
       <button
         className="px-4 py-2 rounded bg-blue-600 text-white disabled:opacity-50"
-        disabled={busy || !form.agentName.trim()}
+        disabled={busy || !allDone(form)}
         onClick={() => void submit()}
       >
         {busy ? "Creating..." : "Create"}
       </button>
     </div>
+  );
+}
+
+function isProviderDone(form: FormState): boolean {
+  return (
+    form.providerType !== "" &&
+    form.providerAlias.trim() !== "" &&
+    form.defaultModel.trim() !== ""
+  );
+}
+
+function allDone(form: FormState): boolean {
+  return (
+    isProviderDone(form) &&
+    form.risk !== "" &&
+    form.runtime !== "" &&
+    form.memory !== "" &&
+    form.agentName.trim() !== ""
   );
 }
 
@@ -300,10 +314,20 @@ function stepForKey(key: keyof FormState): QuickstartStep {
   }
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  children,
+  done,
+}: {
+  title: string;
+  children: React.ReactNode;
+  done: boolean;
+}) {
   return (
     <section className="border rounded p-4 space-y-3" style={{ borderColor: "var(--pc-border)" }}>
-      <h2 className="font-semibold">[✓] {title}</h2>
+      <h2 className="font-semibold">
+        {done ? "[✓]" : "[ ]"} {title}
+      </h2>
       {children}
     </section>
   );

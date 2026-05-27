@@ -251,11 +251,21 @@ struct FormState {
     runtime_mode: SelectorMode,
     memory: MemoryKind,
     memory_mode: SelectorMode,
+    /// `true` once the user has explicitly committed a Memory
+    /// choice in the modal. The form starts `false` so the
+    /// selector shows `[ ]` instead of a pre-checked default
+    /// the user never picked.
+    memory_chosen: bool,
     /// When `memory_mode == Existing`, this carries the alias the user
     /// picked (e.g. `sqlite-laptop`). Ignored when `memory_mode` is
     /// `Fresh`.
     memory_existing_alias: String,
     channels: Vec<ChannelDraft>,
+    /// `true` once the user has opened the Channels modal and
+    /// hit Done (channels are optional, but the user has to say
+    /// "I considered this and chose 0 / N" before the selector
+    /// counts as `[✓]`).
+    channels_visited: bool,
     agent_name: String,
 }
 
@@ -267,14 +277,16 @@ impl FormState {
             provider_mode: SelectorMode::Fresh,
             default_model: String::new(),
             api_key: None,
-            risk: "balanced".to_string(),
+            risk: String::new(),
             risk_mode: SelectorMode::Fresh,
-            runtime: "balanced".to_string(),
+            runtime: String::new(),
             runtime_mode: SelectorMode::Fresh,
             memory: MemoryKind::Sqlite,
             memory_mode: SelectorMode::Fresh,
+            memory_chosen: false,
             memory_existing_alias: String::new(),
             channels: Vec::new(),
+            channels_visited: false,
             agent_name: String::new(),
         }
     }
@@ -293,8 +305,8 @@ impl FormState {
             },
             Selector::RiskProfile => !self.risk.is_empty(),
             Selector::RuntimeProfile => !self.runtime.is_empty(),
-            Selector::Memory => true,
-            Selector::Channels => true,
+            Selector::Memory => self.memory_chosen,
+            Selector::Channels => self.channels_visited,
             Selector::AgentIdentity => !self.agent_name.is_empty(),
         }
     }
@@ -981,7 +993,13 @@ impl QuickstartPane {
                                 cursor: 0,
                             }));
                         } else if cl.cursor == drafts + 1 {
-                            // "Done" row → close.
+                            // "Done" row → close. Mark the
+                            // Channels selector as visited so the
+                            // checklist shows `[✓]` regardless of
+                            // whether the user added any drafts
+                            // (channels are optional, but the user
+                            // has to acknowledge that explicitly).
+                            self.form.channels_visited = true;
                             self.active_modal = None;
                         }
                     }
@@ -1179,10 +1197,12 @@ impl QuickstartPane {
                     // user picked so to_submission emits Existing.
                     self.form.memory_mode = SelectorMode::Existing;
                     self.form.memory_existing_alias = value;
+                    self.form.memory_chosen = true;
                 } else if let Some(m) = MemoryKind::from_wire(&value) {
                     self.form.memory = m;
                     self.form.memory_mode = SelectorMode::Fresh;
                     self.form.memory_existing_alias.clear();
+                    self.form.memory_chosen = true;
                 }
             }
             _ => {}
