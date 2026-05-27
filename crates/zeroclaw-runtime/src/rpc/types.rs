@@ -1195,6 +1195,10 @@ rpc_type! {
         pub model_providers: Vec<String>,
         /// `<channel_type>.<alias>` refs.
         pub channels: Vec<String>,
+        /// Subset of `channels` not yet bound to any agent — safe to
+        /// reuse without breaking the one-channel-one-agent invariant.
+        #[serde(default)]
+        pub unassigned_channels: Vec<String>,
         /// `<storage_type>.<alias>` refs.
         pub storage: Vec<String>,
         /// Picker rows for "Create new model provider" — sourced from

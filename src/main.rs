@@ -951,7 +951,6 @@ async fn run_quickstart_cli(
         AgentIdentity, BuilderSubmission, ChannelQuickStart, MemoryChoice, ModelProviderChoice,
         RISK_PRESETS, RUNTIME_PRESETS, SelectorChoice,
     };
-    use zeroclaw_config::traits::PropKind;
     use zeroclaw_runtime::quickstart::{
         FieldSection, QuickstartTypeOption, Surface, apply_with_surface, field_shape,
         snapshot_state,
@@ -1131,8 +1130,10 @@ async fn run_quickstart_cli(
         };
         let memory_summary = match &form.memory {
             None => "not yet chosen".to_string(),
-            Some(MemoryChoice::Sqlite) => "sqlite".to_string(),
-            Some(MemoryChoice::None) => "none".to_string(),
+            Some(kind) => serde_json::to_value(kind)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_else(|| format!("{kind:?}").to_lowercase()),
         };
         let channels_summary = if !form.channels_visited {
             "not yet visited".to_string()
@@ -1372,20 +1373,46 @@ async fn run_quickstart_cli(
                 }
             }
             Action::Memory => {
-                let items = ["SQLite", "None"];
+                // Schema-derived list — six variants today, more as
+                // soon as someone adds them to
+                // `zeroclaw_config::multi_agent::MemoryBackendKind`.
+                // The exhaustive `match` here keeps the variant
+                // array honest at compile time.
+                let kinds: [MemoryChoice; 6] = [
+                    MemoryChoice::Sqlite,
+                    MemoryChoice::Markdown,
+                    MemoryChoice::Postgres,
+                    MemoryChoice::Qdrant,
+                    MemoryChoice::Lucid,
+                    MemoryChoice::None,
+                ];
+                #[allow(clippy::no_effect_underscore_binding)]
+                let _exhaustive = |k: MemoryChoice| match k {
+                    MemoryChoice::Sqlite
+                    | MemoryChoice::Markdown
+                    | MemoryChoice::Postgres
+                    | MemoryChoice::Qdrant
+                    | MemoryChoice::Lucid
+                    | MemoryChoice::None => (),
+                };
+                let labels: Vec<String> = kinds
+                    .iter()
+                    .map(|k| {
+                        serde_json::to_value(k)
+                            .ok()
+                            .and_then(|v| v.as_str().map(str::to_string))
+                            .unwrap_or_else(|| format!("{k:?}").to_lowercase())
+                    })
+                    .collect();
                 let Some(i) = FuzzySelect::new()
                     .with_prompt("Memory backend")
-                    .items(items)
+                    .items(&labels)
                     .default(0)
                     .interact_opt()?
                 else {
                     continue;
                 };
-                form.memory = Some(if i == 0 {
-                    MemoryChoice::Sqlite
-                } else {
-                    MemoryChoice::None
-                });
+                form.memory = Some(kinds[i]);
             }
             Action::Channels => {
                 // Channels sub-flow: list current drafts + Add / Done.
@@ -1420,7 +1447,7 @@ async fn run_quickstart_cli(
                         // Add — pick Existing or Fresh.
                         let mut mode_labels: Vec<String> = Vec::new();
                         let mut mode_kinds: Vec<&str> = Vec::new();
-                        if !state.channels.is_empty() {
+                        if !state.unassigned_channels.is_empty() {
                             mode_labels.push("Use existing".to_string());
                             mode_kinds.push("existing");
                         }
@@ -1437,7 +1464,22 @@ async fn run_quickstart_cli(
                         };
                         let Some(mi) = mode else { continue };
                         if mode_kinds[mi] == "existing" {
-                            let labels: Vec<String> = state.channels.clone();
+                            // The snapshot's `unassigned_channels` is
+                            // the schema-side authoritative list of
+                            // channel refs not yet bound to any agent.
+                            // We use it directly so the CLI and TUI
+                            // surfaces apply the same filter without
+                            // either side re-implementing the lookup.
+                            let labels: Vec<String> = state.unassigned_channels.clone();
+                            if labels.is_empty() {
+                                println!(
+                                    "  Every configured channel is already \
+                                     bound to an agent. Free one with \
+                                     `zeroclaw config set agents.<alias>.channels \
+                                     ...` before reusing it here."
+                                );
+                                continue;
+                            }
                             let Some(ei) = FuzzySelect::new()
                                 .with_prompt("Pick a configured channel")
                                 .items(&labels)

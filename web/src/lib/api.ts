@@ -1142,6 +1142,11 @@ export interface QuickstartState {
   runtime_profiles: string[];
   model_providers: string[];
   channels: string[];
+  /**
+   * Subset of `channels` not yet bound to any agent — safe to reuse
+   * without breaking the one-channel-one-agent invariant.
+   */
+  unassigned_channels: string[];
   storage: string[];
   /**
    * Picker rows for "Create new model provider", supplied by the

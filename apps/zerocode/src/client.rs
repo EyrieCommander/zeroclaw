@@ -1316,6 +1316,10 @@ pub struct QuickstartStateResult {
     pub runtime_profiles: Vec<String>,
     pub model_providers: Vec<String>,
     pub channels: Vec<String>,
+    /// Subset of `channels` not yet bound to any agent — safe to
+    /// reuse without violating the one-channel-one-agent invariant.
+    #[serde(default)]
+    pub unassigned_channels: Vec<String>,
     pub storage: Vec<String>,
     /// Picker rows for "Create new model provider" — supplied by the
     /// daemon so the TUI never hardcodes the option list.

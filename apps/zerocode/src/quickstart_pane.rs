@@ -12,8 +12,7 @@ use ratatui::{
 use std::sync::Arc;
 
 use zeroclaw_config::presets::{
-    AgentIdentity, BuilderSubmission, ChannelQuickStart, MemoryChoice, ModelProviderChoice,
-    SelectorChoice,
+    AgentIdentity, BuilderSubmission, ChannelQuickStart, ModelProviderChoice, SelectorChoice,
 };
 
 use crate::client::{
@@ -134,19 +133,52 @@ fn runtime_options() -> [PickerOption; 3] {
     ]
 }
 
-fn memory_options() -> [PickerOption; 2] {
-    [
-        opt(
-            "sqlite",
-            "SQLite",
-            "On-disk persistent memory. Recommended.",
-        ),
-        opt(
-            "none",
-            "None",
-            "No long-term recall — session history only.",
-        ),
-    ]
+fn memory_options() -> Vec<PickerOption> {
+    // Walk every variant of the schema's canonical `MemoryBackendKind`.
+    // `serde_json::to_value` returns the `#[serde(rename_all =
+    // "snake_case")]` string for each variant — that string IS the
+    // wire key written into `memory.backend`, so the picker carries
+    // no parallel mapping. Variants come out in declaration order
+    // because `enum-iterator`-style iteration is unnecessary for a
+    // closed set: we list them once here against the schema and any
+    // schema additions are caught at compile time because
+    // `MemoryKind` is a public re-export and a `match` exhaustiveness
+    // check below would fail to compile if a variant were dropped.
+    let variants: [MemoryKind; 6] = [
+        MemoryKind::Sqlite,
+        MemoryKind::Markdown,
+        MemoryKind::Postgres,
+        MemoryKind::Qdrant,
+        MemoryKind::Lucid,
+        MemoryKind::None,
+    ];
+    // Compile-time exhaustiveness check: adding a new variant to
+    // `MemoryBackendKind` triggers a non-exhaustive-match warning
+    // here and forces the array above to grow alongside the schema.
+    #[allow(clippy::no_effect_underscore_binding)]
+    let _exhaustive = |k: MemoryKind| match k {
+        MemoryKind::Sqlite
+        | MemoryKind::Markdown
+        | MemoryKind::Postgres
+        | MemoryKind::Qdrant
+        | MemoryKind::Lucid
+        | MemoryKind::None => (),
+    };
+    variants
+        .into_iter()
+        .map(|kind| {
+            let wire = serde_json::to_value(kind)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_else(|| format!("{kind:?}").to_lowercase());
+            PickerOption {
+                value: wire.clone(),
+                label: wire,
+                help: String::new(),
+                use_existing: false,
+            }
+        })
+        .collect()
 }
 
 fn provider_type_options(snapshot: Option<&QuickstartStateResult>) -> Vec<PickerOption> {
@@ -192,33 +224,10 @@ fn channel_type_options(snapshot: Option<&QuickstartStateResult>) -> Vec<PickerO
         .collect()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MemoryKind {
-    Sqlite,
-    None,
-}
-
-impl MemoryKind {
-    const WIRE_SQLITE: &'static str = "sqlite";
-    const WIRE_NONE: &'static str = "none";
-
-    fn from_wire(s: &str) -> Option<Self> {
-        if s == Self::WIRE_SQLITE {
-            Some(Self::Sqlite)
-        } else if s == Self::WIRE_NONE {
-            Some(Self::None)
-        } else {
-            None
-        }
-    }
-
-    fn as_wire(self) -> &'static str {
-        match self {
-            Self::Sqlite => Self::WIRE_SQLITE,
-            Self::None => Self::WIRE_NONE,
-        }
-    }
-}
+// Memory backend list is the schema's `MemoryBackendKind`. The TUI
+// never defines its own enum — adding a backend in the schema lights
+// up here automatically through the `BuilderSubmission::memory` field.
+use zeroclaw_config::multi_agent::MemoryBackendKind as MemoryKind;
 
 #[derive(Debug, Clone)]
 struct ChannelDraft {
@@ -325,10 +334,10 @@ impl FormState {
             }
             Selector::RiskProfile => self.risk.clone(),
             Selector::RuntimeProfile => self.runtime.clone(),
-            Selector::Memory => match self.memory {
-                MemoryKind::Sqlite => "sqlite (recommended)".to_string(),
-                MemoryKind::None => "none".to_string(),
-            },
+            Selector::Memory => serde_json::to_value(self.memory)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_else(|| format!("{:?}", self.memory).to_lowercase()),
             Selector::Channels => {
                 if self.channels.is_empty() {
                     "0 (CLI only)".to_string()
@@ -368,10 +377,7 @@ impl FormState {
             SelectorMode::Existing => SelectorChoice::Existing(self.runtime.clone()),
         };
         let memory = match self.memory_mode {
-            SelectorMode::Fresh => SelectorChoice::Fresh(match self.memory {
-                MemoryKind::Sqlite => MemoryChoice::Sqlite,
-                MemoryKind::None => MemoryChoice::None,
-            }),
+            SelectorMode::Fresh => SelectorChoice::Fresh(self.memory),
             SelectorMode::Existing => SelectorChoice::Existing(self.memory_existing_alias.clone()),
         };
         BuilderSubmission {
@@ -791,7 +797,7 @@ impl QuickstartPane {
         let mut options: Vec<PickerOption> = match sel {
             Selector::RiskProfile => risk_options().to_vec(),
             Selector::RuntimeProfile => runtime_options().to_vec(),
-            Selector::Memory => memory_options().to_vec(),
+            Selector::Memory => memory_options(),
             _ => return,
         };
         // Append "Use existing" rows for any aliases the daemon
@@ -825,7 +831,10 @@ impl QuickstartPane {
                 .position(|o| o.value == self.form.runtime)
                 .unwrap_or(0),
             Selector::Memory => {
-                let v = self.form.memory.as_wire();
+                let v = serde_json::to_value(self.form.memory)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_string))
+                    .unwrap_or_default();
                 options.iter().position(|o| o.value == v).unwrap_or(0)
             }
             _ => 0,
@@ -982,7 +991,7 @@ impl QuickstartPane {
                             let mut options: Vec<PickerOption> =
                                 channel_type_options(self.state_snapshot.as_ref());
                             if let Some(snap) = &self.state_snapshot {
-                                for alias in &snap.channels {
+                                for alias in &snap.unassigned_channels {
                                     options.push(existing_opt(alias.clone()));
                                 }
                             }
@@ -1198,7 +1207,9 @@ impl QuickstartPane {
                     self.form.memory_mode = SelectorMode::Existing;
                     self.form.memory_existing_alias = value;
                     self.form.memory_chosen = true;
-                } else if let Some(m) = MemoryKind::from_wire(&value) {
+                } else if let Ok(m) =
+                    serde_json::from_value::<MemoryKind>(serde_json::Value::String(value.clone()))
+                {
                     self.form.memory = m;
                     self.form.memory_mode = SelectorMode::Fresh;
                     self.form.memory_existing_alias.clear();

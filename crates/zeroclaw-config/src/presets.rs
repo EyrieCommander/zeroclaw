@@ -251,22 +251,12 @@ fn unbounded_runtime() -> RuntimeProfileConfig {
 // BuilderSubmission and dependent choice types
 // ─────────────────────────────────────────────────────────────────────
 
-/// Choice for the Memory step. Either install SQLite under the
-/// canonical `sqlite` alias and point `memory.backend` at it, or
-/// leave memory disabled.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case", tag = "kind")]
-pub enum MemoryChoice {
-    /// Install SQLite memory under
-    /// `storage.sqlite.sqlite = { … }` and point `memory.backend`
-    /// at the same alias. Recommended for single-node installs.
-    #[default]
-    Sqlite,
-    /// Skip the memory section entirely. The agent runs without
-    /// long-term recall.
-    None,
-}
+/// Choice for the Memory step. Re-exports the schema's canonical
+/// `MemoryBackendKind` so Quickstart never re-defines the list of
+/// memory backends — adding a backend to
+/// `zeroclaw_config::multi_agent::MemoryBackendKind` lights up in
+/// every Quickstart surface automatically.
+pub use crate::multi_agent::MemoryBackendKind as MemoryChoice;
 
 /// Model provider widget submission. The Quickstart UI surfaces only
 /// the "greatest hits" fields an agent literally cannot start

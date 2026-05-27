@@ -358,6 +358,13 @@ pub struct QuickstartState {
     pub model_providers: Vec<String>,
     /// `<channel_type>.<alias>` refs.
     pub channels: Vec<String>,
+    /// Subset of `channels` that is not yet bound to any agent's
+    /// `agents.<alias>.channels` field. Surfaces use this for "Use
+    /// existing" pickers so they cannot let the user accidentally
+    /// reassign a channel that's still owned by another agent
+    /// (the schema invariant is one channel → one agent).
+    #[serde(default)]
+    pub unassigned_channels: Vec<String>,
     /// `<storage_type>.<alias>` refs.
     pub storage: Vec<String>,
     /// Available model-provider types the Quickstart "Create new"
@@ -436,6 +443,15 @@ pub fn snapshot_state(cfg: &Config) -> QuickstartState {
             .map(|(family, alias, _)| format!("{family}.{alias}"))
             .collect(),
         channels: collect_aliased_refs(&cfg.channels),
+        // Channel refs that are not yet bound to any agent. The
+        // schema enforces one-channel-one-agent; surfacing already-
+        // owned channels in a "Use existing" picker would silently
+        // break that invariant. Surfaces should always present this
+        // list (not the raw `channels` list) when offering reuse.
+        unassigned_channels: collect_aliased_refs(&cfg.channels)
+            .into_iter()
+            .filter(|ch| cfg.agent_for_channel(ch).is_none())
+            .collect(),
         storage: collect_aliased_refs(&cfg.storage),
         model_provider_types,
         channel_types,
@@ -973,9 +989,31 @@ fn apply_memory(
             }
             Some(reference.clone())
         }
-        SelectorChoice::Fresh(MemoryChoice::Sqlite) => {
-            let backend_ref = "sqlite.sqlite".to_string();
-            if let Err(err) = config.create_map_key("storage.sqlite", "sqlite") {
+        SelectorChoice::Fresh(kind) => {
+            // The schema's `MemoryBackendKind::serialize` rename
+            // (`#[serde(rename_all = "snake_case")]`) gives us the
+            // canonical TOML kebab-case spelling without any
+            // surface-side mapping table. `None` writes `"none"`,
+            // every other backend creates a `[storage.<kind>.<kind>]`
+            // table and points `memory.backend` at it.
+            let kind_name = serde_json::to_value(kind)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_else(|| format!("{kind:?}").to_lowercase());
+            if matches!(kind, MemoryChoice::None) {
+                if let Err(err) = config.set_prop_persistent("memory.backend", "none") {
+                    errors.push(QuickstartError::new(
+                        QuickstartStep::Memory,
+                        "backend",
+                        err.to_string(),
+                    ));
+                    return None;
+                }
+                return Some("none".to_string());
+            }
+            let backend_ref = format!("{kind_name}.{kind_name}");
+            let parent_path = format!("storage.{kind_name}");
+            if let Err(err) = config.create_map_key(&parent_path, &kind_name) {
                 errors.push(QuickstartError::new(
                     QuickstartStep::Memory,
                     "",
@@ -992,17 +1030,6 @@ fn apply_memory(
                 return None;
             }
             Some(backend_ref)
-        }
-        SelectorChoice::Fresh(MemoryChoice::None) => {
-            if let Err(err) = config.set_prop_persistent("memory.backend", "none") {
-                errors.push(QuickstartError::new(
-                    QuickstartStep::Memory,
-                    "backend",
-                    err.to_string(),
-                ));
-                return None;
-            }
-            Some("none".to_string())
         }
     }
 }
