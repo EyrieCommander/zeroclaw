@@ -2,7 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   type QuickstartError,
+  type QuickstartState,
   type QuickstartStep,
+  type QuickstartTypeOption,
+  getQuickstartState,
   quickstartApply,
   quickstartDismiss,
 } from "@/lib/api";
@@ -26,9 +29,9 @@ interface FormState {
 }
 
 const DEFAULT_FORM: FormState = {
-  providerType: "anthropic",
-  providerAlias: "anthropic",
-  defaultModel: "claude-sonnet-4-5",
+  providerType: "",
+  providerAlias: "",
+  defaultModel: "",
   apiKey: "",
   risk: "balanced",
   runtime: "balanced",
@@ -42,11 +45,46 @@ export default function Quickstart() {
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<QuickstartError[]>([]);
   const [success, setSuccess] = useState<string | null>(null);
+  const [quickstartState, setQuickstartState] = useState<QuickstartState | null>(null);
   const runIdRef = useRef<string>(
     `${Date.now().toString(16)}${Math.random().toString(16).slice(2, 10)}`,
   );
   const lastStepRef = useRef<QuickstartStep | null>(null);
   const submittedRef = useRef(false);
+
+  // Fetch the picker option lists once on mount. The daemon supplies
+  // `model_provider_types` and `channel_types` from its canonical
+  // registries (`zeroclaw_providers::list_model_providers()` and the
+  // schema-side `ChannelsConfig` inventory). We render whatever it
+  // returns — the web surface keeps no hardcoded provider/channel
+  // list of its own. The first option becomes the default selection
+  // so the form has a valid `providerType` once the list lands.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const state = await getQuickstartState();
+        if (cancelled) return;
+        setQuickstartState(state);
+        setForm((f) => {
+          if (f.providerType) return f;
+          const first = state.model_provider_types[0];
+          if (!first) return f;
+          return {
+            ...f,
+            providerType: first.kind,
+            providerAlias: f.providerAlias || first.kind,
+          };
+        });
+      } catch {
+        // Endpoint failures leave the picker empty; the user sees
+        // an empty <select> and the error surfaces on submit.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // The auto-trigger (route the user here on first launch with no agents)
   // is owned by `App.tsx` — see the `getQuickstartState` call there. This
@@ -139,11 +177,30 @@ export default function Quickstart() {
 
       <Section title="Model provider">
         <Field label="Provider type">
-          <input
+          <select
             className="input"
             value={form.providerType}
-            onChange={(e) => update("providerType", e.target.value)}
-          />
+            onChange={(e) => {
+              const next = e.target.value;
+              update("providerType", next);
+              // Keep alias in sync with the kind until the user
+              // overrides it. Mirrors the TUI Quickstart's auto-fill
+              // pattern so the two surfaces produce the same
+              // starting form state for the same picker choice.
+              setForm((f) =>
+                f.providerAlias === "" || f.providerAlias === f.providerType
+                  ? { ...f, providerAlias: next }
+                  : f,
+              );
+            }}
+          >
+            {quickstartState?.model_provider_types.map((opt: QuickstartTypeOption) => (
+              <option key={opt.kind} value={opt.kind}>
+                {opt.display_name}
+                {opt.local ? " (local)" : ""}
+              </option>
+            ))}
+          </select>
         </Field>
         <Field label="Alias">
           <input

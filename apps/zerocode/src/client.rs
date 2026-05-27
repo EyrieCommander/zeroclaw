@@ -1317,6 +1317,24 @@ pub struct QuickstartStateResult {
     pub model_providers: Vec<String>,
     pub channels: Vec<String>,
     pub storage: Vec<String>,
+    /// Picker rows for "Create new model provider" — supplied by the
+    /// daemon so the TUI never hardcodes the option list.
+    #[serde(default)]
+    pub model_provider_types: Vec<QuickstartTypeOption>,
+    /// Picker rows for "Create new channel" — supplied by the
+    /// daemon so the TUI never hardcodes the option list.
+    #[serde(default)]
+    pub channel_types: Vec<QuickstartTypeOption>,
+}
+
+/// Mirror of `zeroclaw_runtime::rpc::types::QuickstartTypeOption`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct QuickstartTypeOption {
+    pub kind: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub local: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

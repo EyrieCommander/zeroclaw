@@ -360,10 +360,70 @@ pub struct QuickstartState {
     pub channels: Vec<String>,
     /// `<storage_type>.<alias>` refs.
     pub storage: Vec<String>,
+    /// Available model-provider types the Quickstart "Create new"
+    /// picker can offer. Derived at request time from the canonical
+    /// registry in `zeroclaw_providers::list_model_providers()` — the
+    /// same source the CLI catalog and gateway sections route use.
+    /// Surfaces render this list as-is; they do not maintain their own.
+    pub model_provider_types: Vec<QuickstartTypeOption>,
+    /// Available channel kinds the Quickstart "Create new" picker can
+    /// offer. Derived at request time from
+    /// [`zeroclaw_config::schema::ChannelsConfig::channels`] — the
+    /// schema-side single source of truth for "what channel kinds the
+    /// config schema knows about." Compile-time gating of channel
+    /// implementations (via `zeroclaw-channels` features) is enforced
+    /// later, at apply time; the picker shows every kind the schema
+    /// can represent so users get a consistent option list across
+    /// builds.
+    pub channel_types: Vec<QuickstartTypeOption>,
+}
+
+/// One row in the Quickstart "Create new …" picker, sourced from a
+/// schema- or registry-level inventory so neither the TUI nor the web
+/// surface needs its own list. `kind` is the canonical kebab-case
+/// identifier written into config; `display_name` is the picker label.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct QuickstartTypeOption {
+    /// Canonical identifier (e.g. `"anthropic"`, `"telegram"`).
+    pub kind: String,
+    /// Human-readable picker label (e.g. `"Anthropic"`, `"Telegram"`).
+    pub display_name: String,
+    /// `true` when the entry runs locally and needs no remote
+    /// credential. Channels always report `false`; providers reflect
+    /// their `local` flag from `ModelProviderInfo`.
+    pub local: bool,
 }
 
 /// Build a [`QuickstartState`] snapshot from the live config.
+///
+/// The two `*_types` lists are populated from the canonical sources
+/// (`zeroclaw_providers::list_model_providers()` for providers,
+/// `cfg.channels.channels()` for channel kinds). Adding a new entry in
+/// either source automatically lights up here — no Quickstart code
+/// change required. This is the DRY contract the plan calls out under
+/// "Reads the per-provider field map at render time so adding a
+/// provider in the schema doesn't require Quickstart code changes."
 pub fn snapshot_state(cfg: &Config) -> QuickstartState {
+    let model_provider_types = zeroclaw_providers::list_model_providers()
+        .into_iter()
+        .map(|info| QuickstartTypeOption {
+            kind: info.name.to_string(),
+            display_name: info.display_name.to_string(),
+            local: info.local,
+        })
+        .collect();
+    // Channel kinds come from the schema-side inventory. The
+    // serde-shaped `ChannelsConfig` is an object whose top-level
+    // keys are the kebab-case channel kinds (`telegram`, `discord`,
+    // `wecom-ws`, …). We walk that shape — same technique
+    // `collect_aliased_refs` uses below — so adding a new channel
+    // family in the schema lights up here for free. Display names
+    // are looked up from `ChannelsConfig::channels()` by index so we
+    // don't drift between the two views; if `channels()` returns
+    // fewer rows than the schema has top-level keys, the missing
+    // ones fall back to their kebab-case kind for display.
+    let channel_types = build_channel_type_options(&cfg.channels);
     QuickstartState {
         quickstart_completed: cfg.onboard_state.quickstart_completed,
         agents: cfg.agents.keys().cloned().collect(),
@@ -377,7 +437,62 @@ pub fn snapshot_state(cfg: &Config) -> QuickstartState {
             .collect(),
         channels: collect_aliased_refs(&cfg.channels),
         storage: collect_aliased_refs(&cfg.storage),
+        model_provider_types,
+        channel_types,
     }
+}
+
+/// Build the Quickstart channel-type picker rows directly from the
+/// schema. We do not hardcode a label→kind table: the canonical
+/// kebab-case `kind` is the JSON object key in the serialised form
+/// of `ChannelsConfig`, and the display name is the matching entry
+/// from `ChannelsConfig::channels()`. Adding a new channel family
+/// only requires extending the schema — this function picks it up
+/// automatically.
+///
+/// Order is preserved from `ChannelsConfig::channels()` (the
+/// schema's curated display order); kinds the schema knows about
+/// but `channels()` does not surface are appended in
+/// JSON-object-key order with their kind used as the display name.
+fn build_channel_type_options(
+    channels_cfg: &zeroclaw_config::schema::ChannelsConfig,
+) -> Vec<QuickstartTypeOption> {
+    // Step 1: enumerate the kebab-case kinds the schema knows about
+    // by walking the serialised form. `serde_json::Map` preserves
+    // insertion order, which matches struct-field declaration order.
+    let mut kinds: Vec<String> = Vec::new();
+    if let Ok(serde_json::Value::Object(map)) = serde_json::to_value(channels_cfg) {
+        for key in map.keys() {
+            kinds.push(key.clone());
+        }
+    }
+
+    // Step 2: pair each kind with its display name from `channels()`,
+    // which is the schema's own curated label list. We match by
+    // position because `channels()` mirrors the field declaration
+    // order of `ChannelsConfig` (verified by the `kinds.len() ==
+    // channels.len()` assertion in tests).
+    let display_names: Vec<String> = channels_cfg
+        .channels()
+        .into_iter()
+        .map(|info| info.name.to_string())
+        .collect();
+
+    kinds
+        .into_iter()
+        .enumerate()
+        .map(|(idx, kind)| {
+            let display_name = display_names
+                .get(idx)
+                .cloned()
+                .unwrap_or_else(|| kind.clone());
+            QuickstartTypeOption {
+                kind,
+                display_name,
+                local: false,
+            }
+        })
+        .collect()
 }
 
 /// Walk the serialised form of `value` and yield `<type>.<alias>` refs

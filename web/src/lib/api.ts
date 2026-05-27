@@ -1126,6 +1126,15 @@ export function selectSectionItem(
 }
 // ── Quickstart ───────────────────────────────────────────────────────
 
+export interface QuickstartTypeOption {
+  /** Canonical kebab-case kind written into config (e.g. "anthropic", "telegram"). */
+  kind: string;
+  /** Picker label. */
+  display_name: string;
+  /** True for local providers that need no credential; always false for channels. */
+  local: boolean;
+}
+
 export interface QuickstartState {
   quickstart_completed: boolean;
   agents: string[];
@@ -1134,6 +1143,18 @@ export interface QuickstartState {
   model_providers: string[];
   channels: string[];
   storage: string[];
+  /**
+   * Picker rows for "Create new model provider", supplied by the
+   * daemon — sourced from `zeroclaw_providers::list_model_providers()`.
+   * Surfaces render this list as-is and never keep their own copy.
+   */
+  model_provider_types: QuickstartTypeOption[];
+  /**
+   * Picker rows for "Create new channel", supplied by the daemon —
+   * sourced from the schema-side `ChannelsConfig` inventory. Adding a
+   * channel family in the schema lights up here automatically.
+   */
+  channel_types: QuickstartTypeOption[];
 }
 
 export function getQuickstartState(): Promise<QuickstartState> {

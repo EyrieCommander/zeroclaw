@@ -149,46 +149,47 @@ fn memory_options() -> [PickerOption; 2] {
     ]
 }
 
-fn provider_type_options() -> [PickerOption; 5] {
-    [
-        opt(
-            "anthropic",
-            "Anthropic",
-            "Claude models. Cloud. Needs an API key.",
-        ),
-        opt("openai", "OpenAI", "GPT models. Cloud. Needs an API key."),
-        opt(
-            "openrouter",
-            "OpenRouter",
-            "Multi-provider gateway. Cloud. Needs an API key.",
-        ),
-        opt(
-            "ollama",
-            "Ollama",
-            "Local models on your machine. No API key needed.",
-        ),
-        opt(
-            "openai_compatible",
-            "OpenAI-compatible",
-            "Any OpenAI-format endpoint. Base URL + key.",
-        ),
-    ]
+fn provider_type_options(snapshot: Option<&QuickstartStateResult>) -> Vec<PickerOption> {
+    // Source of truth is the daemon-side
+    // `zeroclaw_runtime::quickstart::snapshot_state`, which maps the
+    // canonical `zeroclaw_providers::list_model_providers()` registry
+    // into wire rows. Adding a model provider in
+    // `zeroclaw-providers` lights up here automatically — Quickstart
+    // never maintains its own list.
+    let Some(snap) = snapshot else {
+        return Vec::new();
+    };
+    snap.model_provider_types
+        .iter()
+        .map(|t| PickerOption {
+            value: t.kind.clone(),
+            label: t.display_name.clone(),
+            help: if t.local {
+                "Local. No credential required.".to_string()
+            } else {
+                "Cloud. Provide an API key when prompted.".to_string()
+            },
+            use_existing: false,
+        })
+        .collect()
 }
 
-fn channel_type_options() -> [PickerOption; 3] {
-    [
-        opt(
-            "telegram",
-            "Telegram",
-            "Telegram bot. Needs a bot token from @BotFather.",
-        ),
-        opt(
-            "discord",
-            "Discord",
-            "Discord bot. Needs a bot token from the Developer Portal.",
-        ),
-        opt("web", "Web", "Built-in web chat at the gateway URL."),
-    ]
+fn channel_type_options(snapshot: Option<&QuickstartStateResult>) -> Vec<PickerOption> {
+    // Same shape as `provider_type_options`: rows come from the
+    // schema-driven `ChannelsConfig` inventory the daemon walks at
+    // request time. The TUI carries no channel list of its own.
+    let Some(snap) = snapshot else {
+        return Vec::new();
+    };
+    snap.channel_types
+        .iter()
+        .map(|t| PickerOption {
+            value: t.kind.clone(),
+            label: t.display_name.clone(),
+            help: format!("Configure a new {} channel.", t.display_name),
+            use_existing: false,
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -754,7 +755,8 @@ impl QuickstartPane {
                 }));
             }
             Selector::ModelProvider => {
-                let mut options: Vec<PickerOption> = provider_type_options().to_vec();
+                let mut options: Vec<PickerOption> =
+                    provider_type_options(self.state_snapshot.as_ref());
                 if let Some(snap) = &self.state_snapshot {
                     for alias in &snap.model_providers {
                         options.push(existing_opt(alias.clone()));
@@ -965,7 +967,8 @@ impl QuickstartPane {
                     KeyCode::Enter => {
                         if cl.cursor == drafts {
                             // "+ Add channel" row → open channel-type picker.
-                            let mut options: Vec<PickerOption> = channel_type_options().to_vec();
+                            let mut options: Vec<PickerOption> =
+                                channel_type_options(self.state_snapshot.as_ref());
                             if let Some(snap) = &self.state_snapshot {
                                 for alias in &snap.channels {
                                     options.push(existing_opt(alias.clone()));

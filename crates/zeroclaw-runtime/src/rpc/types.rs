@@ -1197,6 +1197,31 @@ rpc_type! {
         pub channels: Vec<String>,
         /// `<storage_type>.<alias>` refs.
         pub storage: Vec<String>,
+        /// Picker rows for "Create new model provider" — sourced from
+        /// the canonical `zeroclaw_providers::list_model_providers()`
+        /// registry by [`crate::quickstart::snapshot_state`].
+        pub model_provider_types: Vec<QuickstartTypeOption>,
+        /// Picker rows for "Create new channel" — sourced from the
+        /// schema's `ChannelsConfig` by walking its serialised
+        /// top-level keys, so adding a channel family in the schema
+        /// surfaces here automatically.
+        pub channel_types: Vec<QuickstartTypeOption>,
+    }
+}
+
+rpc_type! {
+    /// One row in the Quickstart "Create new …" picker. The TUI and
+    /// web surfaces both render this list as-is — no hardcoded
+    /// option lists on either side.
+    pub struct QuickstartTypeOption {
+        /// Canonical kebab-case identifier written into config
+        /// (`anthropic`, `telegram`, `wecom-ws`, …).
+        pub kind: String,
+        /// Human-readable picker label.
+        pub display_name: String,
+        /// `true` when the entry runs locally and needs no remote
+        /// credential. Always `false` for channels.
+        pub local: bool,
     }
 }
 
