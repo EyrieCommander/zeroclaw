@@ -92,11 +92,7 @@ mod tests {
         write(&wt_meta.join("HEAD"), "ref: refs/heads/feature\n");
         let wt = td.path().join("wt-checkout");
         fs::create_dir_all(&wt).unwrap();
-        fs::write(
-            wt.join(".git"),
-            format!("gitdir: {}\n", wt_meta.display()),
-        )
-        .unwrap();
+        fs::write(wt.join(".git"), format!("gitdir: {}\n", wt_meta.display())).unwrap();
         assert_eq!(branch_for(&wt).as_deref(), Some("feature"));
     }
 
