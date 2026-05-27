@@ -634,6 +634,14 @@ impl RpcClient {
         self.call("logs/query", serde_json::to_value(params)?).await
     }
 
+    /// `logs/get { id }` — fetch one event's full payload. The Logs
+    /// pane keeps only preview data in memory and lazy-fetches the
+    /// full event when the detail pane opens; on close the detail is
+    /// dropped back to `None`.
+    pub async fn logs_get(&self, id: &str) -> Result<LogsGetResult> {
+        self.call("logs/get", serde_json::json!({ "id": id })).await
+    }
+
     // ── Typed config helpers ─────────────────────────────────────
 
     pub async fn config_list(&self, prefix: Option<&str>) -> Result<Vec<ConfigFieldEntry>> {
@@ -1011,12 +1019,41 @@ impl RpcClient {
         .await
     }
 
+    /// `memory/get { key }` — fetch one memory entry's full content.
+    /// The Memory pane keeps only preview rows in memory and
+    /// lazy-fetches the full entry when the detail pane opens.
+    pub async fn memory_get(&self, key: &str) -> Result<MemoryGetResult> {
+        self.call("memory/get", serde_json::json!({ "key": key }))
+            .await
+    }
+
     pub async fn session_messages(&self, session_id: &str) -> Result<SessionMessagesResult> {
         self.call(
             method::SESSION_MESSAGES,
             serde_json::json!({ "session_id": session_id }),
         )
         .await
+    }
+
+    /// Paginated variant of `session_messages`. `limit` caps the page
+    /// size, `before_index` paginates older slices. Returns
+    /// `(messages, total, start)` so the Sessions pane can size
+    /// scroll affordances and render "X of Y" without holding the
+    /// full history in memory.
+    pub async fn session_messages_page(
+        &self,
+        session_id: &str,
+        limit: Option<usize>,
+        before_index: Option<usize>,
+    ) -> Result<SessionMessagesResult> {
+        let mut params = serde_json::json!({ "session_id": session_id });
+        if let Some(l) = limit {
+            params["limit"] = serde_json::json!(l);
+        }
+        if let Some(b) = before_index {
+            params["before_index"] = serde_json::json!(b);
+        }
+        self.call(method::SESSION_MESSAGES, params).await
     }
 
     // ── TUI identity helpers ─────────────────────────────────────
@@ -1402,6 +1439,14 @@ pub struct LogsQueryResult {
     pub at_end: bool,
 }
 
+/// Mirror of `zeroclaw_runtime::rpc::types::LogsGetResult`. Full log
+/// event payload returned by the lazy-load `logs/get` RPC.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct LogsGetResult {
+    pub event: serde_json::Value,
+}
+
 // ── Session / Agents types ───────────────────────────────────────
 
 #[derive(Debug, serde::Deserialize)]
@@ -1601,10 +1646,26 @@ pub struct MemorySearchResult {
     pub entries: Vec<MemoryEntryResult>,
 }
 
+/// Mirror of `zeroclaw_runtime::rpc::types::MemoryGetResult`. Full
+/// memory entry payload returned by the lazy-load `memory/get` RPC.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct MemoryGetResult {
+    pub entry: Option<MemoryEntryResult>,
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct SessionMessagesResult {
     pub messages: Vec<MessageEntry>,
+    /// Total persisted messages for the session. With `start`, lets
+    /// the Sessions pane size scrollback affordances without keeping
+    /// the full history in memory.
+    #[serde(default)]
+    pub total: usize,
+    /// Index of `messages[0]` in the full persisted history.
+    #[serde(default)]
+    pub start: usize,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]

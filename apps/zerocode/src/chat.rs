@@ -394,12 +394,14 @@ impl Chat {
                                     match m.role.as_str() {
                                         "user" => {
                                             state.entries.push(ChatEntry::UserMessage {
-                                                text: Some(m.content),
+                                                text: Some(Arc::<str>::from(m.content)),
                                                 attachments: vec![],
                                             });
                                         }
                                         "assistant" => {
-                                            state.entries.push(ChatEntry::AgentMessage(m.content));
+                                            state.entries.push(ChatEntry::AgentMessage(
+                                                Arc::<str>::from(m.content),
+                                            ));
                                         }
                                         _ => {}
                                     }
@@ -489,7 +491,9 @@ impl Chat {
                     return false;
                 }
                 InputBarAction::StatusMessage(msg) => {
-                    state.entries.push(ChatEntry::SystemMessage(msg));
+                    state
+                        .entries
+                        .push(ChatEntry::SystemMessage(Arc::<str>::from(msg)));
                     state.mark_dirty_append();
                     return false;
                 }
@@ -503,7 +507,7 @@ impl Chat {
                     };
                     state
                         .entries
-                        .push(ChatEntry::SystemMessage(status.to_string()));
+                        .push(ChatEntry::SystemMessage(Arc::<str>::from(status)));
                     state.mark_dirty_append();
                     return false;
                 }
@@ -838,7 +842,9 @@ impl Chat {
         }
         let action = state.input_bar.handle_paste(text);
         if let InputBarAction::StatusMessage(msg) = action {
-            state.entries.push(ChatEntry::SystemMessage(msg));
+            state
+                .entries
+                .push(ChatEntry::SystemMessage(Arc::<str>::from(msg)));
             state.mark_dirty_append();
         }
     }
@@ -1127,7 +1133,7 @@ fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
 fn render_tool_entry(
     lines: &mut Vec<Line<'static>>,
     name: &str,
-    input: &serde_json::Value,
+    input_json: &str,
     result: Option<&str>,
 ) {
     lines.push(Line::from(vec![Span::styled(
@@ -1135,30 +1141,44 @@ fn render_tool_entry(
         theme::tool_label_style(),
     )]));
 
+    // `file_edit` / `file_write` need to peek inside the input
+    // structure to render diffs / file content. Re-parse from the
+    // pre-serialised JSON string — the per-entry storage on
+    // `ChatEntry::Tool` is `Arc<str>` rather than a parsed `Value`
+    // so we trade a parse on render for a smaller per-entry footprint.
+    let parsed: Option<serde_json::Value> = match name {
+        "file_edit" | "file_write" => serde_json::from_str(input_json).ok(),
+        _ => None,
+    };
+
     match name {
         "file_edit" => {
+            let input = parsed.as_ref();
             let old = input
-                .get("old_string")
+                .and_then(|v| v.get("old_string"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             let new = input
-                .get("new_string")
+                .and_then(|v| v.get("new_string"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let ext = file_ext(input);
+            let ext = input.and_then(|v| file_ext(v));
             lines.extend(diff::diff_lines(old, new, ext));
         }
         "file_write" => {
-            let content = input.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            let ext = file_ext(input);
+            let input = parsed.as_ref();
+            let content = input
+                .and_then(|v| v.get("content"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let ext = input.and_then(|v| file_ext(v));
             lines.extend(diff::write_lines(content, ext));
         }
         _ => {
-            let summary = serde_json::to_string(input).unwrap_or_default();
-            let truncated = if summary.len() > 120 {
-                format!("{}…", truncate_utf8(&summary, 120))
+            let truncated = if input_json.len() > 120 {
+                format!("{}…", truncate_utf8(input_json, 120))
             } else {
-                summary
+                input_json.to_string()
             };
             lines.push(Line::from(Span::styled(
                 format!("  {truncated}"),
@@ -1202,12 +1222,16 @@ fn render_entry_into(
             )];
             if let Some(t) = text {
                 spans.push(Span::styled(
-                    t.clone(),
+                    t.to_string(),
                     theme::body_style().add_modifier(sel_mod),
                 ));
             }
             if !attachments.is_empty() {
-                let label = attachments.join(", ");
+                let label = attachments
+                    .iter()
+                    .map(|a| a.as_ref())
+                    .collect::<Vec<&str>>()
+                    .join(", ");
                 spans.push(Span::styled(
                     format!(" [{label}]"),
                     theme::warn_style().add_modifier(Modifier::ITALIC | sel_mod),
@@ -1220,7 +1244,7 @@ fn render_entry_into(
                 "Agent: ",
                 theme::agent_label_style().add_modifier(sel_mod),
             )]));
-            let md_lines = markdown_to_lines(text);
+            let md_lines = markdown_to_lines(text.as_ref());
             for mut line in md_lines {
                 if is_selected {
                     line = Line::from(
@@ -1239,7 +1263,7 @@ fn render_entry_into(
             if show_thoughts {
                 lines.push(Line::from(vec![
                     Span::styled("(thinking) ", theme::thought_style().add_modifier(sel_mod)),
-                    Span::styled(text.clone(), theme::dim_style().add_modifier(sel_mod)),
+                    Span::styled(text.to_string(), theme::dim_style().add_modifier(sel_mod)),
                 ]));
             }
         }
@@ -1253,11 +1277,16 @@ fn render_entry_into(
         }
         ChatEntry::Tool {
             name,
-            input,
+            input_json,
             result,
             ..
         } => {
-            render_tool_entry(lines, name, input, result.as_deref());
+            render_tool_entry(
+                lines,
+                name.as_ref(),
+                input_json.as_ref(),
+                result.as_deref().map(|s| s as &str),
+            );
         }
     }
 }
@@ -1606,21 +1635,35 @@ pub struct PendingApproval {
     pub timeout_secs: u64,
 }
 
+/// One row in the chat / code-tab transcript. Heavy payloads
+/// (agent messages, tool inputs, tool outputs) are refcounted via
+/// `Arc<str>` so cloning is O(1) — the renderer and the
+/// `cached_lines` line cache both hold cheap refs into the same
+/// bytes instead of duplicating the string per render. Long
+/// sessions stay flat on memory because every per-entry payload
+/// has exactly one heap allocation regardless of how many places
+/// borrow it.
 #[derive(Debug, Clone)]
 pub enum ChatEntry {
-    AgentMessage(String),
-    AgentThought(String),
+    AgentMessage(Arc<str>),
+    AgentThought(Arc<str>),
     /// Local system/info message (e.g. "Attached: photo.png").
-    SystemMessage(String),
+    SystemMessage(Arc<str>),
     UserMessage {
-        text: Option<String>,
-        attachments: Vec<String>,
+        text: Option<Arc<str>>,
+        attachments: Vec<Arc<str>>,
     },
     Tool {
-        tool_call_id: String,
-        name: String,
-        input: serde_json::Value,
-        result: Option<String>,
+        tool_call_id: Arc<str>,
+        name: Arc<str>,
+        /// Pre-serialised JSON of the tool input. Storing the
+        /// rendered string instead of a `serde_json::Value` tree
+        /// drops the per-entry parsed-tree footprint (one
+        /// allocation per Value node) to a single `Arc<str>`.
+        input_json: Arc<str>,
+        /// Tool output. `None` while the call is in flight,
+        /// `Some(Arc<str>)` once the result arrives.
+        result: Option<Arc<str>>,
     },
 }
 
@@ -1919,7 +1962,8 @@ impl ChatState {
     fn flush_streaming_thought(&mut self) {
         let thought = std::mem::take(&mut self.streaming_thought);
         if !thought.is_empty() {
-            self.entries.push(ChatEntry::AgentThought(thought));
+            self.entries
+                .push(ChatEntry::AgentThought(Arc::<str>::from(thought)));
             self.mark_dirty_append();
         }
     }
@@ -1930,7 +1974,8 @@ impl ChatState {
     fn flush_streaming_text(&mut self) {
         let text = std::mem::take(&mut self.streaming_text);
         if !text.is_empty() {
-            self.entries.push(ChatEntry::AgentMessage(text));
+            self.entries
+                .push(ChatEntry::AgentMessage(Arc::<str>::from(text)));
             self.mark_dirty_append();
         }
     }
@@ -1986,9 +2031,11 @@ impl ChatState {
                     self.turn_status = TurnStatus::CallingTool(name.clone());
                 }
                 self.entries.push(ChatEntry::Tool {
-                    tool_call_id,
-                    name,
-                    input: raw_input,
+                    tool_call_id: Arc::<str>::from(tool_call_id),
+                    name: Arc::<str>::from(name),
+                    input_json: Arc::<str>::from(
+                        serde_json::to_string(&raw_input).unwrap_or_default(),
+                    ),
                     result: None,
                 });
                 self.mark_dirty_append();
@@ -2013,9 +2060,9 @@ impl ChatState {
                         result,
                         ..
                     } = entry
-                        && id == &tool_call_id
+                        && id.as_ref() == tool_call_id.as_str()
                     {
-                        *result = Some(raw_output);
+                        *result = Some(Arc::<str>::from(raw_output));
                         self.mark_dirty_full(); // mutation of existing entry
                         break;
                     }
@@ -2099,8 +2146,10 @@ impl ChatState {
     }
 
     pub fn push_user_message(&mut self, text: Option<String>, attachments: Vec<String>) {
-        self.entries
-            .push(ChatEntry::UserMessage { text, attachments });
+        self.entries.push(ChatEntry::UserMessage {
+            text: text.map(Arc::<str>::from),
+            attachments: attachments.into_iter().map(Arc::<str>::from).collect(),
+        });
         self.mark_dirty_append();
         self.turn_in_flight = true;
         // Start a fresh status + animation anchor. We're `Working` until the
@@ -2141,24 +2190,26 @@ fn clipboard_text(entry: &ChatEntry) -> String {
             if attachments.is_empty() {
                 format!("You: {base}")
             } else {
-                format!("You: {base} [{}]", attachments.join(", "))
+                let label = attachments
+                    .iter()
+                    .map(|a| a.as_ref())
+                    .collect::<Vec<&str>>()
+                    .join(", ");
+                format!("You: {base} [{label}]")
             }
         }
         ChatEntry::AgentMessage(t) => format!("Agent: {t}"),
         ChatEntry::AgentThought(t) => format!("(thinking) {t}"),
-        ChatEntry::SystemMessage(t) => t.clone(),
+        ChatEntry::SystemMessage(t) => t.to_string(),
         ChatEntry::Tool {
             name,
-            input,
+            input_json,
             result,
             ..
-        } => {
-            let input_str = serde_json::to_string(input).unwrap_or_default();
-            match result {
-                Some(r) => format!("[tool: {name}] {input_str}\n  \u{2514}\u{2500} {r}"),
-                None => format!("[tool: {name}] {input_str}"),
-            }
-        }
+        } => match result {
+            Some(r) => format!("[tool: {name}] {input_json}\n  \u{2514}\u{2500} {r}"),
+            None => format!("[tool: {name}] {input_json}"),
+        },
     }
 }
 
@@ -2336,7 +2387,9 @@ mod tests {
         });
         // Thought must be committed as an entry before the tool entry.
         assert_eq!(s.entries().len(), 2);
-        assert!(matches!(&s.entries()[0], ChatEntry::AgentThought(t) if t == "plan: run ls"));
+        assert!(
+            matches!(&s.entries()[0], ChatEntry::AgentThought(t) if t.as_ref() == "plan: run ls")
+        );
         assert!(matches!(&s.entries()[1], ChatEntry::Tool { .. }));
         // streaming_thought is now clear.
         assert!(s.current_thought_text().is_empty());
@@ -2356,7 +2409,7 @@ mod tests {
         });
         // Thought entry committed before streaming text starts.
         assert_eq!(s.entries().len(), 1);
-        assert!(matches!(&s.entries()[0], ChatEntry::AgentThought(t) if t == "thinking"));
+        assert!(matches!(&s.entries()[0], ChatEntry::AgentThought(t) if t.as_ref() == "thinking"));
         assert_eq!(s.current_agent_text(), "Here is");
         assert!(s.current_thought_text().is_empty());
     }
@@ -2414,7 +2467,7 @@ mod tests {
             s.entries()
         );
         assert!(
-            matches!(&s.entries()[0], ChatEntry::AgentMessage(t) if t == "I will run ls."),
+            matches!(&s.entries()[0], ChatEntry::AgentMessage(t) if t.as_ref() == "I will run ls."),
             "first entry must be AgentMessage with pre-tool text"
         );
         assert!(
@@ -2470,7 +2523,7 @@ mod tests {
             "expected 3 entries: pre-tool AgentMessage, Tool, post-tool AgentMessage"
         );
         assert!(
-            matches!(&s.entries()[0], ChatEntry::AgentMessage(t) if t == "Running ls."),
+            matches!(&s.entries()[0], ChatEntry::AgentMessage(t) if t.as_ref() == "Running ls."),
             "first entry must be pre-tool AgentMessage"
         );
         assert!(
@@ -2484,7 +2537,7 @@ mod tests {
             "second entry must be Tool with result"
         );
         assert!(
-            matches!(&s.entries()[2], ChatEntry::AgentMessage(t) if t == "Done."),
+            matches!(&s.entries()[2], ChatEntry::AgentMessage(t) if t.as_ref() == "Done."),
             "third entry must be post-tool AgentMessage"
         );
     }
@@ -2535,7 +2588,9 @@ mod tests {
             2,
             "commit_turn must not add a duplicate AgentMessage for already-flushed text"
         );
-        assert!(matches!(&s.entries()[0], ChatEntry::AgentMessage(t) if t == "Before tool."));
+        assert!(
+            matches!(&s.entries()[0], ChatEntry::AgentMessage(t) if t.as_ref() == "Before tool.")
+        );
         assert!(matches!(&s.entries()[1], ChatEntry::Tool { .. }));
     }
 
@@ -2551,7 +2606,7 @@ mod tests {
         assert!(
             s.entries()
                 .iter()
-                .any(|e| matches!(e, ChatEntry::AgentMessage(t) if t == "Done"))
+                .any(|e| matches!(e, ChatEntry::AgentMessage(t) if t.as_ref() == "Done"))
         );
     }
 }

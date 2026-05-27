@@ -255,6 +255,30 @@ rpc_type! {
     pub struct SessionMessagesResult {
         pub session_id: String,
         pub messages: Vec<MessageEntry>,
+        /// Total messages persisted for this session. Lets the TUI
+        /// know how many pages remain before it reaches the head.
+        #[serde(default)]
+        pub total: usize,
+        /// Index of the first message in `messages` relative to the
+        /// full persisted history. Pair with `total` to compute
+        /// "page N of M" / "load older" affordances.
+        #[serde(default)]
+        pub start: usize,
+    }
+}
+
+rpc_type! {
+    /// Params for `session/messages`. `limit` + `before_index`
+    /// page-window the load so a long session doesn't slurp every
+    /// message into client memory at once. Both default to the
+    /// legacy "load everything" behaviour for callers that pre-date
+    /// the pagination change.
+    pub struct SessionMessagesParams {
+        pub session_id: String,
+        #[serde(default)]
+        pub limit: Option<usize>,
+        #[serde(default)]
+        pub before_index: Option<usize>,
     }
 }
 
@@ -345,6 +369,22 @@ rpc_type! {
     pub struct MemorySearchResult {
         pub entries: Vec<MemoryEntry>,
         pub count: usize,
+    }
+}
+
+rpc_type! {
+    /// `memory/get` params — fetch one entry's full content by key.
+    pub struct MemoryGetParams {
+        pub key: String,
+    }
+}
+
+rpc_type! {
+    /// `memory/get` result. `entry` carries the full content
+    /// the Memory pane only renders inside the detail modal —
+    /// list rows store preview-only data.
+    pub struct MemoryGetResult {
+        pub entry: Option<MemoryEntry>,
     }
 }
 
@@ -1118,6 +1158,23 @@ rpc_type! {
         pub events: Vec<serde_json::Value>,
         pub next_cursor: Option<(String, String)>,
         pub at_end: bool,
+    }
+}
+
+rpc_type! {
+    /// `logs/get` params — fetch a single event by id.
+    pub struct LogsGetParams {
+        pub id: String,
+    }
+}
+
+rpc_type! {
+    /// `logs/get` result. `event` is the full `LogEvent` payload
+    /// (attributes, attribution map, span ids, …) that the Logs pane
+    /// only renders inside the detail modal — list rows store
+    /// preview-only data.
+    pub struct LogsGetResult {
+        pub event: serde_json::Value,
     }
 }
 

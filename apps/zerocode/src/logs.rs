@@ -49,35 +49,46 @@ fn severity_label(num: u8) -> &'static str {
     }
 }
 
-/// Recursively check whether any string value in a JSON tree contains `needle`.
-fn attr_values_contain(val: &Value, needle: &str) -> bool {
-    match val {
-        Value::String(s) => s.to_lowercase().contains(needle),
-        Value::Array(arr) => arr.iter().any(|v| attr_values_contain(v, needle)),
-        Value::Object(map) => map.values().any(|v| attr_values_contain(v, needle)),
-        _ => false,
-    }
-}
-
 // ── Log entry ────────────────────────────────────────────────────
 
+/// Preview row stored in `LogsPane.events`. Carries only the fields
+/// rendered in the left-side list. The right-side detail pane fetches
+/// the full event payload via `logs/get` when opened and drops it on
+/// close — keeping the per-row footprint to a few short strings even
+/// across thousands of buffered events.
 struct LogEntry {
+    /// Stable event id from the persistent log store. Used to lazy-fetch
+    /// the full payload via `logs/get { id }` when the detail pane opens.
+    id: String,
     timestamp: String,
     severity_number: u8,
     category: String,
     action: String,
-    outcome: String,
     message: String,
-    trace_id: Option<String>,
-    span_id: Option<String>,
-    zeroclaw: BTreeMap<String, String>,
-    duration_ms: Option<u64>,
-    attributes: Value,
+}
+
+/// Full event payload — populated by `logs/get` when the detail pane
+/// opens, dropped back to `None` when the pane closes. Holds the raw
+/// `Value` (with trace ids, attribution map, attributes JSON, …) so
+/// the renderer can read every field on demand without the list ever
+/// storing them.
+pub(crate) struct LogDetail {
+    raw: Value,
 }
 
 impl LogEntry {
     fn from_value(v: &Value) -> Option<Self> {
+        // Prefer the persistent id from the log store. Fall back to
+        // `(timestamp, span_id)` for events arriving via the
+        // `logs/event` push notification before a persistent id is
+        // assigned — those rows lazy-fetch full detail via
+        // `logs/get { id }` once the daemon's writer has flushed them.
         let timestamp = v.get("@timestamp")?.as_str()?.to_string();
+        let id = v
+            .get("id")
+            .and_then(Value::as_str)
+            .map(String::from)
+            .unwrap_or_else(|| timestamp.clone());
         let severity_number = v.get("severity_number")?.as_u64()? as u8;
         let event = v.get("event")?;
         let category = event
@@ -90,47 +101,18 @@ impl LogEntry {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
-        let outcome = event
-            .get("outcome")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
         let message = v
             .get("message")
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
-        let trace_id = v.get("trace_id").and_then(Value::as_str).map(String::from);
-        let span_id = v.get("span_id").and_then(Value::as_str).map(String::from);
-
-        let zc = v.get("zeroclaw").cloned().unwrap_or(Value::Null);
-        let duration_ms = zc.get("duration_ms").and_then(Value::as_u64);
-        let mut zeroclaw = BTreeMap::new();
-        if let Value::Object(map) = &zc {
-            for (k, val) in map {
-                if k == "duration_ms" {
-                    continue;
-                }
-                if let Some(s) = val.as_str() {
-                    zeroclaw.insert(k.clone(), s.to_string());
-                }
-            }
-        }
-
-        let attributes = v.get("attributes").cloned().unwrap_or(Value::Null);
-
         Some(Self {
+            id,
             timestamp,
             severity_number,
             category,
             action,
-            outcome,
             message,
-            trace_id,
-            span_id,
-            zeroclaw,
-            duration_ms,
-            attributes,
         })
     }
 
@@ -147,17 +129,82 @@ impl LogEntry {
         }
     }
 
-    /// Case-insensitive substring match against searchable fields.
+    /// Case-insensitive substring match against preview fields only.
+    /// Full-text search across attributes / attribution map is handled
+    /// server-side via `LogsQueryParams.q` so the TUI never has to
+    /// load full payloads into memory just to filter them.
     fn matches_query(&self, query: &str) -> bool {
         let q = query.to_lowercase();
         self.message.to_lowercase().contains(&q)
             || self.category.to_lowercase().contains(&q)
             || self.action.to_lowercase().contains(&q)
-            || self
-                .zeroclaw
-                .values()
-                .any(|v| v.to_lowercase().contains(&q))
-            || attr_values_contain(&self.attributes, &q)
+    }
+}
+
+impl LogDetail {
+    pub(crate) fn new(raw: Value) -> Self {
+        Self { raw }
+    }
+
+    fn timestamp(&self) -> &str {
+        self.raw
+            .get("@timestamp")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+    }
+
+    fn severity_number(&self) -> u8 {
+        self.raw
+            .get("severity_number")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u8
+    }
+
+    fn event_field(&self, key: &str) -> &str {
+        self.raw
+            .get("event")
+            .and_then(|e| e.get(key))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+    }
+
+    fn message(&self) -> &str {
+        self.raw
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+    }
+
+    fn trace_id(&self) -> Option<&str> {
+        self.raw.get("trace_id").and_then(Value::as_str)
+    }
+
+    fn span_id(&self) -> Option<&str> {
+        self.raw.get("span_id").and_then(Value::as_str)
+    }
+
+    fn duration_ms(&self) -> Option<u64> {
+        self.raw.get("zeroclaw")?.get("duration_ms")?.as_u64()
+    }
+
+    fn zeroclaw(&self) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        if let Some(Value::Object(map)) = self.raw.get("zeroclaw") {
+            for (k, val) in map {
+                if k == "duration_ms" {
+                    continue;
+                }
+                if let Some(s) = val.as_str() {
+                    out.insert(k.clone(), s.to_string());
+                }
+            }
+        }
+        out
+    }
+
+    fn attributes(&self) -> &Value {
+        static NULL: Value = Value::Null;
+        self.raw.get("attributes").unwrap_or(&NULL)
     }
 
     fn detail_lines(&self) -> Vec<Line<'static>> {
@@ -167,72 +214,75 @@ impl LogEntry {
 
         lines.push(Line::from(vec![
             Span::styled("Timestamp  ", label_style),
-            Span::styled(self.timestamp.clone(), val_style),
+            Span::styled(self.timestamp().to_string(), val_style),
         ]));
         lines.push(Line::from(vec![
             Span::styled("Severity   ", label_style),
             Span::styled(
                 format!(
                     "{} ({})",
-                    severity_label(self.severity_number),
-                    self.severity_number
+                    severity_label(self.severity_number()),
+                    self.severity_number()
                 ),
-                severity_style(self.severity_number).add_modifier(Modifier::BOLD),
+                severity_style(self.severity_number()).add_modifier(Modifier::BOLD),
             ),
         ]));
         lines.push(Line::from(vec![
             Span::styled("Category   ", label_style),
-            Span::styled(self.category.clone(), val_style),
+            Span::styled(self.event_field("category").to_string(), val_style),
         ]));
         lines.push(Line::from(vec![
             Span::styled("Action     ", label_style),
-            Span::styled(self.action.clone(), val_style),
+            Span::styled(self.event_field("action").to_string(), val_style),
         ]));
-        if !self.outcome.is_empty() && self.outcome != "unknown" {
+        let outcome = self.event_field("outcome");
+        if !outcome.is_empty() && outcome != "unknown" {
             lines.push(Line::from(vec![
                 Span::styled("Outcome    ", label_style),
-                Span::styled(self.outcome.clone(), val_style),
+                Span::styled(outcome.to_string(), val_style),
             ]));
         }
-        if let Some(ms) = self.duration_ms {
+        if let Some(ms) = self.duration_ms() {
             lines.push(Line::from(vec![
                 Span::styled("Duration   ", label_style),
                 Span::styled(format!("{ms}ms"), val_style),
             ]));
         }
 
-        if !self.message.is_empty() {
+        let msg = self.message();
+        if !msg.is_empty() {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled("Message", theme::heading_style())));
-            for msg_line in self.message.lines() {
+            for msg_line in msg.lines() {
                 lines.push(Line::from(Span::styled(msg_line.to_string(), val_style)));
             }
         }
 
-        if self.trace_id.is_some() || self.span_id.is_some() {
+        if self.trace_id().is_some() || self.span_id().is_some() {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled("Trace", theme::heading_style())));
-            if let Some(tid) = &self.trace_id {
+            if let Some(tid) = self.trace_id() {
                 lines.push(Line::from(vec![
                     Span::styled("trace_id   ", label_style),
-                    Span::styled(tid.clone(), val_style),
+                    Span::styled(tid.to_string(), val_style),
                 ]));
             }
-            if let Some(sid) = &self.span_id {
+            if let Some(sid) = self.span_id() {
                 lines.push(Line::from(vec![
                     Span::styled("span_id    ", label_style),
-                    Span::styled(sid.clone(), val_style),
+                    Span::styled(sid.to_string(), val_style),
                 ]));
             }
         }
 
-        if !self.zeroclaw.is_empty() {
+        let zc = self.zeroclaw();
+        if !zc.is_empty() {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "Attribution",
                 theme::heading_style(),
             )));
-            for (k, v) in &self.zeroclaw {
+            for (k, v) in &zc {
                 let pad = 12usize.saturating_sub(k.len());
                 lines.push(Line::from(vec![
                     Span::styled(format!("{k}{}", " ".repeat(pad)), label_style),
@@ -241,13 +291,14 @@ impl LogEntry {
             }
         }
 
-        if !self.attributes.is_null() {
+        let attrs = self.attributes();
+        if !attrs.is_null() {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "Attributes",
                 theme::heading_style(),
             )));
-            if let Ok(pretty) = serde_json::to_string_pretty(&self.attributes) {
+            if let Ok(pretty) = serde_json::to_string_pretty(attrs) {
                 for json_line in pretty.lines() {
                     lines.push(Line::from(Span::styled(json_line.to_string(), val_style)));
                 }
@@ -260,42 +311,46 @@ impl LogEntry {
     /// Plain-text rendering of the detail fields for clipboard.
     fn clipboard_text(&self) -> String {
         let mut out = String::new();
-        out.push_str(&format!("Timestamp  {}\n", self.timestamp));
+        out.push_str(&format!("Timestamp  {}\n", self.timestamp()));
         out.push_str(&format!(
             "Severity   {} ({})\n",
-            severity_label(self.severity_number),
-            self.severity_number
+            severity_label(self.severity_number()),
+            self.severity_number()
         ));
-        out.push_str(&format!("Category   {}\n", self.category));
-        out.push_str(&format!("Action     {}\n", self.action));
-        if !self.outcome.is_empty() && self.outcome != "unknown" {
-            out.push_str(&format!("Outcome    {}\n", self.outcome));
+        out.push_str(&format!("Category   {}\n", self.event_field("category")));
+        out.push_str(&format!("Action     {}\n", self.event_field("action")));
+        let outcome = self.event_field("outcome");
+        if !outcome.is_empty() && outcome != "unknown" {
+            out.push_str(&format!("Outcome    {}\n", outcome));
         }
-        if let Some(ms) = self.duration_ms {
+        if let Some(ms) = self.duration_ms() {
             out.push_str(&format!("Duration   {ms}ms\n"));
         }
-        if !self.message.is_empty() {
-            out.push_str(&format!("\nMessage\n{}\n", self.message));
+        let msg = self.message();
+        if !msg.is_empty() {
+            out.push_str(&format!("\nMessage\n{}\n", msg));
         }
-        if self.trace_id.is_some() || self.span_id.is_some() {
+        if self.trace_id().is_some() || self.span_id().is_some() {
             out.push('\n');
-            if let Some(tid) = &self.trace_id {
+            if let Some(tid) = self.trace_id() {
                 out.push_str(&format!("trace_id   {tid}\n"));
             }
-            if let Some(sid) = &self.span_id {
+            if let Some(sid) = self.span_id() {
                 out.push_str(&format!("span_id    {sid}\n"));
             }
         }
-        if !self.zeroclaw.is_empty() {
+        let zc = self.zeroclaw();
+        if !zc.is_empty() {
             out.push_str("\nAttribution\n");
-            for (k, v) in &self.zeroclaw {
+            for (k, v) in &zc {
                 let pad = 12usize.saturating_sub(k.len());
                 out.push_str(&format!("{k}{}{v}\n", " ".repeat(pad)));
             }
         }
-        if !self.attributes.is_null() {
+        let attrs = self.attributes();
+        if !attrs.is_null() {
             out.push_str("\nAttributes\n");
-            if let Ok(pretty) = serde_json::to_string_pretty(&self.attributes) {
+            if let Ok(pretty) = serde_json::to_string_pretty(attrs) {
                 out.push_str(&pretty);
                 out.push('\n');
             }
@@ -315,6 +370,16 @@ pub(crate) struct Logs<'a> {
     min_severity: u8,
     subscribed: bool,
     detail_open: bool,
+    /// Lazy-loaded full event payload. `Some` only while the
+    /// detail pane is open and the daemon has returned the body
+    /// via `logs/get`; `None` otherwise. Closing the pane drops
+    /// this back to `None` so long sessions never accumulate
+    /// detail bodies for events the user has scrolled past.
+    detail: Option<LogDetail>,
+    /// Id of the event whose detail is currently being fetched
+    /// or shown. Used to ignore stale `logs/get` responses when
+    /// the user moves the selection before the daemon answers.
+    detail_request_id: Option<String>,
     detail_scroll: u16,
     detail_pct: u16,
     // Search
@@ -343,6 +408,8 @@ impl<'a> Logs<'a> {
             min_severity: SEV_DEBUG,
             subscribed: false,
             detail_open: false,
+            detail: None,
+            detail_request_id: None,
             detail_scroll: 0,
             detail_pct: 50,
             search_active: false,
@@ -657,13 +724,20 @@ impl<'a> Logs<'a> {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let Some(idx) = self.selected_event_idx() else {
+        let Some(_idx) = self.selected_event_idx() else {
             let hint = Paragraph::new(Span::styled("No event selected", theme::dim_style()));
             frame.render_widget(hint, inner);
             return;
         };
 
-        let lines = self.events[idx].detail_lines();
+        // Detail body is lazy-loaded via `logs/get` when the pane
+        // opens (see `open_detail`). While the daemon is still
+        // answering the request — or if the lookup failed — show a
+        // friendly placeholder rather than blocking on the call.
+        let lines = match &self.detail {
+            Some(d) => d.detail_lines(),
+            None => vec![Line::from(Span::styled("Loading…", theme::dim_style()))],
+        };
         let para = Paragraph::new(lines)
             .wrap(Wrap { trim: false })
             .scroll((self.detail_scroll, 0));
@@ -712,6 +786,10 @@ impl<'a> Logs<'a> {
             KeyCode::Esc | KeyCode::Enter => {
                 self.detail_open = false;
                 self.detail_scroll = 0;
+                // Drop the lazy-loaded full payload so long sessions
+                // never accumulate detail bodies after the pane closes.
+                self.detail = None;
+                self.detail_request_id = None;
             }
             KeyCode::Char('c') if !self.search_query.is_empty() => {
                 let anchor = self.cursor_anchor();
@@ -719,10 +797,10 @@ impl<'a> Logs<'a> {
                 self.search_buf.clear();
                 self.refilter(anchor);
             }
-            KeyCode::Char('y') if self.selected_event_idx().is_some() => {
-                let idx = self.selected_event_idx().unwrap();
-                let text = self.events[idx].clipboard_text();
-                crate::mouse::copy_osc52(&text);
+            KeyCode::Char('y') if self.detail.is_some() => {
+                if let Some(d) = self.detail.as_ref() {
+                    crate::mouse::copy_osc52(&d.clipboard_text());
+                }
             }
             KeyCode::Char('/') => {
                 self.search_active = true;
@@ -786,6 +864,8 @@ impl<'a> Logs<'a> {
                 self.detail_open = true;
                 self.detail_scroll = 0;
                 self.detail_pct = 50;
+                // Lazy-fetch the full event body. Cleared on close.
+                self.fetch_detail_for_selection().await;
             }
             KeyCode::Char('j') | KeyCode::Down => self.move_selection_down(),
             KeyCode::Char('k') | KeyCode::Up => {
@@ -902,6 +982,36 @@ impl<'a> Logs<'a> {
     }
 
     // ── Navigation helpers ───────────────────────────────────────
+
+    /// Lazy-load the full event body for the currently-selected row
+    /// via `logs/get`. Stores the result in `self.detail` for the
+    /// detail pane to render. Called when the detail pane opens
+    /// (Enter); not invoked on cursor movement, so scrolling the
+    /// list never fires a round-trip.
+    async fn fetch_detail_for_selection(&mut self) {
+        let Some(idx) = self.selected_event_idx() else {
+            self.detail = None;
+            self.detail_request_id = None;
+            return;
+        };
+        let id = self.events[idx].id.clone();
+        self.detail_request_id = Some(id.clone());
+        match self.rpc.logs_get(&id).await {
+            Ok(res) => {
+                // Drop the response if the user moved the selection
+                // before the daemon answered — a stale fetch must not
+                // overwrite the body for whatever row is now selected.
+                if self.detail_request_id.as_deref() == Some(id.as_str()) {
+                    self.detail = Some(LogDetail::new(res.event));
+                }
+            }
+            Err(_) => {
+                if self.detail_request_id.as_deref() == Some(id.as_str()) {
+                    self.detail = None;
+                }
+            }
+        }
+    }
 
     fn move_selection_down(&mut self) {
         self.follow = false;

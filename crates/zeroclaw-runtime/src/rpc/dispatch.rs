@@ -61,6 +61,7 @@ pub enum Method {
     // Memory
     MemoryList,
     MemorySearch,
+    MemoryGet,
     MemoryStore,
     MemoryDelete,
 
@@ -116,6 +117,7 @@ pub enum Method {
     // Logs / Events
     LogsSubscribe,
     LogsQuery,
+    LogsGet,
 
     // TUI
     TuiList,
@@ -154,6 +156,7 @@ impl Method {
         // Memory
         (Method::MemoryList, "memory/list"),
         (Method::MemorySearch, "memory/search"),
+        (Method::MemoryGet, "memory/get"),
         (Method::MemoryStore, "memory/store"),
         (Method::MemoryDelete, "memory/delete"),
         // Cron
@@ -201,6 +204,7 @@ impl Method {
         // Logs
         (Method::LogsSubscribe, "logs/subscribe"),
         (Method::LogsQuery, "logs/query"),
+        (Method::LogsGet, "logs/get"),
         // TUI
         (Method::TuiList, "tui/list"),
         // Files
@@ -399,6 +403,7 @@ impl RpcDispatcher {
             // Memory
             Method::MemoryList => self.handle_memory_list(&req.params).await,
             Method::MemorySearch => self.handle_memory_search(&req.params).await,
+            Method::MemoryGet => self.handle_memory_get(&req.params).await,
             Method::MemoryStore => self.handle_memory_store(&req.params).await,
             Method::MemoryDelete => self.handle_memory_delete(&req.params).await,
 
@@ -454,6 +459,7 @@ impl RpcDispatcher {
             // Logs
             Method::LogsSubscribe => self.handle_logs_subscribe().await,
             Method::LogsQuery => self.handle_logs_query(&req.params).await,
+            Method::LogsGet => self.handle_logs_get(&req.params).await,
 
             // TUI
             Method::TuiList => self.handle_tui_list(),
@@ -1070,7 +1076,7 @@ impl RpcDispatcher {
     }
 
     async fn handle_session_messages(&self, params: &Value) -> RpcResult {
-        let req: SessionIdParams = parse_params(params)?;
+        let req: SessionMessagesParams = parse_params(params)?;
         let backend = self
             .ctx
             .session_backend
@@ -1084,24 +1090,38 @@ impl RpcDispatcher {
             format!("rpc_{}", req.session_id),
             format!("gw_{}", req.session_id),
         ];
-        let mut messages = Vec::new();
+        let mut raw: Vec<zeroclaw_api::model_provider::ChatMessage> = Vec::new();
         for key in &candidates {
             let loaded = backend.load(key);
             if !loaded.is_empty() {
-                messages = loaded
-                    .iter()
-                    .map(|m| MessageEntry {
-                        role: m.role.clone(),
-                        content: m.content.clone(),
-                    })
-                    .collect();
+                raw = loaded;
                 break;
             }
         }
 
+        // Page-window the load. `before_index` is a 0-based index pointing
+        // at the first message NOT to return — the page contains the N
+        // messages immediately preceding it. With `before_index = None`
+        // (the default) the page contains the most recent `limit`
+        // messages. `limit = None` returns everything for backward
+        // compatibility with callers that pre-date this change.
+        let total = raw.len();
+        let limit = req.limit.unwrap_or(total);
+        let end = req.before_index.map(|i| i.min(total)).unwrap_or(total);
+        let start = end.saturating_sub(limit);
+        let messages: Vec<MessageEntry> = raw[start..end]
+            .iter()
+            .map(|m| MessageEntry {
+                role: m.role.clone(),
+                content: m.content.clone(),
+            })
+            .collect();
+
         to_result(SessionMessagesResult {
             session_id: req.session_id,
             messages,
+            total,
+            start,
         })
     }
 
@@ -1228,6 +1248,7 @@ impl RpcDispatcher {
             .await
             .map_err(|e| rpc_err(INTERNAL_ERROR, format!("Memory list failed: {e}")))?;
         let count = entries.len();
+        let entries = truncate_memory_previews(entries);
         to_result(MemoryListResult { entries, count })
     }
 
@@ -1249,7 +1270,32 @@ impl RpcDispatcher {
             .await
             .map_err(|e| rpc_err(INTERNAL_ERROR, format!("Memory search failed: {e}")))?;
         let count = entries.len();
+        let entries = truncate_memory_previews(entries);
         to_result(MemorySearchResult { entries, count })
+    }
+
+    /// `memory/get { key } → MemoryEntry`. Returns the full memory
+    /// entry for one key so the Memory pane can keep only preview
+    /// rows in memory and fetch the full `content` only when the
+    /// detail pane opens. Dropped on detail close.
+    async fn handle_memory_get(&self, params: &Value) -> RpcResult {
+        let mem = self
+            .ctx
+            .memory
+            .as_ref()
+            .ok_or_else(|| rpc_err(INTERNAL_ERROR, "Memory subsystem is not available"))?;
+        let req: MemoryGetParams = parse_params(params)?;
+        let entry = mem
+            .get(&req.key)
+            .await
+            .map_err(|e| rpc_err(INTERNAL_ERROR, format!("Memory get failed: {e}")))?;
+        match entry {
+            Some(e) => to_result(MemoryGetResult { entry: Some(e) }),
+            None => Err(rpc_err(
+                INTERNAL_ERROR,
+                format!("Memory key `{}` not found", req.key),
+            )),
+        }
     }
 
     async fn handle_memory_store(&self, params: &Value) -> RpcResult {
@@ -2150,6 +2196,30 @@ impl RpcDispatcher {
         })
     }
 
+    /// `logs/get { id } → LogEvent`. Loads one full event by id from
+    /// the persistent JSONL log so the Logs pane can keep only preview
+    /// fields in memory and lazy-fetch the full payload only when the
+    /// user opens the detail pane.
+    async fn handle_logs_get(&self, params: &Value) -> RpcResult {
+        let p: LogsGetParams = parse_params(params)?;
+        let path = zeroclaw_log::current_log_path()
+            .ok_or_else(|| rpc_err(INTERNAL_ERROR, "Log persistence is not enabled"))?;
+        let event = zeroclaw_log::find_event_by_id(&path, &p.id)
+            .map_err(|e| rpc_err(INTERNAL_ERROR, format!("Log read failed: {e:#}")))?;
+        match event {
+            Some(evt) => {
+                let event = serde_json::to_value(evt).map_err(|e| {
+                    rpc_err(INTERNAL_ERROR, format!("Failed to serialize event: {e}"))
+                })?;
+                to_result(LogsGetResult { event })
+            }
+            None => Err(rpc_err(
+                INTERNAL_ERROR,
+                format!("Log id `{}` not found", p.id),
+            )),
+        }
+    }
+
     // ── File attachment handler ────────────────────────────────
 
     async fn handle_file_attach(&self, params: &Value) -> RpcResult {
@@ -2364,6 +2434,33 @@ fn parse_params<T: DeserializeOwned>(params: &Value) -> Result<T, JsonRpcError> 
 
 fn to_result<T: Serialize>(val: T) -> RpcResult {
     serde_json::to_value(val).map_err(|e| rpc_err(INTERNAL_ERROR, e.to_string()))
+}
+
+/// Cap on the `content` field of memory entries returned via
+/// `memory/list` and `memory/search`. List rows are previews; the
+/// full content is only required when the user opens the detail
+/// pane, which fetches it via `memory/get`. Keeping the preview cap
+/// here means both wire bytes and client RAM stay bounded across
+/// large memory backends.
+const MEMORY_PREVIEW_CONTENT_BYTES: usize = 200;
+
+/// Truncate each entry's `content` to the preview budget. Operates
+/// in place to avoid a second allocation per entry.
+fn truncate_memory_previews(
+    mut entries: Vec<zeroclaw_api::memory_traits::MemoryEntry>,
+) -> Vec<zeroclaw_api::memory_traits::MemoryEntry> {
+    for entry in &mut entries {
+        if entry.content.len() > MEMORY_PREVIEW_CONTENT_BYTES {
+            // Truncate on a char boundary so we never split a UTF-8 sequence.
+            let mut end = MEMORY_PREVIEW_CONTENT_BYTES;
+            while end > 0 && !entry.content.is_char_boundary(end) {
+                end -= 1;
+            }
+            entry.content.truncate(end);
+            entry.content.push('…');
+        }
+    }
+    entries
 }
 
 fn notification_for_turn_event(

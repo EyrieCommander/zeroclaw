@@ -19,6 +19,11 @@ use crate::theme;
 
 const POLL_INTERVAL_SECS: u64 = 5;
 
+/// Page size for `session/messages` on detail-open. Pulls the
+/// most-recent page only; the right-side detail pane shows the tail
+/// of the conversation. Long sessions never load the full history.
+const SESSION_MESSAGES_PAGE_SIZE: usize = 100;
+
 // ── Tab enum ─────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -72,10 +77,28 @@ pub(crate) struct Dashboard<'a> {
     cron_jobs: Vec<CronJobEntry>,
     memories: Vec<MemoryEntryResult>,
     memory_error: Option<String>,
+    /// Lazy-loaded full payload for the currently-open Memory detail
+    /// row. Fetched via `memory/get` on selection (the list rows store
+    /// only previews, with `content` truncated to ~200 bytes by the
+    /// daemon). `None` whenever the Memory tab isn't focused or no
+    /// row is selected — long browsing sessions never accumulate
+    /// full-content bodies for entries the user has scrolled past.
+    memory_detail: Option<MemoryEntryResult>,
+    /// Key of the entry whose detail is currently being fetched or
+    /// shown. Used to drop stale `memory/get` responses when the
+    /// selection moves before the daemon answers.
+    memory_detail_key: Option<String>,
     tuis: Vec<TuiListEntry>,
     // Session messages (loaded on demand)
     session_messages: Vec<MessageEntry>,
     session_messages_id: Option<String>,
+    /// Total persisted messages for the currently-loaded session, as
+    /// reported by `session/messages`. Pairs with
+    /// `session_messages_start` to label the right-pane scrollback
+    /// affordance once it lands.
+    session_messages_total: usize,
+    /// Index of `session_messages[0]` in the full persisted history.
+    session_messages_start: usize,
     // List states
     session_state: ListState,
     agent_state: ListState,
@@ -114,9 +137,13 @@ impl<'a> Dashboard<'a> {
             cron_jobs: Vec::new(),
             memories: Vec::new(),
             memory_error: None,
+            memory_detail: None,
+            memory_detail_key: None,
             tuis: Vec::new(),
             session_messages: Vec::new(),
             session_messages_id: None,
+            session_messages_total: 0,
+            session_messages_start: 0,
             session_state: ListState::default(),
             agent_state: ListState::default(),
             memory_state: ListState::default(),
@@ -245,8 +272,18 @@ impl<'a> Dashboard<'a> {
             return; // already loaded
         }
         let sid = sid.clone();
-        if let Ok(result) = self.rpc.session_messages(&sid).await {
+        // Load only the most-recent page on detail-open. Older
+        // pages can be paged in if the session view ever grows a
+        // scrollback affordance; for now the right-side detail
+        // pane shows the tail of the conversation.
+        if let Ok(result) = self
+            .rpc
+            .session_messages_page(&sid, Some(SESSION_MESSAGES_PAGE_SIZE), None)
+            .await
+        {
             self.session_messages = result.messages;
+            self.session_messages_total = result.total;
+            self.session_messages_start = result.start;
             self.session_messages_id = Some(sid);
         }
     }
@@ -911,15 +948,22 @@ impl<'a> Dashboard<'a> {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let Some(idx) = self.selected_memory_index() else {
-            frame.render_widget(
-                Paragraph::new(Span::styled("No entry selected", theme::dim_style())),
-                inner,
-            );
-            return;
+        // Prefer the lazy-loaded full body when present (populated by
+        // `memory/get` on detail-open via `load_memory_detail`). When
+        // it's still loading, render the truncated preview from
+        // `memories[idx]` so the pane isn't blank for the first frame
+        // before the daemon round-trip lands.
+        let m: &MemoryEntryResult = match (&self.memory_detail, self.selected_memory_index()) {
+            (Some(detail), _) => detail,
+            (None, Some(idx)) => &self.memories[idx],
+            (None, None) => {
+                frame.render_widget(
+                    Paragraph::new(Span::styled("No entry selected", theme::dim_style())),
+                    inner,
+                );
+                return;
+            }
         };
-
-        let m = &self.memories[idx];
         let mut lines = vec![
             detail_line("Key", &m.key),
             detail_line("Category", &m.category),
@@ -1424,6 +1468,13 @@ impl<'a> Dashboard<'a> {
             KeyCode::Esc | KeyCode::Enter => {
                 self.detail_open = false;
                 self.detail_scroll = 0;
+                // Drop lazy-loaded full payloads. Long browsing
+                // sessions never accumulate detail bodies for
+                // entries the user has scrolled past.
+                self.memory_detail = None;
+                self.memory_detail_key = None;
+                self.session_messages.clear();
+                self.session_messages_id = None;
             }
             // Shift+J / Shift+K scroll the detail pane
             KeyCode::Char('J') => self.detail_scroll = self.detail_scroll.saturating_add(1),
@@ -1535,6 +1586,37 @@ impl<'a> Dashboard<'a> {
     async fn on_selection_change(&mut self) {
         if self.tab == Tab::Sessions && self.detail_open {
             self.load_session_messages().await;
+        }
+        if self.tab == Tab::Memories && self.detail_open {
+            self.load_memory_detail().await;
+        }
+    }
+
+    /// Lazy-load the full memory entry for the currently-selected row
+    /// via `memory/get`. Stores the result in `self.memory_detail` for
+    /// the detail pane to render. Called when the Memory detail pane
+    /// opens and after the selection changes while it's still open.
+    async fn load_memory_detail(&mut self) {
+        let Some(idx) = self.selected_memory_index() else {
+            self.memory_detail = None;
+            self.memory_detail_key = None;
+            return;
+        };
+        let key = self.memories[idx].key.clone();
+        self.memory_detail_key = Some(key.clone());
+        match self.rpc.memory_get(&key).await {
+            Ok(res) => {
+                // Drop stale responses if the user moved the
+                // selection while the daemon was answering.
+                if self.memory_detail_key.as_deref() == Some(key.as_str()) {
+                    self.memory_detail = res.entry;
+                }
+            }
+            Err(_) => {
+                if self.memory_detail_key.as_deref() == Some(key.as_str()) {
+                    self.memory_detail = None;
+                }
+            }
         }
     }
 
