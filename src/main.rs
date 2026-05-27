@@ -1209,6 +1209,7 @@ async fn run_quickstart_cli(
             .with_prompt("Open a selector (Enter), or pick Create / Quit")
             .items(&labels)
             .default(0)
+            .max_length(labels.len())
             .interact_opt()?;
         let action = match pick {
             Some(i) => actions[i],
@@ -1245,6 +1246,7 @@ async fn run_quickstart_cli(
                         .with_prompt("Model provider")
                         .items(&mode_labels)
                         .default(0)
+                        .max_length(mode_labels.len())
                         .interact_opt()?
                 };
                 let Some(mi) = mode else { continue };
@@ -1254,6 +1256,7 @@ async fn run_quickstart_cli(
                         .with_prompt("Pick a configured provider")
                         .items(&labels)
                         .default(0)
+                        .max_length(labels.len().max(1))
                         .interact_opt()?
                     else {
                         continue;
@@ -1278,6 +1281,7 @@ async fn run_quickstart_cli(
                     .with_prompt("Provider type")
                     .items(&prov_labels)
                     .default(0)
+                    .max_length(prov_labels.len().max(1))
                     .interact_opt()?
                 else {
                     continue;
@@ -1408,6 +1412,7 @@ async fn run_quickstart_cli(
                     .with_prompt("Memory backend")
                     .items(&labels)
                     .default(0)
+                    .max_length(labels.len().max(1))
                     .interact_opt()?
                 else {
                     continue;
@@ -1435,6 +1440,7 @@ async fn run_quickstart_cli(
                         .with_prompt("Channels (optional, 0..N)")
                         .items(&items)
                         .default(items.len().saturating_sub(2))
+                        .max_length(items.len())
                         .interact_opt()?
                     else {
                         break;
@@ -1460,6 +1466,7 @@ async fn run_quickstart_cli(
                                 .with_prompt("Channel source")
                                 .items(&mode_labels)
                                 .default(0)
+                                .max_length(mode_labels.len())
                                 .interact_opt()?
                         };
                         let Some(mi) = mode else { continue };
@@ -1484,6 +1491,7 @@ async fn run_quickstart_cli(
                                 .with_prompt("Pick a configured channel")
                                 .items(&labels)
                                 .default(0)
+                                .max_length(labels.len().max(1))
                                 .interact_opt()?
                             else {
                                 continue;
@@ -1505,6 +1513,7 @@ async fn run_quickstart_cli(
                             .with_prompt("Channel type")
                             .items(&labels)
                             .default(0)
+                            .max_length(labels.len().max(1))
                             .interact_opt()?
                         else {
                             continue;
@@ -1703,6 +1712,7 @@ fn prompt_for_field(
             .with_prompt(prompt)
             .items(variants)
             .default(0)
+            .max_length(variants.len().max(1))
             .interact_opt()?
         else {
             return Ok(None);
@@ -1750,6 +1760,7 @@ fn pick_preset(
             .with_prompt(prompt)
             .items(&mode_labels)
             .default(0)
+            .max_length(mode_labels.len())
             .interact_opt()?
     };
     let Some(mi) = mode else { return Ok(None) };
@@ -1758,6 +1769,7 @@ fn pick_preset(
             .with_prompt(format!("Pick an existing {prompt}"))
             .items(existing)
             .default(0)
+            .max_length(existing.len().max(1))
             .interact_opt()?
         else {
             return Ok(None);
@@ -1772,6 +1784,7 @@ fn pick_preset(
         .with_prompt(format!("Pick a {prompt} preset"))
         .items(&labels)
         .default(0)
+        .max_length(labels.len().max(1))
         .interact_opt()?
     else {
         return Ok(None);
