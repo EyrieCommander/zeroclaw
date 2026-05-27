@@ -916,13 +916,25 @@ fn apply_homebrew_onboard_config_dir() {
     );
 }
 
-/// `zeroclaw quickstart` CLI entry — preset-driven scaffold.
+/// `zeroclaw quickstart` CLI entry — step-by-step prompt walker.
 ///
-/// Lands one working agent end-to-end with balanced defaults for risk,
-/// runtime, and memory. Provider/model/api-key/agent come from flags;
-/// the interactive TUI form lives in `apps/zerocode` (Quickstart tab)
-/// and the web form lives at `/quickstart`. The CLI does no readline
-/// prompting — scripted-flag matrices belong in `zeroclaw config set`.
+/// Walks the same selectors the TUI Quickstart pane walks
+/// (Provider → Risk → Runtime → Memory → Channels → Agent), one
+/// dialoguer prompt at a time. Esc on a list / confirm rewinds one
+/// step; Enter advances. `$EDITOR` is shelled out for multi-line
+/// fields (system prompt). Option lists come from the canonical
+/// registries via `zeroclaw_runtime::quickstart::snapshot_state` —
+/// the CLI never carries its own provider / channel list. On the
+/// final confirmation the assembled `BuilderSubmission` is sent
+/// through `apply_with_surface(..., Surface::Cli)` — the same write
+/// path the gateway and TUI surfaces use.
+///
+/// Flag pre-fills (`--model-provider`, `--model`, `--api-key`,
+/// `--agent`) are honoured when present. Missing flags are no
+/// longer a hard error: the walker asks for them. This is the
+/// behaviour the plan calls for ("scripted-flag matrices belong
+/// in `zeroclaw config set`"; Quickstart itself is interactive
+/// only).
 #[cfg(feature = "agent-runtime")]
 async fn run_quickstart_cli(
     model_provider: Option<String>,
@@ -930,65 +942,458 @@ async fn run_quickstart_cli(
     api_key: Option<String>,
     agent: Option<String>,
 ) -> anyhow::Result<()> {
+    use dialoguer::{Confirm, Editor, FuzzySelect, Input, Password};
     use zeroclaw_config::presets::{
         AgentIdentity, BuilderSubmission, ChannelQuickStart, MemoryChoice, ModelProviderChoice,
-        SelectorChoice,
+        RISK_PRESETS, RUNTIME_PRESETS, SelectorChoice,
     };
-    use zeroclaw_runtime::quickstart::{Surface, apply_with_surface};
+    use zeroclaw_runtime::quickstart::{
+        QuickstartTypeOption, Surface, apply_with_surface, snapshot_state,
+    };
 
-    let provider_type = match model_provider {
-        Some(v) => v,
-        None => {
-            ::zeroclaw_log::record!(
-                WARN,
-                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
-                    .with_outcome(::zeroclaw_log::EventOutcome::Failure)
-                    .with_attrs(::serde_json::json!({"missing_flag": "model-provider"})),
-                "quickstart cli: missing --model-provider"
-            );
-            anyhow::bail!(
-                "--model-provider is required (anthropic / openai / openrouter / ollama)"
-            );
+    // Boot a config snapshot (no daemon required) — gives us the
+    // canonical registries the walker shows in pickers.
+    let _dirs = crate::config::schema::resolve_runtime_dirs().await?;
+    let mut cfg = Box::pin(crate::config::schema::Config::load_or_init()).await?;
+    let state = snapshot_state(&cfg);
+
+    // The walker is a small state machine: each step records its
+    // chosen value into a slot, then advances `cursor` by one. Esc
+    // (any `Answer::Back`-equivalent dialoguer signal) decrements
+    // `cursor` so the user can fix an earlier answer. We keep all
+    // collected values in scoped `Option`s and rebuild from them on
+    // each iteration.
+    #[derive(Clone, Copy, Debug)]
+    enum Step {
+        Provider,
+        Model,
+        ApiKey,
+        Risk,
+        Runtime,
+        Memory,
+        Channels,
+        AgentName,
+        SystemPrompt,
+        Review,
+    }
+    const STEPS: &[Step] = &[
+        Step::Provider,
+        Step::Model,
+        Step::ApiKey,
+        Step::Risk,
+        Step::Runtime,
+        Step::Memory,
+        Step::Channels,
+        Step::AgentName,
+        Step::SystemPrompt,
+        Step::Review,
+    ];
+
+    let providers: &[QuickstartTypeOption] = &state.model_provider_types;
+    let channel_types: &[QuickstartTypeOption] = &state.channel_types;
+
+    if providers.is_empty() {
+        anyhow::bail!(
+            "Quickstart could not enumerate model providers — \
+             zeroclaw_providers::list_model_providers() returned no entries."
+        );
+    }
+
+    // Pre-fill from flags so a fully-flagged invocation walks
+    // straight through without re-prompting.
+    let provider_seed_idx = model_provider.as_deref().and_then(|seed| {
+        providers
+            .iter()
+            .position(|p| p.kind.eq_ignore_ascii_case(seed))
+    });
+    let mut provider_idx: Option<usize> = provider_seed_idx;
+    let mut model_value: Option<String> = model.clone();
+    let mut api_key_value: Option<String> = api_key.clone();
+    let mut risk_idx: Option<usize> = RISK_PRESETS
+        .iter()
+        .position(|p| p.preset_name == "balanced");
+    let mut runtime_idx: Option<usize> = RUNTIME_PRESETS
+        .iter()
+        .position(|p| p.preset_name == "balanced");
+    let mut memory_choice: Option<MemoryChoice> = Some(MemoryChoice::Sqlite);
+    let mut channels: Vec<ChannelQuickStart> = Vec::new();
+    let mut agent_name: Option<String> = agent.clone();
+    let mut system_prompt: Option<String> = None;
+
+    let mut cursor: usize = 0;
+    let total = STEPS.len();
+    let mut last_back_reason: Option<&'static str> = None;
+
+    println!();
+    println!("Quickstart — create one working agent end-to-end.");
+    println!("Enter accepts, Esc rewinds one step, Ctrl-C aborts.");
+    println!();
+
+    'walker: loop {
+        if cursor >= total {
+            break 'walker;
         }
-    };
-    let model = match model {
-        Some(v) => v,
-        None => {
-            ::zeroclaw_log::record!(
-                WARN,
-                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
-                    .with_outcome(::zeroclaw_log::EventOutcome::Failure)
-                    .with_attrs(::serde_json::json!({"missing_flag": "model"})),
-                "quickstart cli: missing --model"
-            );
-            anyhow::bail!("--model is required (e.g. claude-sonnet-4-5)");
+        let step = STEPS[cursor];
+        if let Some(msg) = last_back_reason.take() {
+            println!("(back: {msg})");
         }
-    };
-    let agent_alias = agent.unwrap_or_else(|| sanitize_alias(&provider_type));
+        println!("── step {} of {}: {step:?} ──", cursor + 1, total);
+
+        match step {
+            Step::Provider => {
+                let items: Vec<String> = providers
+                    .iter()
+                    .map(|p| {
+                        if p.local {
+                            format!("{} (local)", p.display_name)
+                        } else {
+                            p.display_name.clone()
+                        }
+                    })
+                    .collect();
+                let default = provider_idx.unwrap_or(0);
+                let mut select = FuzzySelect::new()
+                    .with_prompt("Model provider")
+                    .items(&items);
+                select = select.default(default);
+                match select.interact_opt()? {
+                    Some(i) => {
+                        provider_idx = Some(i);
+                        cursor += 1;
+                    }
+                    None => {
+                        // First step — Esc on root quits.
+                        anyhow::bail!("Quickstart cancelled.");
+                    }
+                }
+            }
+            Step::Model => {
+                let provider = &providers[provider_idx.expect("provider chosen")];
+                let mut input = Input::<String>::new()
+                    .with_prompt(format!("Default model id for {}", provider.display_name))
+                    .allow_empty(false);
+                if let Some(v) = &model_value {
+                    input = input.default(v.clone());
+                }
+                match input.interact_text() {
+                    Ok(v) => {
+                        model_value = Some(v);
+                        cursor += 1;
+                    }
+                    Err(_) => {
+                        last_back_reason = Some("model entry cancelled");
+                        cursor = cursor.saturating_sub(1);
+                    }
+                }
+            }
+            Step::ApiKey => {
+                let provider = &providers[provider_idx.expect("provider chosen")];
+                if provider.local {
+                    println!(
+                        "  {} runs locally — no API key required.",
+                        provider.display_name
+                    );
+                    api_key_value = None;
+                    cursor += 1;
+                } else if let Some(existing) = &api_key_value {
+                    // Came from `--api-key` — accept silently and move on.
+                    let _ = existing;
+                    cursor += 1;
+                } else {
+                    let pw = Password::new()
+                        .with_prompt(format!("API key for {}", provider.display_name))
+                        .allow_empty_password(true)
+                        .interact()?;
+                    api_key_value = if pw.is_empty() { None } else { Some(pw) };
+                    cursor += 1;
+                }
+            }
+            Step::Risk => {
+                let items: Vec<String> = RISK_PRESETS
+                    .iter()
+                    .map(|p| format!("{}  —  {}", p.label, p.help))
+                    .collect();
+                let default = risk_idx.unwrap_or(0);
+                match FuzzySelect::new()
+                    .with_prompt("Risk profile")
+                    .items(&items)
+                    .default(default)
+                    .interact_opt()?
+                {
+                    Some(i) => {
+                        risk_idx = Some(i);
+                        cursor += 1;
+                    }
+                    None => {
+                        last_back_reason = Some("risk selection cancelled");
+                        cursor = cursor.saturating_sub(1);
+                    }
+                }
+            }
+            Step::Runtime => {
+                let items: Vec<String> = RUNTIME_PRESETS
+                    .iter()
+                    .map(|p| format!("{}  —  {}", p.label, p.help))
+                    .collect();
+                let default = runtime_idx.unwrap_or(0);
+                match FuzzySelect::new()
+                    .with_prompt("Runtime profile")
+                    .items(&items)
+                    .default(default)
+                    .interact_opt()?
+                {
+                    Some(i) => {
+                        runtime_idx = Some(i);
+                        cursor += 1;
+                    }
+                    None => {
+                        last_back_reason = Some("runtime selection cancelled");
+                        cursor = cursor.saturating_sub(1);
+                    }
+                }
+            }
+            Step::Memory => {
+                let items = ["SQLite (recommended)", "None"];
+                let default = match memory_choice {
+                    Some(MemoryChoice::None) => 1,
+                    _ => 0,
+                };
+                match FuzzySelect::new()
+                    .with_prompt("Memory")
+                    .items(items)
+                    .default(default)
+                    .interact_opt()?
+                {
+                    Some(0) => {
+                        memory_choice = Some(MemoryChoice::Sqlite);
+                        cursor += 1;
+                    }
+                    Some(_) => {
+                        memory_choice = Some(MemoryChoice::None);
+                        cursor += 1;
+                    }
+                    None => {
+                        last_back_reason = Some("memory selection cancelled");
+                        cursor = cursor.saturating_sub(1);
+                    }
+                }
+            }
+            Step::Channels => {
+                // Inner loop: pick a channel type, fill its alias + token,
+                // append. Esc on the "Add another?" prompt exits the
+                // channels loop and advances the outer walker.
+                loop {
+                    if !channels.is_empty() {
+                        println!("  configured channels:");
+                        for c in &channels {
+                            println!("    - {}.{}", c.channel_type, c.alias);
+                        }
+                    }
+                    let want_more = Confirm::new()
+                        .with_prompt(if channels.is_empty() {
+                            "Add a channel? (optional)"
+                        } else {
+                            "Add another channel?"
+                        })
+                        .default(channels.is_empty())
+                        .interact_opt()?;
+                    match want_more {
+                        Some(false) => break,
+                        None => {
+                            last_back_reason = Some("channels step cancelled");
+                            // Rewind to memory.
+                            cursor = cursor.saturating_sub(1);
+                            continue 'walker;
+                        }
+                        Some(true) => {}
+                    }
+                    if channel_types.is_empty() {
+                        println!("  No channel types compiled into this binary — skipping.");
+                        break;
+                    }
+                    let labels: Vec<String> = channel_types
+                        .iter()
+                        .map(|c| c.display_name.clone())
+                        .collect();
+                    let Some(ci) = FuzzySelect::new()
+                        .with_prompt("Channel type")
+                        .items(&labels)
+                        .default(0)
+                        .interact_opt()?
+                    else {
+                        continue;
+                    };
+                    let chosen = &channel_types[ci];
+                    let alias: String = Input::new()
+                        .with_prompt(format!("Alias for {}", chosen.display_name))
+                        .default(chosen.kind.clone())
+                        .interact_text()?;
+                    let token_prompt = Password::new()
+                        .with_prompt(format!(
+                            "Bot token / secret for {} (leave blank for none)",
+                            chosen.display_name
+                        ))
+                        .allow_empty_password(true)
+                        .interact()?;
+                    let token = if token_prompt.is_empty() {
+                        None
+                    } else {
+                        Some(token_prompt)
+                    };
+                    channels.push(ChannelQuickStart {
+                        channel_type: chosen.kind.clone(),
+                        alias,
+                        token,
+                    });
+                }
+                cursor += 1;
+            }
+            Step::AgentName => {
+                let provider = &providers[provider_idx.expect("provider chosen")];
+                let default = agent_name
+                    .clone()
+                    .unwrap_or_else(|| sanitize_alias(&provider.kind));
+                let mut input = Input::<String>::new()
+                    .with_prompt("Agent alias")
+                    .default(default)
+                    .allow_empty(false);
+                if let Some(v) = &agent_name {
+                    input = input.default(v.clone());
+                }
+                match input.interact_text() {
+                    Ok(v) => {
+                        agent_name = Some(v);
+                        cursor += 1;
+                    }
+                    Err(_) => {
+                        last_back_reason = Some("agent alias entry cancelled");
+                        cursor = cursor.saturating_sub(1);
+                    }
+                }
+            }
+            Step::SystemPrompt => {
+                let want_editor = Confirm::new()
+                    .with_prompt(
+                        "Open $EDITOR to write a system prompt? (blank prompt if you skip)",
+                    )
+                    .default(false)
+                    .interact_opt()?;
+                match want_editor {
+                    Some(true) => {
+                        let initial = system_prompt.clone().unwrap_or_default();
+                        match Editor::new().edit(&initial)? {
+                            Some(edited) => {
+                                system_prompt = Some(edited);
+                                cursor += 1;
+                            }
+                            None => {
+                                last_back_reason = Some("editor closed without saving");
+                                // Stay on this step so the user can retry / skip.
+                            }
+                        }
+                    }
+                    Some(false) => {
+                        system_prompt = Some(String::new());
+                        cursor += 1;
+                    }
+                    None => {
+                        last_back_reason = Some("system prompt step cancelled");
+                        cursor = cursor.saturating_sub(1);
+                    }
+                }
+            }
+            Step::Review => {
+                let provider = &providers[provider_idx.expect("provider chosen")];
+                println!();
+                println!("Review:");
+                println!(
+                    "  Provider     : {} ({})",
+                    provider.display_name, provider.kind
+                );
+                println!("  Model        : {}", model_value.as_deref().unwrap_or(""));
+                println!(
+                    "  API key      : {}",
+                    if api_key_value.is_some() {
+                        "set"
+                    } else if provider.local {
+                        "n/a (local provider)"
+                    } else {
+                        "unset"
+                    }
+                );
+                println!(
+                    "  Risk         : {}",
+                    RISK_PRESETS[risk_idx.unwrap_or(0)].preset_name
+                );
+                println!(
+                    "  Runtime      : {}",
+                    RUNTIME_PRESETS[runtime_idx.unwrap_or(0)].preset_name
+                );
+                println!(
+                    "  Memory       : {}",
+                    match memory_choice {
+                        Some(MemoryChoice::Sqlite) => "sqlite",
+                        _ => "none",
+                    }
+                );
+                println!("  Channels     : {}", channels.len());
+                for c in &channels {
+                    println!("                 - {}.{}", c.channel_type, c.alias);
+                }
+                println!("  Agent alias  : {}", agent_name.as_deref().unwrap_or(""));
+                println!(
+                    "  System prompt: {} chars",
+                    system_prompt.as_deref().map(str::len).unwrap_or(0)
+                );
+                println!();
+                let go = Confirm::new()
+                    .with_prompt("Create this agent?")
+                    .default(true)
+                    .interact_opt()?;
+                match go {
+                    Some(true) => break 'walker,
+                    Some(false) => {
+                        last_back_reason = Some("creation declined");
+                        cursor = cursor.saturating_sub(1);
+                    }
+                    None => {
+                        last_back_reason = Some("review cancelled");
+                        cursor = cursor.saturating_sub(1);
+                    }
+                }
+            }
+        }
+        println!();
+    }
+
+    let provider = &providers[provider_idx.expect("provider chosen at exit")];
+    let model_str = model_value.expect("model entered at exit");
+    let risk_preset = RISK_PRESETS[risk_idx.expect("risk chosen at exit")].preset_name;
+    let runtime_preset = RUNTIME_PRESETS[runtime_idx.expect("runtime chosen at exit")].preset_name;
+    let agent_alias = agent_name.expect("agent alias entered at exit");
 
     let submission = BuilderSubmission {
         model_provider: SelectorChoice::Fresh(ModelProviderChoice {
-            provider_type: provider_type.clone(),
-            alias: provider_type.clone(),
-            default_model: model.clone(),
-            api_key,
+            provider_type: provider.kind.clone(),
+            alias: provider.kind.clone(),
+            default_model: model_str,
+            api_key: api_key_value,
             base_url: None,
         }),
-        risk_profile: SelectorChoice::Fresh("balanced".to_string()),
-        runtime_profile: SelectorChoice::Fresh("balanced".to_string()),
-        memory: SelectorChoice::Fresh(MemoryChoice::Sqlite),
-        channels: Vec::<SelectorChoice<ChannelQuickStart>>::new(),
+        risk_profile: SelectorChoice::Fresh(risk_preset.to_string()),
+        runtime_profile: SelectorChoice::Fresh(runtime_preset.to_string()),
+        memory: SelectorChoice::Fresh(memory_choice.unwrap_or(MemoryChoice::Sqlite)),
+        channels: channels.into_iter().map(SelectorChoice::Fresh).collect(),
         agent: AgentIdentity {
             name: agent_alias.clone(),
-            system_prompt: String::new(),
+            system_prompt: system_prompt.unwrap_or_default(),
             personality_file: None,
         },
     };
 
-    let _dirs = crate::config::schema::resolve_runtime_dirs().await?;
-    let mut cfg = Box::pin(crate::config::schema::Config::load_or_init()).await?;
     match Box::pin(apply_with_surface(submission, &mut cfg, Surface::Cli)).await {
         Ok(applied) => {
+            println!();
             println!("Quickstart complete. Created agent `{}`.", applied.alias);
             println!();
             println!("Next steps:");
