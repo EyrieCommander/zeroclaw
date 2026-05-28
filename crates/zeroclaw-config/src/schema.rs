@@ -658,6 +658,8 @@ pub struct ModelProviderConfig {
     pub timeout_secs: Option<u64>,
     /// Extra HTTP headers sent with every request. Niche — used for auth bridges, corporate proxies, or custom gateways that demand a tracing header. Most users never touch this; edit `config.toml` directly if you need it.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[secret]
+    #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub extra_headers: HashMap<String, String>,
     /// Wire protocol flavor: `responses` for OpenAI's Codex/Responses API, `chat_completions` for everything else (OpenAI chat, Anthropic, OpenRouter, Groq, local gateways). Auto-selected per model_provider — only override if you're forcing an unusual combination.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3647,6 +3649,8 @@ pub struct McpServerConfig {
     pub args: Vec<String>,
     /// Optional environment variables for stdio transport.
     #[serde(default)]
+    #[secret]
+    #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub env: HashMap<String, String>,
     /// Optional HTTP headers for HTTP/SSE transports. Treated as secret —
     /// the values commonly carry Bearer tokens for the upstream MCP server.
@@ -3744,6 +3748,8 @@ pub struct NodesConfig {
     pub max_nodes: usize,
     /// Optional bearer token for node authentication.
     #[serde(default)]
+    #[secret]
+    #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub auth_token: Option<String>,
 }
 
@@ -5373,6 +5379,8 @@ pub struct NodeTransportConfig {
     pub enabled: bool,
     /// Shared secret for HMAC authentication between nodes.
     #[serde(default)]
+    #[secret]
+    #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub shared_secret: String,
     /// Maximum age of signed requests in seconds (replay protection).
     #[serde(default = "default_max_request_age")]
@@ -6856,6 +6864,8 @@ pub struct FileUploadConfig {
     /// Static HTTP headers attached to every upload request. Same shape as
     /// `[mcp.servers.*.headers]`.
     #[serde(default)]
+    #[secret]
+    #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub headers: HashMap<String, String>,
 }
 
@@ -8604,6 +8614,8 @@ pub struct ObservabilityConfig {
     /// Authorization = "Bearer sk-..."
     /// ```
     #[serde(default)]
+    #[secret]
+    #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub otel_headers: Option<std::collections::HashMap<String, String>>,
 
     /// Log persistence mode: "none" | "rolling" | "full".
@@ -9183,6 +9195,8 @@ pub struct ReliabilityConfig {
     /// Additional API keys for round-robin rotation on rate-limit (429) errors.
     /// The primary `api_key` is always tried first; these are extras.
     #[serde(default)]
+    #[secret]
+    #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub api_keys: Vec<String>,
     /// Initial backoff for channel/daemon restarts.
     #[serde(default = "default_channel_backoff_secs")]
@@ -17046,6 +17060,10 @@ default_temperature = 0.7
             AnthropicModelProviderConfig {
                 base: ModelProviderConfig {
                     api_key: Some("root-credential".into()),
+                    extra_headers: HashMap::from([(
+                        "Authorization".to_string(),
+                        "Bearer provider-header-credential".to_string(),
+                    )]),
                     ..Default::default()
                 },
             },
@@ -17062,6 +17080,28 @@ default_temperature = 0.7
                 ..PostgresStorageConfig::default()
             },
         );
+        config.storage.qdrant.insert(
+            "default".to_string(),
+            QdrantStorageConfig {
+                api_key: Some("qdrant-credential".into()),
+                ..QdrantStorageConfig::default()
+            },
+        );
+        config.reliability.api_keys = vec![
+            "rotation-credential-a".into(),
+            "rotation-credential-b".into(),
+        ];
+        config.node_transport.shared_secret = "node-shared-credential".into();
+        config.nodes.auth_token = Some("nodes-auth-credential".into());
+        config.observability.backend = "otel".into();
+        config.observability.otel_headers = Some(HashMap::from([(
+            "Authorization".to_string(),
+            "Bearer otel-credential".to_string(),
+        )]));
+        config.file_upload.headers = HashMap::from([(
+            "Authorization".to_string(),
+            "Bearer upload-credential".to_string(),
+        )]);
         config.channels.lark.insert(
             "feishu".to_string(),
             LarkConfig {
@@ -17117,6 +17157,7 @@ default_temperature = 0.7
             name: "primary".into(),
             transport: McpTransport::Sse,
             url: Some("https://mcp.example.invalid/sse".into()),
+            env: HashMap::from([("MCP_API_KEY".to_string(), "mcp-env-credential".to_string())]),
             headers: HashMap::from([
                 ("Authorization".to_string(), "Bearer mcp-cred".to_string()),
                 ("X-Tenant".to_string(), "tenant-42".to_string()),
@@ -17129,6 +17170,30 @@ default_temperature = 0.7
         let contents = tokio::fs::read_to_string(config.config_path.clone())
             .await
             .unwrap();
+        for plaintext in [
+            "root-credential",
+            "Bearer provider-header-credential",
+            "composio-credential",
+            "browser-credential",
+            "brave-credential",
+            "tavily-credential",
+            "postgres://user:pw@host/db",
+            "qdrant-credential",
+            "rotation-credential-a",
+            "rotation-credential-b",
+            "node-shared-credential",
+            "nodes-auth-credential",
+            "Bearer otel-credential",
+            "Bearer upload-credential",
+            "mcp-env-credential",
+            "Bearer mcp-cred",
+            "tenant-42",
+        ] {
+            assert!(
+                !contents.contains(plaintext),
+                "saved TOML must not contain plaintext credential `{plaintext}`"
+            );
+        }
         let stored: Config = crate::migration::migrate_to_current(&contents).unwrap();
         let store = crate::secrets::SecretStore::new(&dir, true);
 
@@ -17140,6 +17205,18 @@ default_temperature = 0.7
             .unwrap();
         assert!(crate::secrets::SecretStore::is_encrypted(root_encrypted));
         assert_eq!(store.decrypt(root_encrypted).unwrap(), "root-credential");
+
+        let provider_header = stored
+            .providers
+            .models
+            .find("anthropic", "default")
+            .and_then(|e| e.extra_headers.get("Authorization"))
+            .unwrap();
+        assert!(crate::secrets::SecretStore::is_encrypted(provider_header));
+        assert_eq!(
+            store.decrypt(provider_header).unwrap(),
+            "Bearer provider-header-credential"
+        );
 
         let composio_encrypted = stored.composio.api_key.as_deref().unwrap();
         assert!(crate::secrets::SecretStore::is_encrypted(
@@ -17192,6 +17269,55 @@ default_temperature = 0.7
         assert_eq!(
             store.decrypt(storage_db_url).unwrap(),
             "postgres://user:pw@host/db"
+        );
+
+        let qdrant_key = stored
+            .storage
+            .qdrant
+            .get("default")
+            .and_then(|q| q.api_key.as_deref())
+            .unwrap();
+        assert!(crate::secrets::SecretStore::is_encrypted(qdrant_key));
+        assert_eq!(store.decrypt(qdrant_key).unwrap(), "qdrant-credential");
+
+        for key in &stored.reliability.api_keys {
+            assert!(crate::secrets::SecretStore::is_encrypted(key));
+        }
+        assert_eq!(
+            store.decrypt(&stored.reliability.api_keys[0]).unwrap(),
+            "rotation-credential-a"
+        );
+        assert_eq!(
+            store.decrypt(&stored.reliability.api_keys[1]).unwrap(),
+            "rotation-credential-b"
+        );
+
+        assert!(crate::secrets::SecretStore::is_encrypted(
+            &stored.node_transport.shared_secret
+        ));
+        assert_eq!(
+            store.decrypt(&stored.node_transport.shared_secret).unwrap(),
+            "node-shared-credential"
+        );
+
+        let nodes_auth = stored.nodes.auth_token.as_deref().unwrap();
+        assert!(crate::secrets::SecretStore::is_encrypted(nodes_auth));
+        assert_eq!(store.decrypt(nodes_auth).unwrap(), "nodes-auth-credential");
+
+        let otel_auth = stored
+            .observability
+            .otel_headers
+            .as_ref()
+            .and_then(|h| h.get("Authorization"))
+            .unwrap();
+        assert!(crate::secrets::SecretStore::is_encrypted(otel_auth));
+        assert_eq!(store.decrypt(otel_auth).unwrap(), "Bearer otel-credential");
+
+        let upload_auth = stored.file_upload.headers.get("Authorization").unwrap();
+        assert!(crate::secrets::SecretStore::is_encrypted(upload_auth));
+        assert_eq!(
+            store.decrypt(upload_auth).unwrap(),
+            "Bearer upload-credential"
         );
 
         let feishu = stored.channels.lark.get("feishu").unwrap();
@@ -17255,8 +17381,14 @@ default_temperature = 0.7
                 "mcp.servers.primary.headers.{key} must be encrypted on save"
             );
         }
+        let mcp_env = mcp_server.env.get("MCP_API_KEY").unwrap();
+        assert!(
+            crate::secrets::SecretStore::is_encrypted(mcp_env),
+            "mcp.servers.primary.env.MCP_API_KEY must be encrypted on save"
+        );
         let auth = mcp_server.headers.get("Authorization").unwrap();
         let tenant = mcp_server.headers.get("X-Tenant").unwrap();
+        assert_eq!(store.decrypt(mcp_env).unwrap(), "mcp-env-credential");
         assert_eq!(store.decrypt(auth).unwrap(), "Bearer mcp-cred");
         assert_eq!(store.decrypt(tenant).unwrap(), "tenant-42");
 
@@ -21991,6 +22123,119 @@ allowed_users = []
                 result.unwrap_err()
             );
         }
+    }
+
+    /// Audit gate for RFC #6971 Phase 0: any credential-shaped property path
+    /// that reaches the CLI/gateway/TUI property surface must have an explicit
+    /// classification. This catches future config additions whose names imply
+    /// credential handling before they silently land without a security call.
+    #[test]
+    async fn credential_shaped_prop_fields_have_explicit_classification() {
+        let mut config = Config::default();
+        config.init_defaults(None);
+        config
+            .providers
+            .models
+            .anthropic
+            .insert("default".into(), AnthropicModelProviderConfig::default());
+        config
+            .providers
+            .tts
+            .openai
+            .insert("default".into(), OpenAITtsProviderConfig::default());
+        config.providers.transcription.openai.insert(
+            "default".into(),
+            OpenAiTranscriptionProviderConfig::default(),
+        );
+        config.providers.transcription.local_whisper.insert(
+            "default".into(),
+            LocalWhisperTranscriptionProviderConfig::default(),
+        );
+        config
+            .channels
+            .matrix
+            .insert("default".into(), MatrixConfig::default());
+        config
+            .storage
+            .qdrant
+            .insert("default".into(), QdrantStorageConfig::default());
+
+        let fields = config.prop_fields();
+        let missing: Vec<_> = fields
+            .iter()
+            .filter(|field| crate::credential_surfaces::is_credential_shaped_path(&field.name))
+            .filter(|field| crate::credential_surfaces::classify(&field.name).is_none())
+            .map(|field| field.name.clone())
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "credential-shaped config fields need explicit classification: {missing:?}"
+        );
+
+        let unmarked_secrets: Vec<_> = fields
+            .iter()
+            .filter(|field| {
+                crate::credential_surfaces::classify(&field.name).is_some_and(|surface| {
+                    surface.class
+                        == crate::credential_surfaces::CredentialSurfaceClass::EncryptedSecret
+                })
+            })
+            .filter(|field| !field.is_secret && !Config::prop_is_secret(&field.name))
+            .map(|field| field.name.clone())
+            .collect();
+
+        assert!(
+            unmarked_secrets.is_empty(),
+            "EncryptedSecret classifications must route through #[secret]: {unmarked_secrets:?}"
+        );
+    }
+
+    #[test]
+    async fn credential_surface_registry_tracks_object_array_followups() {
+        assert_eq!(
+            crate::credential_surfaces::classify("model-routes.default.api-key")
+                .map(|info| info.class),
+            Some(crate::credential_surfaces::CredentialSurfaceClass::RequiresFollowUp)
+        );
+        assert_eq!(
+            crate::credential_surfaces::classify("embedding-routes.semantic.api-key")
+                .map(|info| info.class),
+            Some(crate::credential_surfaces::CredentialSurfaceClass::RequiresFollowUp)
+        );
+        assert_eq!(
+            crate::credential_surfaces::classify(
+                "providers.models.openai.codex.requires-openai-auth"
+            )
+            .map(|info| info.class),
+            Some(crate::credential_surfaces::CredentialSurfaceClass::ExternalAuthStore)
+        );
+        assert_eq!(
+            crate::credential_surfaces::classify("providers.tts.openai.default.api-key")
+                .map(|info| info.class),
+            Some(crate::credential_surfaces::CredentialSurfaceClass::EncryptedSecret)
+        );
+        assert_eq!(
+            crate::credential_surfaces::classify(
+                "providers.transcription.local-whisper.default.bearer-token"
+            )
+            .map(|info| info.class),
+            Some(crate::credential_surfaces::CredentialSurfaceClass::EncryptedSecret)
+        );
+        assert_eq!(
+            crate::credential_surfaces::classify("channels.matrix.default.access-token")
+                .map(|info| info.class),
+            Some(crate::credential_surfaces::CredentialSurfaceClass::EncryptedSecret)
+        );
+        assert!(Config::prop_is_secret(
+            "providers.tts.openai.default.api-key"
+        ));
+        assert!(Config::prop_is_secret(
+            "providers.transcription.local-whisper.default.bearer-token"
+        ));
+        assert!(Config::prop_is_secret(
+            "channels.matrix.default.access-token"
+        ));
     }
 
     #[test]
