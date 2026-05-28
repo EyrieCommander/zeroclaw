@@ -1160,6 +1160,19 @@ export interface QuickstartState {
    * channel family in the schema lights up here automatically.
    */
   channel_types: QuickstartTypeOption[];
+  /** Risk-profile presets from `RISK_PRESETS`. */
+  risk_presets: QuickstartPreset[];
+  /** Runtime-profile presets from `RUNTIME_PRESETS`. */
+  runtime_presets: QuickstartPreset[];
+  /** Memory backend snake-case keys from `MemoryBackendKind`. */
+  memory_kinds: string[];
+}
+
+/** One row in a closed-set preset table (risk / runtime). */
+export interface QuickstartPreset {
+  preset_name: string;
+  label: string;
+  help: string;
 }
 
 export function getQuickstartState(): Promise<QuickstartState> {
@@ -1202,6 +1215,49 @@ export function quickstartApply(submission: unknown): Promise<QuickstartApplyRes
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(submission),
+  });
+}
+
+/** Schema field-kind tag mirroring `zeroclaw_config::traits::PropKind`. */
+export type QuickstartFieldKind =
+  | "string"
+  | "bool"
+  | "integer"
+  | "float"
+  | "enum"
+  | "string_array"
+  | "object_array"
+  | "object"
+  | "duration"
+  | "secret";
+
+export interface QuickstartFieldDescriptor {
+  key: string;
+  label: string;
+  help: string;
+  kind: QuickstartFieldKind;
+  is_secret: boolean;
+  enum_variants: string[] | null;
+  required: boolean;
+  default: string | null;
+}
+
+export interface QuickstartFieldsRequest {
+  section: "model_provider" | "channel";
+  type_key: string;
+}
+
+export interface QuickstartFieldsResult {
+  fields: QuickstartFieldDescriptor[];
+}
+
+export function quickstartFields(
+  req: QuickstartFieldsRequest,
+): Promise<QuickstartFieldsResult> {
+  return apiFetch<QuickstartFieldsResult>("/api/quickstart/fields", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
   });
 }
 

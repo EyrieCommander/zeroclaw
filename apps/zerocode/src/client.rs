@@ -1390,6 +1390,20 @@ pub struct QuickstartStateResult {
     /// daemon so the TUI never hardcodes the option list.
     #[serde(default)]
     pub channel_types: Vec<QuickstartTypeOption>,
+    #[serde(default)]
+    pub risk_presets: Vec<QuickstartPresetMirror>,
+    #[serde(default)]
+    pub runtime_presets: Vec<QuickstartPresetMirror>,
+    #[serde(default)]
+    pub memory_kinds: Vec<String>,
+}
+
+/// Mirror of `zeroclaw_config::presets::RiskPreset` / `RuntimePreset`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct QuickstartPresetMirror {
+    pub preset_name: String,
+    pub label: String,
+    pub help: String,
 }
 
 /// Mirror of `zeroclaw_runtime::rpc::types::QuickstartTypeOption`.

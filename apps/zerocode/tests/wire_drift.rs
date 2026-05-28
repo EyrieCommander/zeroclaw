@@ -112,6 +112,9 @@ fn quickstart_state_mirrors_canonical() {
             display_name: "Telegram".into(),
             local: false,
         }],
+        risk_presets: zeroclaw_config::presets::RISK_PRESETS,
+        runtime_presets: zeroclaw_config::presets::RUNTIME_PRESETS,
+        memory_kinds: vec!["sqlite".into()],
     };
     let json = serde_json::to_value(&canonical).expect("serialize");
     let mirror: wire::QuickstartState = serde_json::from_value(json.clone()).expect("deserialize");

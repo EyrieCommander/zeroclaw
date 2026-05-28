@@ -1,56 +1,82 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import {
+  Bot,
+  ChevronRight,
+  Cpu,
+  Gauge,
+  HardDrive,
+  Plus,
+  Radio,
+  ShieldCheck,
+  Trash2,
+} from "lucide-react";
 import {
   type ModelsResponse,
   type QuickstartError,
+  type QuickstartFieldDescriptor,
   type QuickstartState,
   type QuickstartStep,
-  type QuickstartTypeOption,
   getCatalogModels,
   getQuickstartState,
   quickstartApply,
   quickstartDismiss,
+  quickstartFields,
 } from "@/lib/api";
 
-type Risk = "locked-down" | "balanced" | "yolo";
-type Runtime = "tight" | "balanced" | "unbounded";
-type Memory = "sqlite" | "none";
+interface StagedProvider {
+  provider_type: string;
+  alias: string;
+  model: string;
+  api_key: string | null;
+  base_url: string | null;
+}
 
-const RISK_OPTS: Risk[] = ["locked-down", "balanced", "yolo"];
-const RUNTIME_OPTS: Runtime[] = ["tight", "balanced", "unbounded"];
-const MEMORY_OPTS: Memory[] = ["sqlite", "none"];
+interface StagedChannel {
+  mode: "fresh" | "existing";
+  channel_type: string;
+  alias: string;
+  extras: Record<string, string>;
+}
+
+/** A preset selection — typed wrapper around a `preset_name` so the
+ *  shape can't carry a raw user-typed string. The only way to construct
+ *  one is via the `PresetSection` picker, which sources values from
+ *  `state.risk_presets` / `state.runtime_presets` / `state.memory_kinds`. */
+interface StagedPreset {
+  preset_name: string;
+}
 
 interface FormState {
-  providerType: string;
-  providerAlias: string;
-  model: string;
-  apiKey: string;
-  /** Empty string = user hasn't picked yet ([ ]); a preset name = [✓]. */
-  risk: Risk | "";
-  runtime: Runtime | "";
-  memory: Memory | "";
+  provider: StagedProvider | null;
+  risk: StagedPreset | null;
+  runtime: StagedPreset | null;
+  memory: StagedPreset | null;
+  channels: StagedChannel[];
   agentName: string;
+  agentSystemPrompt: string;
 }
 
 const DEFAULT_FORM: FormState = {
-  providerType: "",
-  providerAlias: "",
-  model: "",
-  apiKey: "",
-  risk: "",
-  runtime: "",
-  memory: "",
+  provider: null,
+  risk: null,
+  runtime: null,
+  memory: null,
+  channels: [],
   agentName: "",
+  agentSystemPrompt: "",
 };
+
+const MUTED = { color: "var(--pc-text-muted)" } as const;
+const FAINT = { color: "var(--pc-text-faint)" } as const;
+const ERROR = { color: "var(--color-status-error)" } as const;
 
 export default function Quickstart() {
   const navigate = useNavigate();
   const [form, setForm] = useState<FormState>(DEFAULT_FORM);
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<QuickstartError[]>([]);
-  const [success, setSuccess] = useState<string | null>(null);
-  const [quickstartState, setQuickstartState] = useState<QuickstartState | null>(null);
-  const [catalog, setCatalog] = useState<ModelsResponse | null>(null);
+  const [state, setState] = useState<QuickstartState | null>(null);
   const runIdRef = useRef<string>(
     `${Date.now().toString(16)}${Math.random().toString(16).slice(2, 10)}`,
   );
@@ -61,11 +87,10 @@ export default function Quickstart() {
     let cancelled = false;
     void (async () => {
       try {
-        const state = await getQuickstartState();
-        if (cancelled) return;
-        setQuickstartState(state);
+        const s = await getQuickstartState();
+        if (!cancelled) setState(s);
       } catch {
-        /* empty pickers + error surfaces on submit */
+        /* surfaces empty pickers + error on submit */
       }
     })();
     return () => {
@@ -73,39 +98,6 @@ export default function Quickstart() {
     };
   }, []);
 
-  // Fetch the model catalog when the provider type changes. `live=true`
-  // means render a picker; `live=false` means the input falls back to
-  // free text via the empty datalist.
-  useEffect(() => {
-    if (!form.providerType) {
-      setCatalog(null);
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await getCatalogModels(form.providerType);
-        if (!cancelled) setCatalog(res);
-      } catch {
-        if (!cancelled) setCatalog(null);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [form.providerType]);
-
-  // The auto-trigger (route the user here on first launch with no agents)
-  // is owned by `App.tsx` — see the `getQuickstartState` call there. This
-  // page intentionally has no completion guard: per the Quickstart plan,
-  // returning users reach `/quickstart` via the nav to create another
-  // agent, so kicking them back to `/` here would break the primary
-  // returning-user case (`tmp/quickstart-plan.md` §"Auto-trigger /
-  // re-entry").
-
-  // Fire a dismiss beacon when the page unmounts without a successful
-  // Create. Closing the tab triggers `beforeunload`; clicking out
-  // through React-Router triggers the cleanup function.
   useEffect(() => {
     const fire = () => {
       if (submittedRef.current) return;
@@ -122,271 +114,796 @@ export default function Quickstart() {
     };
   }, []);
 
-  const update = <K extends keyof FormState>(k: K, v: FormState[K]) => {
-    setForm((f) => ({ ...f, [k]: v }));
-    lastStepRef.current = stepForKey(k);
+  const recordStep = (s: QuickstartStep) => {
+    lastStepRef.current = s;
   };
 
   const submit = async () => {
     setBusy(true);
     setErrors([]);
-    const submission = {
-      model_provider: {
-        mode: "fresh",
-        value: {
-          provider_type: form.providerType,
-          alias: form.providerAlias,
-          model: form.model,
-          api_key: form.apiKey || null,
-          base_url: null,
-        },
-      },
-      risk_profile: { mode: "fresh", value: form.risk },
-      runtime_profile: { mode: "fresh", value: form.runtime },
-      memory: { mode: "fresh", value: form.memory },
-      channels: [],
+    const res = await quickstartApply({
+      model_provider: { mode: "fresh", value: form.provider! },
+      risk_profile: { mode: "fresh", value: form.risk!.preset_name },
+      runtime_profile: { mode: "fresh", value: form.runtime!.preset_name },
+      memory: { mode: "fresh", value: form.memory!.preset_name },
+      channels: form.channels.map((c) =>
+        c.mode === "existing"
+          ? { mode: "existing", value: `${c.channel_type}.${c.alias}` }
+          : {
+              mode: "fresh",
+              value: {
+                channel_type: c.channel_type,
+                alias: c.alias,
+                token:
+                  c.extras["bot-token"] ??
+                  c.extras["token"] ??
+                  c.extras["access-token"] ??
+                  null,
+              },
+            },
+      ),
       agent: {
         name: form.agentName,
-        system_prompt: "",
+        system_prompt: form.agentSystemPrompt,
         personality_file: null,
       },
-    };
-    const res = await quickstartApply(submission);
+    });
     setBusy(false);
     if (res.kind === "errors") {
       setErrors(res.errors);
       return;
     }
-    setSuccess(res.agent.alias);
     submittedRef.current = true;
+    navigate(`/agent/${encodeURIComponent(res.agent.alias)}`);
   };
 
-  if (success) {
-    return (
-      <div className="max-w-2xl mx-auto p-8">
-        <h1 className="text-2xl font-bold mb-4">Quickstart complete</h1>
-        <p className="mb-4">
-          Created agent <code>{success}</code>. Daemon reload signalled.
-        </p>
-        <button
-          className="px-4 py-2 rounded bg-blue-600 text-white"
-          onClick={() => navigate(`/agent/${encodeURIComponent(success)}`)}
-        >
-          Start chatting
-        </button>
-      </div>
-    );
-  }
+  const providerDone = form.provider !== null;
+  const allDone =
+    providerDone &&
+    form.risk !== null &&
+    form.runtime !== null &&
+    form.memory !== null &&
+    form.agentName.trim() !== "";
 
   return (
-    <div className="max-w-2xl mx-auto p-8 space-y-6">
-      <h1 className="text-2xl font-bold">Quickstart</h1>
-      <p className="text-sm opacity-80">
-        Create one working agent end-to-end. Pick a provider, accept the
-        balanced defaults, and start chatting.
-      </p>
+    <div className="max-w-3xl mx-auto px-6 py-8 space-y-5">
+      <header className="space-y-1">
+        <h1 className="text-2xl font-semibold">Quickstart</h1>
+        <p className="text-sm" style={MUTED}>
+          Create one working agent end-to-end. Pick a provider, choose your
+          profiles, and start chatting.
+        </p>
+      </header>
 
-      <Section title="Model provider" done={isProviderDone(form)}>
-        <Field label="Provider type">
-          <select
-            className="input"
-            value={form.providerType}
-            onChange={(e) => {
-              const next = e.target.value;
-              update("providerType", next);
-              setForm((f) => ({
-                ...f,
-                providerAlias:
-                  f.providerAlias === "" || f.providerAlias === f.providerType
-                    ? next
-                    : f.providerAlias,
-                model: "",
-              }));
+      <Section
+        icon={<Cpu className="h-4 w-4" />}
+        title="Model provider"
+        done={providerDone}
+        summary={
+          form.provider
+            ? `${form.provider.provider_type}.${form.provider.alias} — ${form.provider.model}`
+            : null
+        }
+      >
+        {form.provider ? (
+          <StagedRow
+            label={`${form.provider.provider_type}.${form.provider.alias}`}
+            sub={`model: ${form.provider.model}`}
+            onRemove={() => setForm((f) => ({ ...f, provider: null }))}
+          />
+        ) : (
+          <ProviderForm
+            state={state}
+            onStage={(p) => {
+              setForm((f) => ({ ...f, provider: p }));
+              recordStep("model_provider");
             }}
-          >
-            <option value="" disabled>
-              — pick a provider —
-            </option>
-            {quickstartState?.model_provider_types.map((opt: QuickstartTypeOption) => (
-              <option key={opt.kind} value={opt.kind}>
-                {opt.display_name}
-                {opt.local ? " (local)" : ""}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="Alias">
-          <input
-            className="input"
-            value={form.providerAlias}
-            onChange={(e) => update("providerAlias", e.target.value)}
           />
-        </Field>
-        <Field label="Model">
-          <input
-            className="input"
-            value={form.model}
-            onChange={(e) => update("model", e.target.value)}
-            list="qs-model-catalog"
-            placeholder={form.providerType ? "pick or type a model id" : ""}
-          />
-          <datalist id="qs-model-catalog">
-            {catalog?.live &&
-              catalog.models.map((m) => <option key={m} value={m} />)}
-          </datalist>
-        </Field>
-        <Field label="API key">
-          <input
-            className="input"
-            type="password"
-            value={form.apiKey}
-            onChange={(e) => update("apiKey", e.target.value)}
-          />
-        </Field>
+        )}
       </Section>
 
-      <Section title="Risk profile" done={form.risk !== ""}>
-        <Radio
-          options={RISK_OPTS}
-          value={form.risk}
-          onChange={(v) => update("risk", v as Risk)}
+      <PresetSection
+        icon={<ShieldCheck className="h-4 w-4" />}
+        title="Risk profile"
+        rows={(state?.risk_presets ?? []).map((p) => ({
+          value: p.preset_name,
+          label: p.label,
+          help: p.help,
+        }))}
+        value={form.risk?.preset_name ?? ""}
+        onChange={(v) => {
+          setForm((f) => ({ ...f, risk: { preset_name: v } }));
+          recordStep("risk_profile");
+        }}
+      />
+
+      <PresetSection
+        icon={<Gauge className="h-4 w-4" />}
+        title="Runtime profile"
+        rows={(state?.runtime_presets ?? []).map((p) => ({
+          value: p.preset_name,
+          label: p.label,
+          help: p.help,
+        }))}
+        value={form.runtime?.preset_name ?? ""}
+        onChange={(v) => {
+          setForm((f) => ({ ...f, runtime: { preset_name: v } }));
+          recordStep("runtime_profile");
+        }}
+      />
+
+      <PresetSection
+        icon={<HardDrive className="h-4 w-4" />}
+        title="Memory"
+        rows={(state?.memory_kinds ?? []).map((k) => ({
+          value: k,
+          label: k,
+          help: "",
+        }))}
+        value={form.memory?.preset_name ?? ""}
+        onChange={(v) => {
+          setForm((f) => ({ ...f, memory: { preset_name: v } }));
+          recordStep("memory");
+        }}
+      />
+
+      <Section
+        icon={<Radio className="h-4 w-4" />}
+        title="Channels"
+        done={true}
+        summary={
+          form.channels.length === 0
+            ? "none — reachable via CLI"
+            : `${form.channels.length} configured`
+        }
+      >
+        <ChannelsList
+          state={state}
+          staged={form.channels}
+          onAdd={(c) => {
+            setForm((f) => ({ ...f, channels: [...f.channels, c] }));
+            recordStep("channels");
+          }}
+          onRemove={(i) =>
+            setForm((f) => ({
+              ...f,
+              channels: f.channels.filter((_, idx) => idx !== i),
+            }))
+          }
         />
       </Section>
 
-      <Section title="Runtime profile" done={form.runtime !== ""}>
-        <Radio
-          options={RUNTIME_OPTS}
-          value={form.runtime}
-          onChange={(v) => update("runtime", v as Runtime)}
+      <Section
+        icon={<Bot className="h-4 w-4" />}
+        title="Agent"
+        done={form.agentName.trim() !== ""}
+        summary={form.agentName.trim() || null}
+      >
+        <LabeledInput
+          label="Name"
+          value={form.agentName}
+          onChange={(v) => {
+            setForm((f) => ({ ...f, agentName: v }));
+            recordStep("agent");
+          }}
+          placeholder="e.g. work"
         />
-      </Section>
-
-      <Section title="Memory" done={form.memory !== ""}>
-        <Radio
-          options={MEMORY_OPTS}
-          value={form.memory}
-          onChange={(v) => update("memory", v as Memory)}
+        <LabeledInput
+          label="System prompt (optional)"
+          value={form.agentSystemPrompt}
+          onChange={(v) => setForm((f) => ({ ...f, agentSystemPrompt: v }))}
+          multiline
         />
-      </Section>
-
-      <Section title="Agent" done={form.agentName.trim() !== ""}>
-        <Field label="Agent name">
-          <input
-            className="input"
-            value={form.agentName}
-            onChange={(e) => update("agentName", e.target.value)}
-            placeholder="e.g. work"
-          />
-        </Field>
       </Section>
 
       {errors.length > 0 && (
-        <ul className="text-red-500 text-sm space-y-1">
+        <ul className="card p-4 space-y-1 text-sm" style={ERROR}>
           {errors.map((e, i) => (
             <li key={i}>
-              <code>{e.step}{e.field ? `.${e.field}` : ""}</code>: {e.message}
+              <code>
+                {e.step}
+                {e.field ? `.${e.field}` : ""}
+              </code>
+              : {e.message}
             </li>
           ))}
         </ul>
       )}
 
-      <button
-        className="px-4 py-2 rounded bg-blue-600 text-white disabled:opacity-50"
-        disabled={busy || !allDone(form)}
-        onClick={() => void submit()}
-      >
-        {busy ? "Creating..." : "Create"}
+      <div className="flex justify-end pt-2">
+        <button
+          className="btn-primary px-6 py-2"
+          disabled={busy || !allDone}
+          onClick={() => void submit()}
+        >
+          {busy ? "Creating..." : "Create"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Section({
+  icon,
+  title,
+  done,
+  summary,
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  done: boolean;
+  summary?: string | null;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="card p-5 space-y-4">
+      <header className="flex items-center gap-3">
+        <span
+          className="flex h-7 w-7 items-center justify-center rounded-lg"
+          style={{
+            background: done
+              ? "rgba(0, 230, 138, 0.12)"
+              : "var(--pc-bg-elevated)",
+            color: done ? "var(--color-status-success)" : MUTED.color,
+          }}
+        >
+          {icon}
+        </span>
+        <h2 className="font-semibold flex-1">
+          {done ? "[✓]" : "[ ]"} {title}
+        </h2>
+        {summary && (
+          <span className="text-xs" style={MUTED}>
+            {summary}
+          </span>
+        )}
+      </header>
+      <div className="space-y-3">{children}</div>
+    </section>
+  );
+}
+
+function PresetSection({
+  icon,
+  title,
+  rows,
+  value,
+  onChange,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  rows: { value: string; label: string; help: string }[];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <Section
+      icon={icon}
+      title={title}
+      done={value !== ""}
+      summary={value || null}
+    >
+      {rows.length === 0 ? (
+        <div className="text-xs" style={MUTED}>
+          Loading…
+        </div>
+      ) : (
+        <div
+          className="surface-panel divide-y rounded-xl overflow-hidden"
+          style={{ borderColor: "var(--pc-border)" }}
+        >
+          {rows.map((r) => (
+            <button
+              key={r.value}
+              type="button"
+              onClick={() => onChange(r.value)}
+              className="w-full flex items-center gap-3 px-4 py-3 text-left text-sm hover:opacity-90"
+              style={{
+                background:
+                  r.value === value ? "rgba(0,128,255,0.08)" : "transparent",
+              }}
+            >
+              <div className="flex-1 min-w-0">
+                <div style={{ fontWeight: 500 }}>{r.label}</div>
+                {r.help && (
+                  <div className="text-xs mt-0.5" style={MUTED}>
+                    {r.help}
+                  </div>
+                )}
+              </div>
+              {r.value === value && (
+                <ChevronRight
+                  className="h-4 w-4 flex-shrink-0"
+                  style={{ color: "var(--pc-accent)" }}
+                />
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+function StagedRow({
+  label,
+  sub,
+  onRemove,
+}: {
+  label: string;
+  sub?: string;
+  onRemove: () => void;
+}) {
+  return (
+    <div
+      className="flex items-center justify-between gap-3 px-4 py-3 rounded-xl"
+      style={{ background: "var(--pc-bg-elevated)" }}
+    >
+      <div className="min-w-0">
+        <div style={{ fontWeight: 500 }}>{label}</div>
+        {sub && (
+          <code className="block text-xs mt-0.5" style={FAINT}>
+            {sub}
+          </code>
+        )}
+      </div>
+      <button type="button" onClick={onRemove} className="btn-icon" title="Clear">
+        <Trash2 className="h-4 w-4" />
       </button>
     </div>
   );
 }
 
-function isProviderDone(form: FormState): boolean {
-  return (
-    form.providerType !== "" &&
-    form.providerAlias.trim() !== "" &&
-    form.model.trim() !== ""
-  );
-}
-
-function allDone(form: FormState): boolean {
-  return (
-    isProviderDone(form) &&
-    form.risk !== "" &&
-    form.runtime !== "" &&
-    form.memory !== "" &&
-    form.agentName.trim() !== ""
-  );
-}
-
-function stepForKey(key: keyof FormState): QuickstartStep {
-  switch (key) {
-    case "providerType":
-    case "providerAlias":
-    case "model":
-    case "apiKey":
-      return "model_provider";
-    case "risk":
-      return "risk_profile";
-    case "runtime":
-      return "runtime_profile";
-    case "memory":
-      return "memory";
-    case "agentName":
-      return "agent";
-  }
-}
-
-function Section({
-  title,
-  children,
-  done,
+function LabeledInput({
+  label,
+  value,
+  onChange,
+  type = "text",
+  placeholder,
+  multiline = false,
 }: {
-  title: string;
-  children: React.ReactNode;
-  done: boolean;
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  type?: "text" | "password";
+  placeholder?: string;
+  multiline?: boolean;
 }) {
   return (
-    <section className="border rounded p-4 space-y-3" style={{ borderColor: "var(--pc-border)" }}>
-      <h2 className="font-semibold">
-        {done ? "[✓]" : "[ ]"} {title}
-      </h2>
-      {children}
-    </section>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
     <label className="block">
-      <div className="text-xs uppercase opacity-70 mb-1">{label}</div>
-      {children}
+      <div className="text-xs uppercase tracking-wider mb-1" style={MUTED}>
+        {label}
+      </div>
+      {multiline ? (
+        <textarea
+          className="input-electric w-full px-3 py-2 min-h-24"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+        />
+      ) : (
+        <input
+          className="input-electric w-full px-3 py-2"
+          type={type}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+        />
+      )}
     </label>
   );
 }
 
-function Radio({
-  options,
-  value,
-  onChange,
+function ProviderForm({
+  state,
+  onStage,
 }: {
-  options: readonly string[];
-  value: string;
-  onChange: (v: string) => void;
+  state: QuickstartState | null;
+  onStage: (p: StagedProvider) => void;
 }) {
+  const [type, setType] = useState("");
+  const [alias, setAlias] = useState("");
+  const [model, setModel] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [catalog, setCatalog] = useState<ModelsResponse | null>(null);
+  const [descriptors, setDescriptors] = useState<QuickstartFieldDescriptor[]>(
+    [],
+  );
+
+  useEffect(() => {
+    if (!type) {
+      setCatalog(null);
+      setDescriptors([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const f = await quickstartFields({
+          section: "model_provider",
+          type_key: type,
+        });
+        if (!cancelled) setDescriptors(f.fields);
+      } catch {
+        if (!cancelled) setDescriptors([]);
+      }
+      try {
+        const r = await getCatalogModels(type);
+        if (!cancelled) setCatalog(r);
+      } catch {
+        if (!cancelled) setCatalog(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [type]);
+
+  const isLocal = useMemo(
+    () =>
+      state?.model_provider_types.find((t) => t.kind === type)?.local ?? false,
+    [state, type],
+  );
+  const wantApiKey = descriptors.some(
+    (d) => d.key === "api-key" || d.is_secret,
+  );
+  const wantBaseUrl = descriptors.some(
+    (d) => d.key === "base-url" || d.key === "uri",
+  );
+  const canAdd =
+    type !== "" &&
+    alias.trim() !== "" &&
+    model.trim() !== "" &&
+    (!wantApiKey || isLocal || apiKey.trim() !== "");
+
   return (
-    <div className="flex gap-2 flex-wrap">
-      {options.map((o) => (
+    <>
+      <label className="block">
+        <div className="text-xs uppercase tracking-wider mb-1" style={MUTED}>
+          Provider type
+        </div>
+        <select
+          className="input-electric w-full px-3 py-2"
+          value={type}
+          onChange={(e) => {
+            const next = e.target.value;
+            setType(next);
+            setAlias((prev) => (prev === "" || prev === type ? next : prev));
+            setModel("");
+          }}
+        >
+          <option value="" disabled>
+            — pick a provider —
+          </option>
+          {state?.model_provider_types.map((opt) => (
+            <option key={opt.kind} value={opt.kind}>
+              {opt.display_name}
+              {opt.local ? " (local)" : ""}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <LabeledInput label="Alias" value={alias} onChange={setAlias} />
+
+      <label className="block">
+        <div className="text-xs uppercase tracking-wider mb-1" style={MUTED}>
+          Model
+        </div>
+        <input
+          className="input-electric w-full px-3 py-2"
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+          list="qs-model-catalog"
+          placeholder={type ? "pick or type a model id" : ""}
+        />
+        <datalist id="qs-model-catalog">
+          {catalog?.live &&
+            catalog.models.map((m) => <option key={m} value={m} />)}
+        </datalist>
+      </label>
+
+      {wantApiKey && !isLocal && (
+        <LabeledInput
+          label="API key"
+          type="password"
+          value={apiKey}
+          onChange={setApiKey}
+        />
+      )}
+
+      {wantBaseUrl && (
+        <LabeledInput
+          label="Base URL (optional)"
+          value={baseUrl}
+          onChange={setBaseUrl}
+        />
+      )}
+
+      <div className="flex justify-end">
         <button
-          key={o}
           type="button"
-          onClick={() => onChange(o)}
-          className={`px-3 py-1 rounded border ${value === o ? "bg-blue-600 text-white" : ""}`}
+          className="btn-primary px-4 py-2 text-sm inline-flex items-center gap-2"
+          disabled={!canAdd}
+          onClick={() =>
+            onStage({
+              provider_type: type,
+              alias: alias.trim(),
+              model: model.trim(),
+              api_key: apiKey.trim() === "" ? null : apiKey.trim(),
+              base_url: baseUrl.trim() === "" ? null : baseUrl.trim(),
+            })
+          }
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add
+        </button>
+      </div>
+    </>
+  );
+}
+
+function ChannelsList({
+  state,
+  staged,
+  onAdd,
+  onRemove,
+}: {
+  state: QuickstartState | null;
+  staged: StagedChannel[];
+  onAdd: (c: StagedChannel) => void;
+  onRemove: (i: number) => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const inFlight = useMemo(
+    () => new Set(staged.map((c) => `${c.channel_type}.${c.alias}`)),
+    [staged],
+  );
+  const inConfig = useMemo(() => new Set(state?.channels ?? []), [state]);
+  const reusable = useMemo(
+    () =>
+      (state?.unassigned_channels ?? []).filter((ref) => !inFlight.has(ref)),
+    [state, inFlight],
+  );
+
+  return (
+    <>
+      {staged.length > 0 && (
+        <div
+          className="surface-panel divide-y rounded-xl overflow-hidden"
           style={{ borderColor: "var(--pc-border)" }}
         >
-          {o}
+          {staged.map((c, i) => (
+            <div
+              key={`${c.channel_type}.${c.alias}.${i}`}
+              className="flex items-center justify-between gap-3 px-4 py-3 text-sm"
+            >
+              <div className="min-w-0">
+                <span style={{ fontWeight: 500 }}>
+                  {c.channel_type}.{c.alias}
+                </span>
+                <span className="ml-2 text-xs" style={MUTED}>
+                  {c.mode === "existing" ? "reuse" : "new"}
+                </span>
+              </div>
+              <button
+                type="button"
+                className="btn-icon"
+                onClick={() => onRemove(i)}
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {adding ? (
+        <ChannelAddForm
+          state={state}
+          inConfig={inConfig}
+          inFlight={inFlight}
+          reusable={reusable}
+          onAdd={(c) => {
+            onAdd(c);
+            setAdding(false);
+          }}
+          onCancel={() => setAdding(false)}
+        />
+      ) : (
+        <button
+          type="button"
+          className="btn-secondary px-4 py-2 text-sm inline-flex items-center gap-2"
+          onClick={() => setAdding(true)}
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add channel
         </button>
-      ))}
+      )}
+    </>
+  );
+}
+
+function ChannelAddForm({
+  state,
+  inConfig,
+  inFlight,
+  reusable,
+  onAdd,
+  onCancel,
+}: {
+  state: QuickstartState | null;
+  inConfig: Set<string>;
+  inFlight: Set<string>;
+  reusable: string[];
+  onAdd: (c: StagedChannel) => void;
+  onCancel: () => void;
+}) {
+  const [mode, setMode] = useState<"existing" | "fresh">(
+    reusable.length > 0 ? "existing" : "fresh",
+  );
+  const [existingRef, setExistingRef] = useState(reusable[0] ?? "");
+  const [type, setType] = useState("");
+  const [alias, setAlias] = useState("");
+  const [descriptors, setDescriptors] = useState<QuickstartFieldDescriptor[]>(
+    [],
+  );
+  const [extras, setExtras] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (mode !== "fresh" || !type) {
+      setDescriptors([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const f = await quickstartFields({ section: "channel", type_key: type });
+        if (!cancelled) setDescriptors(f.fields);
+      } catch {
+        if (!cancelled) setDescriptors([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, type]);
+
+  const freshRef = type && alias.trim() ? `${type}.${alias.trim()}` : "";
+  const conflict =
+    freshRef !== "" && (inConfig.has(freshRef) || inFlight.has(freshRef));
+  const canAdd =
+    mode === "existing"
+      ? existingRef !== ""
+      : type !== "" && alias.trim() !== "" && !conflict;
+
+  const submit = () => {
+    if (mode === "existing") {
+      const [t, a] = existingRef.split(".");
+      if (!t || !a) return;
+      onAdd({ mode: "existing", channel_type: t, alias: a, extras: {} });
+    } else {
+      onAdd({
+        mode: "fresh",
+        channel_type: type,
+        alias: alias.trim(),
+        extras,
+      });
+    }
+  };
+
+  return (
+    <div
+      className="card p-4 space-y-3"
+      style={{ background: "var(--pc-bg-elevated)" }}
+    >
+      <div className="flex gap-2">
+        <button
+          type="button"
+          className={mode === "existing" ? "btn-primary" : "btn-secondary"}
+          disabled={reusable.length === 0}
+          onClick={() => setMode("existing")}
+          style={{ padding: "0.4rem 0.8rem", fontSize: "0.85rem" }}
+        >
+          Use existing
+        </button>
+        <button
+          type="button"
+          className={mode === "fresh" ? "btn-primary" : "btn-secondary"}
+          onClick={() => setMode("fresh")}
+          style={{ padding: "0.4rem 0.8rem", fontSize: "0.85rem" }}
+        >
+          Create new
+        </button>
+        <div className="flex-1" />
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={onCancel}
+          style={{ padding: "0.4rem 0.8rem", fontSize: "0.85rem" }}
+        >
+          Cancel
+        </button>
+      </div>
+
+      {mode === "existing" ? (
+        reusable.length === 0 ? (
+          <div className="text-xs" style={MUTED}>
+            No unassigned channels available.
+          </div>
+        ) : (
+          <select
+            className="input-electric w-full px-3 py-2"
+            value={existingRef}
+            onChange={(e) => setExistingRef(e.target.value)}
+          >
+            {reusable.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+        )
+      ) : (
+        <>
+          <label className="block">
+            <div className="text-xs uppercase tracking-wider mb-1" style={MUTED}>
+              Channel type
+            </div>
+            <select
+              className="input-electric w-full px-3 py-2"
+              value={type}
+              onChange={(e) => {
+                const next = e.target.value;
+                setType(next);
+                setAlias((prev) => (prev === "" || prev === type ? next : prev));
+                setExtras({});
+              }}
+            >
+              <option value="" disabled>
+                — pick a channel type —
+              </option>
+              {state?.channel_types.map((opt) => (
+                <option key={opt.kind} value={opt.kind}>
+                  {opt.display_name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <LabeledInput label="Alias" value={alias} onChange={setAlias} />
+          {conflict && (
+            <div className="text-xs" style={ERROR}>
+              <code>{freshRef}</code> already exists.
+            </div>
+          )}
+
+          {descriptors.map((d) => (
+            <LabeledInput
+              key={d.key}
+              label={d.label}
+              type={d.is_secret ? "password" : "text"}
+              value={extras[d.key] ?? ""}
+              onChange={(v) => setExtras((x) => ({ ...x, [d.key]: v }))}
+              placeholder={d.help}
+            />
+          ))}
+        </>
+      )}
+
+      <div className="flex justify-end">
+        <button
+          type="button"
+          className="btn-primary px-4 py-2 text-sm inline-flex items-center gap-2"
+          disabled={!canAdd}
+          onClick={submit}
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add
+        </button>
+      </div>
     </div>
   );
 }

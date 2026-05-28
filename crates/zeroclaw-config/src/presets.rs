@@ -38,7 +38,7 @@ use crate::schema::{RiskProfileConfig, RuntimeProfileConfig};
 /// One row in the Risk preset table. The Quickstart UI renders the
 /// `label`, the runtime writes `values` to
 /// `risk-profiles.<preset_name>` on apply.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct RiskPreset {
     /// Alias key written to `risk-profiles.<preset_name>`. Doubles as
     /// the stable wire identifier (`BuilderSubmission.risk_preset`).
@@ -51,6 +51,7 @@ pub struct RiskPreset {
     /// installs. A function (not a const value) because
     /// `RiskProfileConfig` has owned `Vec<String>` fields that cannot
     /// live in a `const`.
+    #[serde(skip)]
     pub values: fn() -> RiskProfileConfig,
 }
 
@@ -142,7 +143,7 @@ fn yolo_risk() -> RiskProfileConfig {
 
 /// One row in the Runtime preset table. Same shape and contract as
 /// [`RiskPreset`] — see its docs for the per-field semantics.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct RuntimePreset {
     /// Alias key written to `runtime-profiles.<preset_name>`. Doubles
     /// as the stable wire identifier (`BuilderSubmission.runtime_preset`).
@@ -153,6 +154,7 @@ pub struct RuntimePreset {
     pub help: &'static str,
     /// Factory that produces the [`RuntimeProfileConfig`] this preset
     /// installs.
+    #[serde(skip)]
     pub values: fn() -> RuntimeProfileConfig,
 }
 

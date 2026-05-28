@@ -92,6 +92,20 @@ pub struct QuickstartState {
     pub model_provider_types: Vec<QuickstartTypeOption>,
     #[serde(default)]
     pub channel_types: Vec<QuickstartTypeOption>,
+    #[serde(default)]
+    pub risk_presets: Vec<QuickstartPresetMirror>,
+    #[serde(default)]
+    pub runtime_presets: Vec<QuickstartPresetMirror>,
+    #[serde(default)]
+    pub memory_kinds: Vec<String>,
+}
+
+/// Wire view of `zeroclaw_config::presets::RiskPreset` / `RuntimePreset`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuickstartPresetMirror {
+    pub preset_name: String,
+    pub label: String,
+    pub help: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

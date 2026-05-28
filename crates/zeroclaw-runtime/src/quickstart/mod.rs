@@ -347,7 +347,7 @@ pub fn should_auto_launch(config: &Config) -> bool {
 /// Shared by every surface — the gateway's `GET /api/quickstart/state`
 /// and the RPC `quickstart/state` method both build the response from
 /// this one function, so the two transports cannot drift.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct QuickstartState {
     pub quickstart_completed: bool,
@@ -383,6 +383,12 @@ pub struct QuickstartState {
     /// can represent so users get a consistent option list across
     /// builds.
     pub channel_types: Vec<QuickstartTypeOption>,
+    /// Risk presets from `zeroclaw_config::presets::RISK_PRESETS`.
+    pub risk_presets: &'static [zeroclaw_config::presets::RiskPreset],
+    /// Runtime presets from `zeroclaw_config::presets::RUNTIME_PRESETS`.
+    pub runtime_presets: &'static [zeroclaw_config::presets::RuntimePreset],
+    /// Memory backend snake-case kinds from `MemoryBackendKind`.
+    pub memory_kinds: Vec<String>,
 }
 
 /// One row in the Quickstart "Create new …" picker, sourced from a
@@ -455,7 +461,36 @@ pub fn snapshot_state(cfg: &Config) -> QuickstartState {
         storage: collect_aliased_refs(&cfg.storage),
         model_provider_types,
         channel_types,
+        risk_presets: zeroclaw_config::presets::RISK_PRESETS,
+        runtime_presets: zeroclaw_config::presets::RUNTIME_PRESETS,
+        memory_kinds: memory_kind_keys(),
     }
+}
+
+/// Snake-case wire keys for every `MemoryBackendKind` variant. Exhaustive
+/// match probe catches missing variants at compile time; serde produces
+/// the wire key so there's no parallel mapping.
+fn memory_kind_keys() -> Vec<String> {
+    use zeroclaw_config::multi_agent::MemoryBackendKind as M;
+    [
+        M::Sqlite,
+        M::Markdown,
+        M::Postgres,
+        M::Qdrant,
+        M::Lucid,
+        M::None,
+    ]
+    .into_iter()
+    .map(|k| {
+        let _ = match k {
+            M::Sqlite | M::Markdown | M::Postgres | M::Qdrant | M::Lucid | M::None => (),
+        };
+        serde_json::to_value(k)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default()
+    })
+    .collect()
 }
 
 /// Build the Quickstart channel-type picker rows directly from the
@@ -896,6 +931,11 @@ fn runtime_preset_keys(config: &Config) -> Vec<String> {
 fn write_risk_preset(config: &mut Config, preset_name: &str) -> Result<String, String> {
     let preset =
         risk_preset(preset_name).ok_or_else(|| format!("unknown risk preset `{preset_name}`"))?;
+    // Existing block wins — never clobber a user-customised `[risk-profiles.<name>]`
+    // that happens to share a preset name.
+    if config.risk_profiles.contains_key(preset.preset_name) {
+        return Ok(preset.preset_name.to_string());
+    }
     config
         .create_map_key("risk-profiles", preset.preset_name)
         .map_err(|e| e.to_string())?;
@@ -908,6 +948,10 @@ fn write_risk_preset(config: &mut Config, preset_name: &str) -> Result<String, S
 fn write_runtime_preset(config: &mut Config, preset_name: &str) -> Result<String, String> {
     let preset = runtime_preset(preset_name)
         .ok_or_else(|| format!("unknown runtime preset `{preset_name}`"))?;
+    // Existing block wins — same rule as `write_risk_preset`.
+    if config.runtime_profiles.contains_key(preset.preset_name) {
+        return Ok(preset.preset_name.to_string());
+    }
     config
         .create_map_key("runtime-profiles", preset.preset_name)
         .map_err(|e| e.to_string())?;
@@ -1017,6 +1061,16 @@ fn apply_channels(
                             QuickstartStep::Channels,
                             format!("channels[{idx}]"),
                             format!("no `channels.{family}.{alias}` configured"),
+                        ));
+                        continue;
+                    }
+                    // Existing channel already bound to a different agent
+                    // cannot be re-used — one channel, one agent invariant.
+                    if let Some(owner) = config.agent_for_channel(reference) {
+                        errors.push(QuickstartError::new(
+                            QuickstartStep::Channels,
+                            format!("channels[{idx}]"),
+                            format!("channel `{reference}` is already bound to agent `{owner}`"),
                         ));
                         continue;
                     }
@@ -1321,5 +1375,26 @@ mod tests {
         submission.risk_profile = SelectorChoice::Fresh("does-not-exist".into());
         let errors = validate_only(&submission, &cfg).unwrap_err();
         assert!(errors.iter().any(|e| e.step == QuickstartStep::RiskProfile));
+    }
+
+    #[tokio::test]
+    async fn fresh_preset_with_colliding_name_keeps_existing_block() {
+        // User has a `[risk-profiles.balanced]` block with non-default
+        // `allowed_commands`. Quickstart picks the "balanced" preset.
+        // Expected: the user's block is untouched; the new agent's
+        // `risk_profile = "balanced"` ref points at the existing block.
+        let mut cfg = Config::default();
+        let mut custom = zeroclaw_config::schema::RiskProfileConfig::default();
+        custom.allowed_commands = vec!["user-only-cmd".into()];
+        cfg.risk_profiles.insert("balanced".into(), custom);
+        let pre_allowed = cfg.risk_profiles["balanced"].allowed_commands.clone();
+
+        let submission = fresh_submission("bot");
+        let result = apply(submission, &mut cfg).await.expect("apply ok");
+        assert_eq!(result.risk_profile, "balanced");
+        assert_eq!(
+            cfg.risk_profiles["balanced"].allowed_commands, pre_allowed,
+            "preset apply must not clobber an existing risk-profile block",
+        );
     }
 }
