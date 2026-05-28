@@ -28,16 +28,18 @@ enum Selector {
     RuntimeProfile,
     Memory,
     Channels,
+    PeerGroups,
     AgentIdentity,
 }
 
 impl Selector {
-    const ALL: [Selector; 6] = [
+    const ALL: [Selector; 7] = [
         Selector::ModelProvider,
         Selector::RiskProfile,
         Selector::RuntimeProfile,
         Selector::Memory,
         Selector::Channels,
+        Selector::PeerGroups,
         Selector::AgentIdentity,
     ];
 
@@ -48,6 +50,7 @@ impl Selector {
             Selector::RuntimeProfile => "Runtime profile",
             Selector::Memory => "Memory",
             Selector::Channels => "Channels (optional)",
+            Selector::PeerGroups => "Peer groups (optional)",
             Selector::AgentIdentity => "Agent identity",
         }
     }
@@ -59,6 +62,7 @@ impl Selector {
             Selector::RuntimeProfile => QuickstartStep::RuntimeProfile,
             Selector::Memory => QuickstartStep::Memory,
             Selector::Channels => QuickstartStep::Channels,
+            Selector::PeerGroups => QuickstartStep::PeerGroups,
             Selector::AgentIdentity => QuickstartStep::Agent,
         }
     }
@@ -275,6 +279,7 @@ struct FormState {
     /// counts as `[✓]`).
     channels_visited: bool,
     peer_groups: Vec<crate::wire::QuickstartPeerGroup>,
+    peer_groups_visited: bool,
     agent_name: String,
     personality_files: Vec<crate::wire::QuickstartPersonalityFile>,
 }
@@ -298,6 +303,7 @@ impl FormState {
             channels: Vec::new(),
             channels_visited: false,
             peer_groups: Vec::new(),
+            peer_groups_visited: false,
             agent_name: String::new(),
             personality_files: Vec::new(),
         }
@@ -319,6 +325,7 @@ impl FormState {
             Selector::RuntimeProfile => !self.runtime.is_empty(),
             Selector::Memory => self.memory_chosen,
             Selector::Channels => self.channels_visited,
+            Selector::PeerGroups => self.peer_groups_visited,
             Selector::AgentIdentity => !self.agent_name.is_empty(),
         }
     }
@@ -346,6 +353,13 @@ impl FormState {
                     "0 (CLI only)".to_string()
                 } else {
                     format!("{} configured", self.channels.len())
+                }
+            }
+            Selector::PeerGroups => {
+                if self.peer_groups.is_empty() {
+                    "0".to_string()
+                } else {
+                    format!("{} configured", self.peer_groups.len())
                 }
             }
             Selector::AgentIdentity => {
@@ -429,6 +443,9 @@ enum Modal {
     /// Channels list manager — shows current drafts and offers
     /// Add / Done. Add opens a Picker (channel type) → FieldForm.
     ChannelList(ChannelListModal),
+    /// Peer groups list manager. Same shape as ChannelList; Add opens
+    /// a Picker over unclaimed channel refs → TextInput for peers.
+    PeerGroupList(PeerGroupListModal),
 }
 
 struct PickerModal {
@@ -449,6 +466,9 @@ enum PickerPurpose {
     /// Step 1 of the channels flow: chose a channel type. The next
     /// step opens a [`FieldFormModal`] with shape from the daemon.
     ChannelType,
+    /// Step 1 of the peer-group add flow: chose a channel ref. The
+    /// next step opens a [`TextInputModal`] for the peers buffer.
+    PeerGroupChannel,
 }
 
 struct TextInputModal {
@@ -457,6 +477,10 @@ struct TextInputModal {
     help: &'static str,
     buf: String,
     is_secret: bool,
+    /// When `Some`, this TextInput is the peers-buffer step of the
+    /// peer-group add flow. The wrapped channel ref is consumed at
+    /// commit time to build a [`wire::QuickstartPeerGroup`].
+    peer_group_channel: Option<String>,
 }
 
 struct FieldFormModal {
@@ -479,6 +503,11 @@ struct ChannelListModal {
     /// `cursor < channels.len()`  → highlight that draft (Enter = delete).
     /// `cursor == channels.len()` → "+ Add channel" row.
     /// `cursor == channels.len()+1` → "Done" row.
+    cursor: usize,
+}
+
+struct PeerGroupListModal {
+    /// Same layout as [`ChannelListModal`]: drafts, then "+ Add", then "Done".
     cursor: usize,
 }
 
@@ -584,7 +613,13 @@ impl QuickstartPane {
         self.draw_status_strip(frame, chunks[2]);
 
         if let Some(modal) = &self.active_modal {
-            let (rect, rows) = draw_modal(frame, area, modal, &self.form.channels);
+            let (rect, rows) = draw_modal(
+                frame,
+                area,
+                modal,
+                &self.form.channels,
+                &self.form.peer_groups,
+            );
             self.modal_rect = Some(rect);
             self.modal_row_rects = rows;
         } else {
@@ -722,6 +757,7 @@ impl QuickstartPane {
             Modal::Picker(p) => (&mut p.cursor, p.options.len()),
             Modal::FieldForm(f) => (&mut f.cursor, f.fields.len()),
             Modal::ChannelList(cl) => (&mut cl.cursor, self.modal_row_rects.len()),
+            Modal::PeerGroupList(pl) => (&mut pl.cursor, self.modal_row_rects.len()),
             Modal::TextInput(_) => return,
         };
         if len == 0 {
@@ -751,6 +787,9 @@ impl QuickstartPane {
             Modal::ChannelList(cl) => {
                 cl.cursor = idx;
             }
+            Modal::PeerGroupList(pl) => {
+                pl.cursor = idx;
+            }
             Modal::TextInput(_) => {}
         }
     }
@@ -774,6 +813,7 @@ impl QuickstartPane {
                     help: "Short identifier (e.g. `helper`, `coder`). Used in `zeroclaw agent <name>`.",
                     buf: self.form.agent_name.clone(),
                     is_secret: false,
+                    peer_group_channel: None,
                 }));
             }
             Selector::ModelProvider => {
@@ -793,6 +833,9 @@ impl QuickstartPane {
             }
             Selector::Channels => {
                 self.active_modal = Some(Modal::ChannelList(ChannelListModal { cursor: 0 }));
+            }
+            Selector::PeerGroups => {
+                self.active_modal = Some(Modal::PeerGroupList(PeerGroupListModal { cursor: 0 }));
             }
         }
     }
@@ -901,6 +944,16 @@ impl QuickstartPane {
                             self.open_field_form(selector, QuickstartFieldSection::Channel, chosen)
                                 .await;
                         }
+                        (PickerPurpose::PeerGroupChannel, _) => {
+                            self.active_modal = Some(Modal::TextInput(TextInputModal {
+                                selector: Selector::PeerGroups,
+                                label: "external_peers",
+                                help: "Comma- or newline-separated. Blank = no external peers.",
+                                buf: String::new(),
+                                is_secret: false,
+                                peer_group_channel: Some(chosen),
+                            }));
+                        }
                     }
                 }
                 _ => {}
@@ -910,7 +963,30 @@ impl QuickstartPane {
                 KeyCode::Enter => {
                     let value = t.buf.trim().to_string();
                     let selector = t.selector;
-                    if !value.is_empty() {
+                    if let Some(channel) = t.peer_group_channel.clone() {
+                        let peers: Vec<String> = value
+                            .split([',', '\n'])
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                        let (ty, alias) = channel
+                            .split_once('.')
+                            .map(|(t, a)| (t.to_string(), a.to_string()))
+                            .unwrap_or_else(|| (channel.clone(), "default".into()));
+                        let name = format!("{ty}_{alias}_default");
+                        self.form
+                            .peer_groups
+                            .push(crate::wire::QuickstartPeerGroup {
+                                name,
+                                channel,
+                                external_peers: peers,
+                                ignore: Vec::new(),
+                            });
+                        let cursor = self.form.peer_groups.len().saturating_sub(1);
+                        self.active_modal =
+                            Some(Modal::PeerGroupList(PeerGroupListModal { cursor }));
+                        self.revalidate().await;
+                    } else if !value.is_empty() {
                         self.apply_text_choice(selector, value);
                         self.active_modal = None;
                         self.revalidate().await;
@@ -1047,6 +1123,46 @@ impl QuickstartPane {
                     _ => {}
                 }
             }
+            Modal::PeerGroupList(pl) => {
+                let drafts = self.form.peer_groups.len();
+                let row_count = drafts + 2;
+                match key.code {
+                    KeyCode::Esc => self.active_modal = None,
+                    KeyCode::Up if pl.cursor > 0 => {
+                        pl.cursor -= 1;
+                    }
+                    KeyCode::Down if pl.cursor + 1 < row_count => {
+                        pl.cursor += 1;
+                    }
+                    KeyCode::Char('d') | KeyCode::Char('D') if pl.cursor < drafts => {
+                        self.form.peer_groups.remove(pl.cursor);
+                        if pl.cursor >= self.form.peer_groups.len() {
+                            pl.cursor = self.form.peer_groups.len();
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if pl.cursor == drafts {
+                            // "+ Add" → open channel-ref picker.
+                            let options = self.peer_group_channel_options();
+                            if options.is_empty() {
+                                // No unclaimed channels; ignore the Enter
+                                // rather than open an empty picker.
+                            } else {
+                                self.active_modal = Some(Modal::Picker(PickerModal {
+                                    selector: Selector::PeerGroups,
+                                    purpose: PickerPurpose::PeerGroupChannel,
+                                    options,
+                                    cursor: 0,
+                                }));
+                            }
+                        } else if pl.cursor == drafts + 1 {
+                            self.form.peer_groups_visited = true;
+                            self.active_modal = None;
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -1082,6 +1198,45 @@ impl QuickstartPane {
                 mode: SelectorMode::Existing,
             });
         }
+    }
+
+    /// Channel refs available for a new peer group: staged channel
+    /// drafts from this run plus any unassigned existing channels the
+    /// daemon reported, minus refs already claimed by a staged peer
+    /// group. Matches the CLI and web flows.
+    fn peer_group_channel_options(&self) -> Vec<PickerOption> {
+        let staged: Vec<String> = self
+            .form
+            .channels
+            .iter()
+            .map(|c| format!("{}.{}", c.channel_type, c.alias))
+            .collect();
+        let claimed: std::collections::HashSet<String> = self
+            .form
+            .peer_groups
+            .iter()
+            .map(|pg| pg.channel.clone())
+            .collect();
+        let unassigned: &[String] = self
+            .state_snapshot
+            .as_ref()
+            .map(|s| s.unassigned_channels.as_slice())
+            .unwrap_or(&[]);
+        let mut refs: Vec<String> = staged
+            .into_iter()
+            .chain(unassigned.iter().cloned())
+            .filter(|r| !claimed.contains(r))
+            .collect();
+        refs.sort();
+        refs.dedup();
+        refs.into_iter()
+            .map(|r| PickerOption {
+                label: r.clone(),
+                value: r,
+                help: String::new(),
+                use_existing: false,
+            })
+            .collect()
     }
 
     /// Debounced-ish validation: after a selector commit, ask the
@@ -1456,6 +1611,7 @@ fn draw_modal(
     area: Rect,
     modal: &Modal,
     channels: &[ChannelDraft],
+    peer_groups: &[crate::wire::QuickstartPeerGroup],
 ) -> (Rect, Vec<Rect>) {
     let (title, header_lines, body_lines, footer, cursor_lines): (
         String,
@@ -1671,6 +1827,57 @@ fn draw_modal(
                 cursor_lines,
             )
         }
+        Modal::PeerGroupList(pl) => {
+            let mut lines: Vec<Line> = Vec::new();
+            let mut cursor_lines: Vec<usize> = Vec::new();
+            let drafts = peer_groups.len();
+            let row_count = drafts + 2;
+            if drafts == 0 {
+                lines.push(Line::from(Span::styled(
+                    "No peer groups configured. Optional — agents can still send messages to channels.",
+                    Style::default().fg(Color::DarkGray),
+                )));
+                lines.push(Line::from(""));
+            } else {
+                for (i, pg) in peer_groups.iter().enumerate() {
+                    cursor_lines.push(lines.len());
+                    let is_cursor = i == pl.cursor;
+                    let glyph = if is_cursor { " › " } else { "   " };
+                    let style = if is_cursor {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    let peers = if pg.external_peers.is_empty() {
+                        "no peers".to_string()
+                    } else {
+                        format!("{} peers", pg.external_peers.len())
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(glyph, Style::default().fg(Color::Yellow)),
+                        Span::styled(format!("{} → {}", pg.channel, pg.name), style),
+                        Span::styled(format!("  ({peers})"), Style::default().fg(Color::DarkGray)),
+                    ]));
+                }
+                lines.push(Line::from(""));
+            }
+            let add_idx = drafts;
+            let done_idx = drafts + 1;
+            cursor_lines.push(lines.len());
+            lines.push(action_row_line("+ Add peer group", pl.cursor == add_idx));
+            cursor_lines.push(lines.len());
+            lines.push(action_row_line("Done", pl.cursor == done_idx));
+            let _ = row_count;
+            (
+                " Peer groups ".to_string(),
+                Vec::new(),
+                lines,
+                "↑/↓ move   Enter activate   d delete   Esc close",
+                cursor_lines,
+            )
+        }
     };
 
     let box_w = area.width.saturating_sub(8).min(80);
@@ -1719,6 +1926,7 @@ fn draw_modal(
             Modal::Picker(p) => cursor_lines.get(p.cursor).copied(),
             Modal::FieldForm(f) => cursor_lines.get(f.cursor).copied(),
             Modal::ChannelList(cl) => cursor_lines.get(cl.cursor).copied(),
+            Modal::PeerGroupList(pl) => cursor_lines.get(pl.cursor).copied(),
             Modal::TextInput(_) => None,
         };
         match selected_line {

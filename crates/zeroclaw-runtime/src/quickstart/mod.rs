@@ -99,6 +99,7 @@ pub enum QuickstartStep {
     RuntimeProfile,
     Memory,
     Channels,
+    PeerGroups,
     Agent,
 }
 
@@ -318,6 +319,7 @@ pub fn record_dismissed(run_id: &str, surface: Surface, last_step: Option<Quicks
             QuickstartStep::RuntimeProfile => "runtime_profile",
             QuickstartStep::Memory => "memory",
             QuickstartStep::Channels => "channels",
+            QuickstartStep::PeerGroups => "peer_groups",
             QuickstartStep::Agent => "agent",
         })
         .unwrap_or("none");

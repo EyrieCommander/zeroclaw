@@ -162,6 +162,7 @@ pub enum QuickstartStep {
     RuntimeProfile,
     Memory,
     Channels,
+    PeerGroups,
     Agent,
 }
 
