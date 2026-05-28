@@ -196,19 +196,21 @@ pub async fn run(
             }
         })?;
 
+        // Disconnect handoff runs every iteration, not just when the input
+        // poll times out. A steady stream of events (mouse scroll, resize,
+        // focus) would otherwise keep `event::poll` returning true and the
+        // grace timer would never start — the UI would sit frozen on the
+        // red "Disconnected" status bar indefinitely.
+        if matches!(rpc.connection_state(), ConnectionState::Disconnected { .. }) {
+            let since = *disconnect_since.get_or_insert_with(std::time::Instant::now);
+            if since.elapsed() >= Duration::from_secs(2) {
+                return Ok(true);
+            }
+        }
+
         // Poll for input with a timeout so live panes refresh periodically.
         if !event::poll(TICK)? {
-            // Re-read live connection state — the snapshot from draw time
-            // may be stale if the read task detected EOF since then.
-            let live_state = rpc.connection_state();
-            if matches!(live_state, ConnectionState::Disconnected { .. }) {
-                // Keep the UI alive for a few seconds so the user sees the
-                // disconnect reason, then hand off to the caller to reconnect.
-                // RPC calls are skipped — they'd hang on the dead socket.
-                let since = *disconnect_since.get_or_insert_with(std::time::Instant::now);
-                if since.elapsed() >= Duration::from_secs(2) {
-                    return Ok(true);
-                }
+            if matches!(conn_state, ConnectionState::Disconnected { .. }) {
                 continue;
             }
             if mode == Mode::Dashboard {
