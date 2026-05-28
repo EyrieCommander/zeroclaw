@@ -1754,25 +1754,59 @@ async fn run_quickstart_cli(
                             .collect()
                     })
                     .unwrap_or_default();
+                // Pre-render the default template set once; the per-file
+                // [t] Use template option seeds the editor from this map.
+                let template_ctx =
+                    zeroclaw_runtime::agent::personality_templates::TemplateContext {
+                        agent: trimmed_agent_name_for_templates(
+                            form.agent.as_ref().map(|a| a.name.as_str()),
+                        ),
+                        ..Default::default()
+                    };
+                let templates: std::collections::HashMap<String, String> =
+                    zeroclaw_runtime::agent::personality_templates::render_preset_default(
+                        &template_ctx,
+                    )
+                    .into_iter()
+                    .map(|(filename, content)| (filename.to_string(), content))
+                    .collect();
                 let mut personality_files: Vec<
                     zeroclaw_config::presets::QuickstartPersonalityFile,
                 > = Vec::new();
                 for filename in state.personality_files {
                     let staged = prior_files.get(*filename).cloned().unwrap_or_default();
-                    let label = if staged.is_empty() {
-                        format!("Edit `{filename}` in $EDITOR? (blank to skip)")
+                    let template_available = templates.contains_key(*filename);
+                    let mut choices: Vec<&str> = Vec::with_capacity(3);
+                    choices.push(if staged.is_empty() {
+                        "Edit in $EDITOR"
                     } else {
-                        format!(
-                            "Edit `{filename}` in $EDITOR? (currently {} chars; blank to drop)",
-                            staged.len()
-                        )
-                    };
-                    let go = Confirm::new()
+                        "Edit in $EDITOR (current content seeded)"
+                    });
+                    if template_available {
+                        choices.push("Use template (and stage as-is)");
+                    }
+                    choices.push("Skip");
+                    let label = format!("{filename} — what next?");
+                    let Some(pick) = FuzzySelect::new()
                         .with_prompt(label)
-                        .default(false)
-                        .interact_opt()?;
-                    if let Some(true) = go {
-                        if let Some(edited) = Editor::new().edit(&staged)? {
+                        .items(&choices)
+                        .default(0)
+                        .max_length(choices.len())
+                        .interact_opt()?
+                    else {
+                        continue;
+                    };
+                    let action = choices[pick];
+                    if action.starts_with("Edit in $EDITOR") {
+                        let seed = if staged.is_empty() && template_available {
+                            templates
+                                .get(*filename)
+                                .cloned()
+                                .unwrap_or_else(|| staged.clone())
+                        } else {
+                            staged.clone()
+                        };
+                        if let Some(edited) = Editor::new().edit(&seed)? {
                             if !edited.trim().is_empty() {
                                 personality_files.push(
                                     zeroclaw_config::presets::QuickstartPersonalityFile {
@@ -1782,7 +1816,18 @@ async fn run_quickstart_cli(
                                 );
                             }
                         }
+                    } else if action.starts_with("Use template") {
+                        if let Some(content) = templates.get(*filename).cloned() {
+                            personality_files.push(
+                                zeroclaw_config::presets::QuickstartPersonalityFile {
+                                    filename: (*filename).to_string(),
+                                    content,
+                                },
+                            );
+                        }
                     } else if !staged.is_empty() {
+                        // "Skip" keeps any previously-staged content rather
+                        // than dropping it silently.
                         personality_files.push(
                             zeroclaw_config::presets::QuickstartPersonalityFile {
                                 filename: (*filename).to_string(),
@@ -1911,6 +1956,16 @@ fn model_path_provider_type(path: &str) -> Option<&'static str> {
         .iter()
         .find(|p| p.name == family)
         .map(|p| p.name)
+}
+
+#[cfg(feature = "agent-runtime")]
+fn trimmed_agent_name_for_templates(prior_name: Option<&str>) -> String {
+    prior_name
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            zeroclaw_runtime::agent::personality_templates::TemplateContext::default().agent
+        })
 }
 
 fn prompt_for_field(

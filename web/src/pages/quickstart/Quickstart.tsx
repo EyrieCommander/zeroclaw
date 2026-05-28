@@ -20,6 +20,7 @@ import {
   type QuickstartState,
   type QuickstartStep,
   getCatalogModels,
+  getPersonalityTemplates,
   getQuickstartState,
   quickstartApply,
   quickstartDismiss,
@@ -73,7 +74,6 @@ interface FormState {
   channels: StagedChannel[];
   peerGroups: StagedPeerGroup[];
   agentName: string;
-  agentSystemPrompt: string;
   personalityFiles: StagedPersonalityFile[];
 }
 
@@ -85,7 +85,6 @@ const DEFAULT_FORM: FormState = {
   channels: [],
   peerGroups: [],
   agentName: "",
-  agentSystemPrompt: "",
   personalityFiles: [],
 };
 
@@ -167,7 +166,7 @@ export default function Quickstart() {
       peer_groups: form.peerGroups,
       agent: {
         name: form.agentName,
-        system_prompt: form.agentSystemPrompt,
+        system_prompt: "",
         personality_file: null,
         personality_files: form.personalityFiles,
       },
@@ -346,12 +345,6 @@ export default function Quickstart() {
             recordStep("agent");
           }}
           placeholder="e.g. work"
-        />
-        <LabeledInput
-          label="System prompt (optional)"
-          value={form.agentSystemPrompt}
-          onChange={(v) => setForm((f) => ({ ...f, agentSystemPrompt: v }))}
-          multiline
         />
       </Section>
 
@@ -1227,11 +1220,31 @@ function PersonalityFilesList({
 }) {
   const [editing, setEditing] = useState<string | null>(null);
   const [buf, setBuf] = useState("");
+  const [templates, setTemplates] = useState<Record<string, string> | null>(
+    null,
+  );
   const filenames = state?.personality_files ?? [];
   const stagedByFilename = useMemo(
     () => new Map(staged.map((f) => [f.filename, f.content])),
     [staged],
   );
+
+  const loadTemplates = async () => {
+    if (templates !== null) return templates;
+    try {
+      const resp = await getPersonalityTemplates({});
+      const map: Record<string, string> = {};
+      for (const file of resp.files) {
+        map[file.filename] = file.content;
+      }
+      setTemplates(map);
+      return map;
+    } catch {
+      const empty: Record<string, string> = {};
+      setTemplates(empty);
+      return empty;
+    }
+  };
 
   if (filenames.length === 0) {
     return (
@@ -1272,6 +1285,21 @@ function PersonalityFilesList({
                       <Trash2 className="h-4 w-4" />
                     </button>
                   )}
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ padding: "0.3rem 0.7rem", fontSize: "0.8rem" }}
+                    onClick={async () => {
+                      const map = await loadTemplates();
+                      const content = map[fn] ?? "";
+                      if (content) {
+                        onStage({ filename: fn, content });
+                      }
+                    }}
+                    title="Stage the default template content for this file"
+                  >
+                    Use template
+                  </button>
                   <button
                     type="button"
                     className="btn-secondary"

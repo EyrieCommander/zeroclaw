@@ -29,18 +29,20 @@ enum Selector {
     Memory,
     Channels,
     PeerGroups,
-    AgentIdentity,
+    Agent,
+    Submit,
 }
 
 impl Selector {
-    const ALL: [Selector; 7] = [
+    const ALL: [Selector; 8] = [
         Selector::ModelProvider,
         Selector::RiskProfile,
         Selector::RuntimeProfile,
         Selector::Memory,
         Selector::Channels,
         Selector::PeerGroups,
-        Selector::AgentIdentity,
+        Selector::Agent,
+        Selector::Submit,
     ];
 
     fn title(self) -> &'static str {
@@ -51,7 +53,8 @@ impl Selector {
             Selector::Memory => "Memory",
             Selector::Channels => "Channels (optional)",
             Selector::PeerGroups => "Peer groups (optional)",
-            Selector::AgentIdentity => "Agent identity",
+            Selector::Agent => "Agent",
+            Selector::Submit => "Submit",
         }
     }
 
@@ -63,7 +66,8 @@ impl Selector {
             Selector::Memory => QuickstartStep::Memory,
             Selector::Channels => QuickstartStep::Channels,
             Selector::PeerGroups => QuickstartStep::PeerGroups,
-            Selector::AgentIdentity => QuickstartStep::Agent,
+            Selector::Agent => QuickstartStep::Agent,
+            Selector::Submit => QuickstartStep::Agent,
         }
     }
 }
@@ -326,7 +330,11 @@ impl FormState {
             Selector::Memory => self.memory_chosen,
             Selector::Channels => self.channels_visited,
             Selector::PeerGroups => self.peer_groups_visited,
-            Selector::AgentIdentity => !self.agent_name.is_empty(),
+            Selector::Agent => !self.agent_name.is_empty(),
+            // Submit ticks when the daemon has accepted the submission;
+            // until then it stays open so the user can tell it's the
+            // active step.
+            Selector::Submit => false,
         }
     }
 
@@ -362,13 +370,14 @@ impl FormState {
                     format!("{} configured", self.peer_groups.len())
                 }
             }
-            Selector::AgentIdentity => {
+            Selector::Agent => {
                 if self.agent_name.is_empty() {
                     "not yet named".to_string()
                 } else {
                     self.agent_name.clone()
                 }
             }
+            Selector::Submit => "Create the agent".to_string(),
         }
     }
 
@@ -434,18 +443,17 @@ enum Modal {
     /// Single-select picker. Used by Risk, Runtime, Memory, and the
     /// provider-type / channel-type pre-step.
     Picker(PickerModal),
-    /// Single-field text input. Used by Agent identity and alias
-    /// prompts that take one short string.
+    /// Single-field text input.
     TextInput(TextInputModal),
     /// Multi-field form sourced from `quickstart/fields`. Used by
     /// Model provider and Channels once the user has chosen a type.
     FieldForm(FieldFormModal),
-    /// Channels list manager — shows current drafts and offers
-    /// Add / Done. Add opens a Picker (channel type) → FieldForm.
+    /// Channels list manager.
     ChannelList(ChannelListModal),
-    /// Peer groups list manager. Same shape as ChannelList; Add opens
-    /// a Picker over unclaimed channel refs → TextInput for peers.
+    /// Peer groups list manager.
     PeerGroupList(PeerGroupListModal),
+    /// Agent name + personality files staging.
+    Agent(AgentModal),
 }
 
 struct PickerModal {
@@ -509,6 +517,18 @@ struct ChannelListModal {
 struct PeerGroupListModal {
     /// Same layout as [`ChannelListModal`]: drafts, then "+ Add", then "Done".
     cursor: usize,
+}
+
+struct AgentModal {
+    /// Row 0: name. Rows 1..=N: one per filename in
+    /// `state_snapshot.personality_files`. Row N+1: Save & close.
+    cursor: usize,
+    name: String,
+    /// Staged content per canonical filename. Empty string = unset.
+    files: std::collections::BTreeMap<String, String>,
+    /// Canonical filenames the daemon reported in `state.personality_files`.
+    /// Captured at modal open so the row order is stable across re-draws.
+    filenames: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -589,7 +609,7 @@ impl QuickstartPane {
         HelpNode::entries(vec![
             HelpEntry::new(vec!["↑/↓"], "Move between selectors"),
             HelpEntry::new(vec!["Enter"], "Open the highlighted selector"),
-            HelpEntry::key("c", "Create the agent (when all selectors ✓)"),
+            HelpEntry::key("c", "Create the agent (or hit Enter on Submit)"),
             HelpEntry::key("Esc", "Leave (no config written)"),
         ])
     }
@@ -655,7 +675,13 @@ impl QuickstartPane {
                     && let Some(sel) = Selector::ALL.get(idx).copied()
                 {
                     self.last_step = Some(sel.step());
-                    self.open_modal_for(sel);
+                    if matches!(sel, Selector::Submit) {
+                        if self.can_create() {
+                            self.submit().await;
+                        }
+                    } else {
+                        self.open_modal_for(sel);
+                    }
                 }
                 false
             }
@@ -737,7 +763,13 @@ impl QuickstartPane {
                     self.list_state.select(Some(idx));
                     if let Some(sel) = Selector::ALL.get(idx).copied() {
                         self.last_step = Some(sel.step());
-                        self.open_modal_for(sel);
+                        if matches!(sel, Selector::Submit) {
+                            if self.can_create() {
+                                self.submit().await;
+                            }
+                        } else {
+                            self.open_modal_for(sel);
+                        }
                     }
                 }
             }
@@ -758,6 +790,7 @@ impl QuickstartPane {
             Modal::FieldForm(f) => (&mut f.cursor, f.fields.len()),
             Modal::ChannelList(cl) => (&mut cl.cursor, self.modal_row_rects.len()),
             Modal::PeerGroupList(pl) => (&mut pl.cursor, self.modal_row_rects.len()),
+            Modal::Agent(a) => (&mut a.cursor, self.modal_row_rects.len()),
             Modal::TextInput(_) => return,
         };
         if len == 0 {
@@ -790,6 +823,9 @@ impl QuickstartPane {
             Modal::PeerGroupList(pl) => {
                 pl.cursor = idx;
             }
+            Modal::Agent(a) => {
+                a.cursor = idx;
+            }
             Modal::TextInput(_) => {}
         }
     }
@@ -806,14 +842,25 @@ impl QuickstartPane {
             Selector::RiskProfile | Selector::RuntimeProfile | Selector::Memory => {
                 self.open_picker_modal(sel)
             }
-            Selector::AgentIdentity => {
-                self.active_modal = Some(Modal::TextInput(TextInputModal {
-                    selector: sel,
-                    label: "Agent name",
-                    help: "Short identifier (e.g. `helper`, `coder`). Used in `zeroclaw agent <name>`.",
-                    buf: self.form.agent_name.clone(),
-                    is_secret: false,
-                    peer_group_channel: None,
+            Selector::Agent => {
+                let filenames: Vec<String> = self
+                    .state_snapshot
+                    .as_ref()
+                    .map(|s| s.personality_files.iter().map(|s| s.to_string()).collect())
+                    .unwrap_or_default();
+                let mut files: std::collections::BTreeMap<String, String> =
+                    std::collections::BTreeMap::new();
+                for pf in &self.form.personality_files {
+                    files.insert(pf.filename.clone(), pf.content.clone());
+                }
+                for f in &filenames {
+                    files.entry(f.clone()).or_default();
+                }
+                self.active_modal = Some(Modal::Agent(AgentModal {
+                    cursor: 0,
+                    name: self.form.agent_name.clone(),
+                    files,
+                    filenames,
                 }));
             }
             Selector::ModelProvider => {
@@ -837,6 +884,9 @@ impl QuickstartPane {
             Selector::PeerGroups => {
                 self.active_modal = Some(Modal::PeerGroupList(PeerGroupListModal { cursor: 0 }));
             }
+            // Submit is handled by the caller (async submit/validate
+            // flow); reaching this arm means a bug somewhere upstream.
+            Selector::Submit => {}
         }
     }
 
@@ -1163,16 +1213,99 @@ impl QuickstartPane {
                     _ => {}
                 }
             }
+            Modal::Agent(a) => {
+                let row_count = a.filenames.len() + 2;
+                let last_row = row_count - 1;
+                let on_name = a.cursor == 0;
+                let on_save = a.cursor == last_row;
+                let on_file = !on_name && !on_save;
+                match key.code {
+                    KeyCode::Esc => {
+                        self.commit_agent_modal();
+                        self.active_modal = None;
+                        self.revalidate().await;
+                    }
+                    KeyCode::Enter if on_save => {
+                        self.commit_agent_modal();
+                        self.active_modal = None;
+                        self.revalidate().await;
+                    }
+                    KeyCode::Tab | KeyCode::Down => {
+                        if a.cursor + 1 < row_count {
+                            a.cursor += 1;
+                        }
+                    }
+                    KeyCode::Up => {
+                        if a.cursor > 0 {
+                            a.cursor -= 1;
+                        }
+                    }
+                    KeyCode::Char(c) if on_name => {
+                        a.name.push(c);
+                    }
+                    KeyCode::Backspace if on_name => {
+                        a.name.pop();
+                    }
+                    KeyCode::Char('e') | KeyCode::Char('E') if on_file => {
+                        let filename = a.filenames[a.cursor - 1].clone();
+                        let seed = a.files.get(&filename).cloned().unwrap_or_default();
+                        let edited = crate::chat::open_editor_for_content(&seed).await;
+                        if let Some(Modal::Agent(a)) = self.active_modal.as_mut() {
+                            a.files.insert(filename, edited);
+                        }
+                    }
+                    KeyCode::Char('t') | KeyCode::Char('T') if on_file => {
+                        let filename = a.filenames[a.cursor - 1].clone();
+                        let templated = self.fetch_personality_template(&filename).await;
+                        if let (Some(content), Some(Modal::Agent(a))) =
+                            (templated, self.active_modal.as_mut())
+                        {
+                            a.files.insert(filename, content);
+                        }
+                    }
+                    KeyCode::Char('c') | KeyCode::Char('C') if on_file => {
+                        let filename = a.filenames[a.cursor - 1].clone();
+                        a.files.insert(filename, String::new());
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 
-    fn apply_text_choice(&mut self, sel: Selector, value: String) {
-        // Currently only the agent identity selector lands here.
-        // The match form keeps the room for future text selectors
-        // (provider alias, channel alias) without a churn-y rewrite.
-        if sel == Selector::AgentIdentity {
-            self.form.agent_name = value;
-        }
+    fn apply_text_choice(&mut self, _sel: Selector, _value: String) {
+        // Agent name is now committed via `commit_agent_modal`. No other
+        // selector lands here today, but the function stays so adding a
+        // new TextInput flow doesn't need to re-thread the call path.
+    }
+
+    /// Pull staged name and non-empty personality files out of the active
+    /// AgentModal into `FormState`. No-op when the active modal isn't an
+    /// AgentModal.
+    fn commit_agent_modal(&mut self) {
+        let Some(Modal::Agent(a)) = self.active_modal.as_ref() else {
+            return;
+        };
+        self.form.agent_name = a.name.trim().to_string();
+        self.form.personality_files = a
+            .files
+            .iter()
+            .filter(|(_, content)| !content.trim().is_empty())
+            .map(
+                |(filename, content)| crate::wire::QuickstartPersonalityFile {
+                    filename: filename.clone(),
+                    content: content.clone(),
+                },
+            )
+            .collect();
+    }
+
+    async fn fetch_personality_template(&self, filename: &str) -> Option<String> {
+        let res = self.rpc.personality_templates(None).await.ok()?;
+        res.files
+            .into_iter()
+            .find(|f| f.filename == filename)
+            .map(|f| f.content)
     }
 
     fn adopt_existing_provider(&mut self, dotted_ref: String) {
@@ -1878,6 +2011,86 @@ fn draw_modal(
                 cursor_lines,
             )
         }
+        Modal::Agent(a) => {
+            let mut lines: Vec<Line> = Vec::new();
+            let mut cursor_lines: Vec<usize> = Vec::new();
+
+            // Row 0: agent name.
+            cursor_lines.push(lines.len());
+            let on_name = a.cursor == 0;
+            let name_style = if on_name {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let glyph = if on_name { " › " } else { "   " };
+            let display = if a.name.is_empty() {
+                "<unset>".to_string()
+            } else {
+                a.name.clone()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(glyph, Style::default().fg(Color::Yellow)),
+                Span::styled(format!("{:14}", "name"), name_style),
+                Span::styled("  ", Style::default()),
+                Span::styled(display, Style::default().fg(Color::Gray)),
+                if on_name {
+                    Span::styled("█", Style::default().fg(Color::Yellow))
+                } else {
+                    Span::raw("")
+                },
+            ]));
+
+            if !a.filenames.is_empty() {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "Personality files (e=edit, t=use template, c=clear)",
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+
+            for (i, filename) in a.filenames.iter().enumerate() {
+                cursor_lines.push(lines.len());
+                let row_cursor = i + 1;
+                let is_cursor = a.cursor == row_cursor;
+                let glyph = if is_cursor { " › " } else { "   " };
+                let label_style = if is_cursor {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let content = a.files.get(filename).cloned().unwrap_or_default();
+                let status = if content.trim().is_empty() {
+                    "—".to_string()
+                } else {
+                    format!("{} bytes", content.len())
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(glyph, Style::default().fg(Color::Yellow)),
+                    Span::styled(format!("{filename:14}"), label_style),
+                    Span::styled("  ", Style::default()),
+                    Span::styled(status, Style::default().fg(Color::Gray)),
+                ]));
+            }
+
+            lines.push(Line::from(""));
+            cursor_lines.push(lines.len());
+            let last_row = a.filenames.len() + 1;
+            let on_save = a.cursor == last_row;
+            lines.push(action_row_line("Save & close", on_save));
+
+            (
+                " Agent ".to_string(),
+                Vec::new(),
+                lines,
+                "↑/↓ move   type to edit name   e/t/c on file rows   Esc save",
+                cursor_lines,
+            )
+        }
     };
 
     let box_w = area.width.saturating_sub(8).min(80);
@@ -1927,6 +2140,7 @@ fn draw_modal(
             Modal::FieldForm(f) => cursor_lines.get(f.cursor).copied(),
             Modal::ChannelList(cl) => cursor_lines.get(cl.cursor).copied(),
             Modal::PeerGroupList(pl) => cursor_lines.get(pl.cursor).copied(),
+            Modal::Agent(a) => cursor_lines.get(a.cursor).copied(),
             Modal::TextInput(_) => None,
         };
         match selected_line {
