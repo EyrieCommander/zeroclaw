@@ -248,7 +248,11 @@ struct FormState {
     provider_alias: String,
     provider_mode: SelectorMode,
     model: String,
-    api_key: Option<String>,
+    /// Captured field-form values for the model_provider entry,
+    /// keyed by `FieldDescriptor.key` (kebab-case schema identifier).
+    /// Submitted verbatim via `ModelProviderChoice.fields`; the
+    /// daemon writes each entry under `<prefix>.<key>`.
+    provider_fields: std::collections::HashMap<String, String>,
     risk: String,
     risk_mode: SelectorMode,
     runtime: String,
@@ -282,7 +286,7 @@ impl FormState {
             provider_alias: String::new(),
             provider_mode: SelectorMode::Fresh,
             model: String::new(),
-            api_key: None,
+            provider_fields: std::collections::HashMap::new(),
             risk: String::new(),
             risk_mode: SelectorMode::Fresh,
             runtime: String::new(),
@@ -360,8 +364,7 @@ impl FormState {
                 provider_type: self.provider_type.clone(),
                 alias: self.provider_alias.clone(),
                 model: self.model.clone(),
-                api_key: self.api_key.clone(),
-                base_url: None,
+                fields: self.provider_fields.clone(),
             }),
             SelectorMode::Existing => {
                 SelectorChoice::Existing(format!("{}.{}", self.provider_type, self.provider_alias))
@@ -1061,12 +1064,12 @@ impl QuickstartPane {
             self.form.provider_type = ty.to_string();
             self.form.provider_alias = alias.to_string();
             self.form.provider_mode = SelectorMode::Existing;
-            // Default model / api-key aren't carried in the "existing"
-            // path — the runtime resolves the alias against the live
-            // config at apply time. Leave them empty so they don't
-            // overwrite the existing alias's values.
+            // Default model / field values aren't carried in the
+            // "existing" path — the runtime resolves the alias against
+            // the live config at apply time. Leave them empty so they
+            // don't overwrite the existing alias's values.
             self.form.model.clear();
-            self.form.api_key = None;
+            self.form.provider_fields.clear();
         }
     }
 
@@ -1157,7 +1160,10 @@ impl QuickstartPane {
                 FieldFormRow { descriptor: d, buf }
             })
             .collect();
-        let alias = type_key.clone();
+        let alias = match section {
+            QuickstartFieldSection::ModelProvider => "default".to_string(),
+            _ => type_key.clone(),
+        };
         self.active_modal = Some(Modal::FieldForm(FieldFormModal {
             selector: sel,
             type_key,
@@ -1200,15 +1206,26 @@ impl QuickstartPane {
                         .map(|r| r.buf.trim().to_string())
                         .unwrap_or_default()
                 };
-                let api_key = {
-                    let v = pick("api-key");
-                    if v.is_empty() { None } else { Some(v) }
-                };
+                let mut provider_fields: std::collections::HashMap<String, String> =
+                    std::collections::HashMap::new();
+                for row in &f.fields {
+                    // `model` is hoisted to `FormState::model` for the
+                    // summary line; every other descriptor flows
+                    // through `provider_fields` keyed by its schema
+                    // identifier (kebab-case).
+                    if row.descriptor.key == "model" {
+                        continue;
+                    }
+                    let value = row.buf.trim();
+                    if !value.is_empty() {
+                        provider_fields.insert(row.descriptor.key.clone(), value.to_string());
+                    }
+                }
                 self.form.provider_type = f.type_key.clone();
                 self.form.provider_alias = f.alias.clone();
                 self.form.provider_mode = SelectorMode::Fresh;
                 self.form.model = pick("model");
-                self.form.api_key = api_key;
+                self.form.provider_fields = provider_fields;
             }
             Selector::Channels => {
                 let pick = |key: &str| {
@@ -1440,85 +1457,22 @@ fn draw_modal(
     modal: &Modal,
     channels: &[ChannelDraft],
 ) -> (Rect, Vec<Rect>) {
-    let (title, body_lines, footer, cursor_lines): (String, Vec<Line>, &str, Vec<usize>) =
-        match modal {
-            Modal::Picker(p) => {
-                let mut cursor_lines = Vec::with_capacity(p.options.len());
-                let lines: Vec<Line> = p
-                    .options
-                    .iter()
-                    .enumerate()
-                    .map(|(i, opt)| {
-                        cursor_lines.push(i);
-                        let is_cursor = i == p.cursor;
-                        let glyph = if is_cursor { " › " } else { "   " };
-                        let label_style = if is_cursor {
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default().fg(Color::White)
-                        };
-                        Line::from(vec![
-                            Span::styled(glyph, Style::default().fg(Color::Yellow)),
-                            Span::styled(opt.label.as_str(), label_style),
-                            Span::raw("  "),
-                            Span::styled(opt.help.as_str(), Style::default().fg(Color::DarkGray)),
-                        ])
-                    })
-                    .collect();
-                (
-                    format!(" {} ", p.selector.title()),
-                    lines,
-                    "↑/↓ move   Enter pick   Esc cancel",
-                    cursor_lines,
-                )
-            }
-            Modal::TextInput(t) => {
-                let display = if t.is_secret {
-                    "•".repeat(t.buf.chars().count())
-                } else {
-                    t.buf.clone()
-                };
-                let lines = vec![
-                    Line::from(Span::styled(t.help, Style::default().fg(Color::DarkGray))),
-                    Line::from(""),
-                    Line::from(vec![
-                        Span::styled(
-                            format!("{}: ", t.label),
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(display, Style::default().fg(Color::White)),
-                        Span::styled("█", Style::default().fg(Color::Yellow)),
-                    ]),
-                ];
-                (
-                    format!(" {} ", t.selector.title()),
-                    lines,
-                    "Enter accept   Esc cancel",
-                    Vec::new(),
-                )
-            }
-            Modal::FieldForm(f) => {
-                let mut lines: Vec<Line> = Vec::new();
-                let mut cursor_lines = Vec::with_capacity(f.fields.len());
-                lines.push(Line::from(vec![
-                    Span::styled("Type: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        f.type_key.as_str(),
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("    Alias: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(f.alias.as_str(), Style::default().fg(Color::White)),
-                ]));
-                lines.push(Line::from(""));
-                for (i, row) in f.fields.iter().enumerate() {
-                    cursor_lines.push(lines.len());
-                    let is_cursor = i == f.cursor;
+    let (title, header_lines, body_lines, footer, cursor_lines): (
+        String,
+        Vec<Line>,
+        Vec<Line>,
+        &str,
+        Vec<usize>,
+    ) = match modal {
+        Modal::Picker(p) => {
+            let mut cursor_lines = Vec::with_capacity(p.options.len());
+            let lines: Vec<Line> = p
+                .options
+                .iter()
+                .enumerate()
+                .map(|(i, opt)| {
+                    cursor_lines.push(i);
+                    let is_cursor = i == p.cursor;
                     let glyph = if is_cursor { " › " } else { "   " };
                     let label_style = if is_cursor {
                         Style::default()
@@ -1527,110 +1481,202 @@ fn draw_modal(
                     } else {
                         Style::default().fg(Color::White)
                     };
-                    let display = if row.descriptor.is_secret {
-                        "•".repeat(row.buf.chars().count())
-                    } else {
-                        row.buf.clone()
-                    };
-                    let display = if display.is_empty() {
-                        row.descriptor
-                            .default
-                            .as_deref()
-                            .map(|d| format!("(default: {d})"))
-                            .unwrap_or_else(|| "<empty>".to_string())
-                    } else {
-                        display
-                    };
-                    let is_enum = row.descriptor.enum_variants.is_some();
-                    lines.push(Line::from(vec![
+                    Line::from(vec![
                         Span::styled(glyph, Style::default().fg(Color::Yellow)),
-                        Span::styled(format!("{:14}", row.descriptor.label), label_style),
-                        Span::styled("  ", Style::default()),
-                        Span::styled(
-                            if is_enum { "‹ " } else { "" },
-                            Style::default().fg(Color::Yellow),
-                        ),
-                        Span::styled(display, Style::default().fg(Color::Gray)),
-                        Span::styled(
-                            if is_enum { " ›" } else { "" },
-                            Style::default().fg(Color::Yellow),
-                        ),
-                        if is_cursor {
-                            Span::styled("█", Style::default().fg(Color::Yellow))
-                        } else {
-                            Span::raw("")
-                        },
-                    ]));
-                    if is_cursor && !row.descriptor.help.is_empty() {
-                        lines.push(Line::from(Span::styled(
-                            format!("    {}", row.descriptor.help),
-                            Style::default().fg(Color::DarkGray),
-                        )));
-                    }
-                }
-                (
-                    format!(" {} ", f.selector.title()),
-                    lines,
-                    "Tab/↑/↓ move   ←/→ pick on ‹enum›   Enter accept   Esc cancel",
-                    cursor_lines,
-                )
+                        Span::styled(opt.label.as_str(), label_style),
+                        Span::raw("  "),
+                        Span::styled(opt.help.as_str(), Style::default().fg(Color::DarkGray)),
+                    ])
+                })
+                .collect();
+            (
+                format!(" {} ", p.selector.title()),
+                Vec::new(),
+                lines,
+                "↑/↓ move   Enter pick   Esc cancel",
+                cursor_lines,
+            )
+        }
+        Modal::TextInput(t) => {
+            let display = if t.is_secret {
+                "•".repeat(t.buf.chars().count())
+            } else {
+                t.buf.clone()
+            };
+            let lines = vec![
+                Line::from(Span::styled(t.help, Style::default().fg(Color::DarkGray))),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled(
+                        format!("{}: ", t.label),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(display, Style::default().fg(Color::White)),
+                    Span::styled("█", Style::default().fg(Color::Yellow)),
+                ]),
+            ];
+            (
+                format!(" {} ", t.selector.title()),
+                Vec::new(),
+                lines,
+                "Enter accept   Esc cancel",
+                Vec::new(),
+            )
+        }
+        Modal::FieldForm(f) => {
+            let mut lines: Vec<Line> = Vec::new();
+            let mut cursor_lines = Vec::with_capacity(f.fields.len());
+            lines.push(Line::from(vec![
+                Span::styled("Type: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    f.type_key.as_str(),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("    Alias: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(f.alias.as_str(), Style::default().fg(Color::White)),
+            ]));
+            lines.push(Line::from(""));
+            for (i, row) in f.fields.iter().enumerate() {
+                cursor_lines.push(lines.len());
+                let is_cursor = i == f.cursor;
+                let glyph = if is_cursor { " › " } else { "   " };
+                let label_style = if is_cursor {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let raw_display = if row.descriptor.is_secret {
+                    "•".repeat(row.buf.chars().count())
+                } else {
+                    row.buf.clone()
+                };
+                let is_ghost = raw_display.is_empty();
+                let display = if is_ghost {
+                    row.descriptor.default.clone().unwrap_or_default()
+                } else {
+                    raw_display
+                };
+                let value_style = if is_ghost {
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC)
+                } else {
+                    Style::default().fg(Color::Gray)
+                };
+                let is_enum = row.descriptor.enum_variants.is_some();
+                lines.push(Line::from(vec![
+                    Span::styled(glyph, Style::default().fg(Color::Yellow)),
+                    Span::styled(format!("{:14}", row.descriptor.label), label_style),
+                    Span::styled("  ", Style::default()),
+                    Span::styled(
+                        if is_enum { "‹ " } else { "" },
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::styled(display, value_style),
+                    Span::styled(
+                        if is_enum { " ›" } else { "" },
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    if is_cursor {
+                        Span::styled("█", Style::default().fg(Color::Yellow))
+                    } else {
+                        Span::raw("")
+                    },
+                ]));
             }
-            Modal::ChannelList(cl) => {
-                let mut lines: Vec<Line> = Vec::new();
-                let mut cursor_lines: Vec<usize> = Vec::new();
-                let drafts = channels.len();
-                let row_count = drafts + 2;
-                if drafts == 0 {
-                    lines.push(Line::from(Span::styled(
+            // Help band for the highlighted field, rendered above
+            // the form rows in its own region so it can't wrap into
+            // and obscure later rows.
+            let header_lines: Vec<Line> = f
+                .fields
+                .get(f.cursor)
+                .map(|row| row.descriptor.help.as_str())
+                .filter(|h| !h.is_empty())
+                .map(|h| {
+                    vec![
+                        Line::from(Span::styled(
+                            h.to_string(),
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::ITALIC),
+                        )),
+                        Line::from(""),
+                    ]
+                })
+                .unwrap_or_default();
+            (
+                format!(" {} ", f.selector.title()),
+                header_lines,
+                lines,
+                "Tab/↑/↓ move   ←/→ pick on ‹enum›   Enter accept   Esc cancel",
+                cursor_lines,
+            )
+        }
+        Modal::ChannelList(cl) => {
+            let mut lines: Vec<Line> = Vec::new();
+            let mut cursor_lines: Vec<usize> = Vec::new();
+            let drafts = channels.len();
+            let row_count = drafts + 2;
+            if drafts == 0 {
+                lines.push(Line::from(Span::styled(
                     "No channels configured. An agent without channels still works via `zeroclaw agent <name>` from the CLI.",
                     Style::default().fg(Color::DarkGray),
                 )));
-                    lines.push(Line::from(""));
-                } else {
-                    for (i, c) in channels.iter().enumerate() {
-                        cursor_lines.push(lines.len());
-                        let is_cursor = i == cl.cursor;
-                        let glyph = if is_cursor { " › " } else { "   " };
-                        let style = if is_cursor {
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default().fg(Color::White)
-                        };
-                        lines.push(Line::from(vec![
-                            Span::styled(glyph, Style::default().fg(Color::Yellow)),
-                            Span::styled(format!("{}.{}", c.channel_type, c.alias), style),
-                            Span::styled(
-                                if c.token.is_some() {
-                                    "  (token set)"
-                                } else {
-                                    ""
-                                },
-                                Style::default().fg(Color::DarkGray),
-                            ),
-                        ]));
-                    }
-                    lines.push(Line::from(""));
+                lines.push(Line::from(""));
+            } else {
+                for (i, c) in channels.iter().enumerate() {
+                    cursor_lines.push(lines.len());
+                    let is_cursor = i == cl.cursor;
+                    let glyph = if is_cursor { " › " } else { "   " };
+                    let style = if is_cursor {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(glyph, Style::default().fg(Color::Yellow)),
+                        Span::styled(format!("{}.{}", c.channel_type, c.alias), style),
+                        Span::styled(
+                            if c.token.is_some() {
+                                "  (token set)"
+                            } else {
+                                ""
+                            },
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ]));
                 }
-                let add_idx = drafts;
-                let done_idx = drafts + 1;
-                cursor_lines.push(lines.len());
-                lines.push(action_row_line("+ Add channel", cl.cursor == add_idx));
-                cursor_lines.push(lines.len());
-                lines.push(action_row_line("Done", cl.cursor == done_idx));
-                let _ = row_count; // already encoded by the cursor styling above.
-                (
-                    " Channels ".to_string(),
-                    lines,
-                    "↑/↓ move   Enter activate   d delete   Esc close",
-                    cursor_lines,
-                )
+                lines.push(Line::from(""));
             }
-        };
+            let add_idx = drafts;
+            let done_idx = drafts + 1;
+            cursor_lines.push(lines.len());
+            lines.push(action_row_line("+ Add channel", cl.cursor == add_idx));
+            cursor_lines.push(lines.len());
+            lines.push(action_row_line("Done", cl.cursor == done_idx));
+            let _ = row_count; // already encoded by the cursor styling above.
+            (
+                " Channels ".to_string(),
+                Vec::new(),
+                lines,
+                "↑/↓ move   Enter activate   d delete   Esc close",
+                cursor_lines,
+            )
+        }
+    };
 
     let box_w = area.width.saturating_sub(8).min(80);
-    let box_h = (body_lines.len() as u16 + 4).min(area.height.saturating_sub(4));
+    let header_h = header_lines.len() as u16;
+    let total_content = header_h + body_lines.len() as u16;
+    let box_h = (total_content + 4).min(area.height.saturating_sub(4));
     let x = area.x + area.width.saturating_sub(box_w) / 2;
     let y = area.y + area.height.saturating_sub(box_h) / 2;
     let rect = Rect::new(x, y, box_w, box_h);
@@ -1649,13 +1695,50 @@ fn draw_modal(
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
-    let body = Paragraph::new(body_lines).wrap(Wrap { trim: false });
+    // Footer occupies the last line of `inner`. The remaining vertical
+    // space is split between an optional header band (per-field help)
+    // and the body (form rows / picker entries).
+    let inner_content_h = inner.height.saturating_sub(1);
+    let effective_header_h = header_h.min(inner_content_h);
+    let header_rect = Rect::new(inner.x, inner.y, inner.width, effective_header_h);
     let body_rect = Rect::new(
         inner.x,
-        inner.y,
+        inner.y + effective_header_h,
         inner.width,
-        inner.height.saturating_sub(1),
+        inner_content_h.saturating_sub(effective_header_h),
     );
+
+    let body_h = body_rect.height as usize;
+    let body_len = body_lines.len();
+    let scroll_offset: u16 = if body_len > body_h && body_h > 0 {
+        // Pick the cursor line that should stay visible. Modals without
+        // a row cursor (TextInput) leave this as None and the body just
+        // top-aligns; everything else (Picker, FieldForm, ChannelList)
+        // keeps the selected row inside the viewport.
+        let selected_line = match modal {
+            Modal::Picker(p) => cursor_lines.get(p.cursor).copied(),
+            Modal::FieldForm(f) => cursor_lines.get(f.cursor).copied(),
+            Modal::ChannelList(cl) => cursor_lines.get(cl.cursor).copied(),
+            Modal::TextInput(_) => None,
+        };
+        match selected_line {
+            Some(sel) if sel >= body_h => (sel + 1 - body_h) as u16,
+            _ => 0,
+        }
+    } else {
+        0
+    };
+
+    if effective_header_h > 0 {
+        frame.render_widget(
+            Paragraph::new(header_lines).wrap(Wrap { trim: false }),
+            header_rect,
+        );
+    }
+
+    let body = Paragraph::new(body_lines)
+        .wrap(Wrap { trim: false })
+        .scroll((scroll_offset, 0));
     frame.render_widget(body, body_rect);
 
     let footer_rect = Rect::new(
@@ -1670,17 +1753,18 @@ fn draw_modal(
     );
 
     // Translate cursor → body-line indices into screen-row hit-rects.
-    // Body lines past `body_rect.height` got clipped, so anything off
-    // the painted area gets a zero-sized rect (so a click can't hit
-    // it accidentally).
+    // Lines outside the visible viewport (clipped by `body_rect.height`
+    // or scrolled past) get a zero-sized rect so a click can't hit
+    // them accidentally.
     let row_rects: Vec<Rect> = cursor_lines
         .into_iter()
         .map(|line_idx| {
-            let dy = line_idx as u16;
-            if dy >= body_rect.height {
-                Rect::new(0, 0, 0, 0)
-            } else {
-                Rect::new(body_rect.x, body_rect.y + dy, body_rect.width, 1)
+            let scrolled = (line_idx as u16).checked_sub(scroll_offset);
+            match scrolled {
+                Some(dy) if dy < body_rect.height => {
+                    Rect::new(body_rect.x, body_rect.y + dy, body_rect.width, 1)
+                }
+                _ => Rect::new(0, 0, 0, 0),
             }
         })
         .collect();

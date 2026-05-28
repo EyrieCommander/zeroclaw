@@ -30,8 +30,11 @@ interface StagedProvider {
   provider_type: string;
   alias: string;
   model: string;
-  api_key: string | null;
-  base_url: string | null;
+  /** Round-trip of `FieldDescriptor.key` -> user-typed value.
+   *  The web surface knows nothing about which keys exist; the
+   *  daemon authors them via `/api/quickstart/fields` and consumes
+   *  them on the way back. */
+  fields: Record<string, string>;
 }
 
 interface StagedChannel {
@@ -550,6 +553,7 @@ function LabeledInput({
   type = "text",
   placeholder,
   multiline = false,
+  help,
 }: {
   label: string;
   value: string;
@@ -557,12 +561,18 @@ function LabeledInput({
   type?: "text" | "password";
   placeholder?: string;
   multiline?: boolean;
+  help?: string;
 }) {
   return (
     <label className="block">
       <div className="text-xs uppercase tracking-wider mb-1" style={MUTED}>
         {label}
       </div>
+      {help ? (
+        <div className="text-xs mb-1 italic" style={MUTED}>
+          {help}
+        </div>
+      ) : null}
       {multiline ? (
         <textarea
           className="input-electric w-full px-3 py-2 min-h-24"
@@ -591,10 +601,12 @@ function ProviderForm({
   onStage: (p: StagedProvider) => void;
 }) {
   const [type, setType] = useState("");
-  const [alias, setAlias] = useState("");
+  const [alias, setAlias] = useState("default");
   const [model, setModel] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
+  // Generic field-buffer keyed by descriptor key. The web surface
+  // knows nothing about which keys exist; whatever the daemon emits
+  // in `quickstart/fields` gets a corresponding `<input>` here.
+  const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
   const [catalog, setCatalog] = useState<ModelsResponse | null>(null);
   const [descriptors, setDescriptors] = useState<QuickstartFieldDescriptor[]>(
     [],
@@ -604,6 +616,7 @@ function ProviderForm({
     if (!type) {
       setCatalog(null);
       setDescriptors([]);
+      setFieldValues({});
       return;
     }
     let cancelled = false;
@@ -613,9 +626,22 @@ function ProviderForm({
           section: "model_provider",
           type_key: type,
         });
-        if (!cancelled) setDescriptors(f.fields);
+        if (!cancelled) {
+          setDescriptors(f.fields);
+          // Reset the buffer to an empty value per descriptor so the
+          // ghost-text placeholder (descriptor.default) is what the
+          // user sees until they type.
+          const next: Record<string, string> = {};
+          for (const d of f.fields) {
+            next[d.key] = "";
+          }
+          setFieldValues(next);
+        }
       } catch {
-        if (!cancelled) setDescriptors([]);
+        if (!cancelled) {
+          setDescriptors([]);
+          setFieldValues({});
+        }
       }
       try {
         const r = await getCatalogModels(type);
@@ -634,17 +660,22 @@ function ProviderForm({
       state?.model_provider_types.find((t) => t.kind === type)?.local ?? false,
     [state, type],
   );
-  const wantApiKey = descriptors.some(
-    (d) => d.key === "api-key" || d.is_secret,
-  );
-  const wantBaseUrl = descriptors.some(
-    (d) => d.key === "base-url" || d.key === "uri",
+  // A required secret descriptor (e.g. `api-key`) is the gate that
+  // prevents adding the provider when the user hasn't pasted a key.
+  // Local providers (Ollama, etc.) carry `local = true` and skip the
+  // gate even if a secret descriptor happens to exist.
+  const missingRequiredSecret = descriptors.some(
+    (d) =>
+      d.required &&
+      d.is_secret &&
+      !isLocal &&
+      (fieldValues[d.key] ?? "").trim() === "",
   );
   const canAdd =
     type !== "" &&
     alias.trim() !== "" &&
     model.trim() !== "" &&
-    (!wantApiKey || isLocal || apiKey.trim() !== "");
+    !missingRequiredSecret;
 
   return (
     <>
@@ -658,7 +689,6 @@ function ProviderForm({
           onChange={(e) => {
             const next = e.target.value;
             setType(next);
-            setAlias((prev) => (prev === "" || prev === type ? next : prev));
             setModel("");
           }}
         >
@@ -674,11 +704,11 @@ function ProviderForm({
         </select>
       </label>
 
-      <LabeledInput label="Alias" value={alias} onChange={setAlias} />
+      <LabeledInput label="alias" value={alias} onChange={setAlias} />
 
       <label className="block">
         <div className="text-xs uppercase tracking-wider mb-1" style={MUTED}>
-          Model
+          model
         </div>
         <input
           className="input-electric w-full px-3 py-2"
@@ -693,37 +723,42 @@ function ProviderForm({
         </datalist>
       </label>
 
-      {wantApiKey && !isLocal && (
-        <LabeledInput
-          label="API key"
-          type="password"
-          value={apiKey}
-          onChange={setApiKey}
-        />
-      )}
-
-      {wantBaseUrl && (
-        <LabeledInput
-          label="Base URL (optional)"
-          value={baseUrl}
-          onChange={setBaseUrl}
-        />
-      )}
+      {descriptors
+        .filter((d) => d.key !== "model")
+        .map((d) => (
+          <LabeledInput
+            key={d.key}
+            label={d.label}
+            help={d.help}
+            type={d.is_secret ? "password" : "text"}
+            value={fieldValues[d.key] ?? ""}
+            placeholder={d.default ?? ""}
+            onChange={(value) =>
+              setFieldValues((prev) => ({ ...prev, [d.key]: value }))
+            }
+          />
+        ))}
 
       <div className="flex justify-end">
         <button
           type="button"
           className="btn-primary px-4 py-2 text-sm inline-flex items-center gap-2"
           disabled={!canAdd}
-          onClick={() =>
+          onClick={() => {
+            const fields: Record<string, string> = {};
+            for (const [key, value] of Object.entries(fieldValues)) {
+              const trimmed = value.trim();
+              if (trimmed !== "") {
+                fields[key] = trimmed;
+              }
+            }
             onStage({
               provider_type: type,
               alias: alias.trim(),
               model: model.trim(),
-              api_key: apiKey.trim() === "" ? null : apiKey.trim(),
-              base_url: baseUrl.trim() === "" ? null : baseUrl.trim(),
-            })
-          }
+              fields,
+            });
+          }}
         >
           <Plus className="h-3.5 w-3.5" />
           Add

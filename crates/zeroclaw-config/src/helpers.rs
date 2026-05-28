@@ -445,6 +445,18 @@ pub fn resolve_field_path(known_paths: &[String], raw: &str) -> String {
     raw.to_string()
 }
 
+/// Inverse of the `Configurable` macro's internal `snake_to_kebab`.
+///
+/// Field paths emitted by `prop_fields()` are kebab-case (per the macro's
+/// snake→kebab transform of the underlying Rust idents). Surfaces that want
+/// to display the field under its serde-canonical snake_case spelling — for
+/// example `api_key` rather than `api-key` — use this to convert.
+///
+/// No-op for keys without `-`.
+pub fn kebab_to_snake(key: &str) -> String {
+    key.replace('-', "_")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -656,5 +668,20 @@ mod tests {
         let resolved = resolve_field_path(&known, "providers.models.anthropic.my_bot.api_key");
         assert!(resolved.contains("my_bot"));
         assert!(!resolved.contains("my-bot"));
+    }
+
+    #[test]
+    fn kebab_to_snake_converts_hyphens() {
+        assert_eq!(kebab_to_snake("api-key"), "api_key");
+        assert_eq!(kebab_to_snake("bot-token"), "bot_token");
+        assert_eq!(kebab_to_snake("allowed-users"), "allowed_users");
+        assert_eq!(kebab_to_snake("external-peers"), "external_peers");
+    }
+
+    #[test]
+    fn kebab_to_snake_noop_for_plain_keys() {
+        assert_eq!(kebab_to_snake("uri"), "uri");
+        assert_eq!(kebab_to_snake("model"), "model");
+        assert_eq!(kebab_to_snake(""), "");
     }
 }

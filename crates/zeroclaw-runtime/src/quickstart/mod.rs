@@ -10,6 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use zeroclaw_config::helpers::kebab_to_snake;
 use zeroclaw_config::presets::{
     AgentIdentity, BuilderSubmission, ChannelQuickStart, MemoryChoice, ModelProviderChoice,
     SelectorChoice, risk_preset, runtime_preset,
@@ -640,7 +641,7 @@ pub fn field_shape(section: FieldSection, type_key: &str) -> Vec<FieldDescriptor
         };
         out.push(FieldDescriptor {
             key: field_path.to_string(),
-            label: humanize_field_key(field_path),
+            label: kebab_to_snake(field_path),
             help: info.description.trim().to_string(),
             kind: info.kind,
             is_secret: info.is_secret,
@@ -669,21 +670,6 @@ pub fn field_shape(section: FieldSection, type_key: &str) -> Vec<FieldDescriptor
 const MODEL_PROVIDER_ESSENTIALS: &[&str] = &["model", "api-key", "uri"];
 const CHANNEL_ESSENTIALS: &[&str] = &["bot-token", "token", "webhook-url", "allowed-users"];
 const PEER_GROUP_ESSENTIALS: &[&str] = &["channel", "external-peers", "agents", "ignore"];
-
-fn humanize_field_key(key: &str) -> String {
-    // Hand-pick labels for fields whose generic Title-Case rendering
-    // is ugly or misleading ("Uri", "Api key").
-    match key {
-        "uri" => return "Base URL".to_string(),
-        "api-key" => return "API key".to_string(),
-        _ => {}
-    }
-    let mut s = key.replace('-', " ");
-    if let Some(c) = s.get_mut(0..1) {
-        c.make_ascii_uppercase();
-    }
-    s
-}
 
 fn apply_into(
     config: &mut Config,
@@ -910,25 +896,23 @@ fn apply_model_provider(
                 ));
                 return None;
             }
-            if let Some(key) = &choice.api_key
-                && let Err(err) = config.set_prop_persistent(&format!("{prefix}.api-key"), key)
-            {
-                errors.push(QuickstartError::new(
-                    QuickstartStep::ModelProvider,
-                    "api_key",
-                    err.to_string(),
-                ));
-                return None;
-            }
-            if let Some(uri) = &choice.base_url
-                && let Err(err) = config.set_prop_persistent(&format!("{prefix}.uri"), uri)
-            {
-                errors.push(QuickstartError::new(
-                    QuickstartStep::ModelProvider,
-                    "base_url",
-                    err.to_string(),
-                ));
-                return None;
+            // Round-trip every field the surface echoed back. Keys are
+            // whatever `field_shape()` emitted — the daemon authored
+            // them, so it knows where they go.
+            let mut entries: Vec<(&String, &String)> = choice.fields.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            for (key, value) in entries {
+                if value.is_empty() {
+                    continue;
+                }
+                if let Err(err) = config.set_prop_persistent(&format!("{prefix}.{key}"), value) {
+                    errors.push(QuickstartError::new(
+                        QuickstartStep::ModelProvider,
+                        zeroclaw_config::helpers::kebab_to_snake(key),
+                        err.to_string(),
+                    ));
+                    return None;
+                }
             }
             Some(format!("{}.{}", choice.provider_type, choice.alias))
         }
@@ -1556,8 +1540,10 @@ mod tests {
                 provider_type: "anthropic".into(),
                 alias: "anthropic".into(),
                 model: "claude-sonnet-4-5".into(),
-                api_key: Some("sk-test".into()),
-                base_url: None,
+                fields: std::collections::HashMap::from([(
+                    "api-key".to_string(),
+                    "sk-test".to_string(),
+                )]),
             }),
             risk_profile: SelectorChoice::Fresh("balanced".into()),
             runtime_profile: SelectorChoice::Fresh("balanced".into()),

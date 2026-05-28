@@ -1806,13 +1806,22 @@ async fn run_quickstart_cli(
             api_key,
             base_url,
             ..
-        } => SelectorChoice::Fresh(ModelProviderChoice {
-            provider_type: kind,
-            alias,
-            model,
-            api_key,
-            base_url,
-        }),
+        } => {
+            let mut fields: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            if let Some(value) = api_key.filter(|s| !s.is_empty()) {
+                fields.insert("api-key".into(), value);
+            }
+            if let Some(value) = base_url.filter(|s| !s.is_empty()) {
+                fields.insert("uri".into(), value);
+            }
+            SelectorChoice::Fresh(ModelProviderChoice {
+                provider_type: kind,
+                alias,
+                model,
+                fields,
+            })
+        }
         ProviderChoice::Existing { alias_ref } => SelectorChoice::Existing(alias_ref),
     };
     let risk_profile = match form.risk.expect("risk satisfied") {

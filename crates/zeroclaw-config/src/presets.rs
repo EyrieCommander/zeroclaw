@@ -276,20 +276,19 @@ pub struct ModelProviderChoice {
     /// Provider type identifier (`anthropic`, `openai`, `openrouter`,
     /// `ollama`, etc.). Used as the type segment in the TOML path.
     pub provider_type: String,
-    /// User-named alias. Defaults to `provider_type` in the UI;
-    /// users override when stacking multiple aliases of the same
-    /// provider type (e.g. `anthropic-work`, `anthropic-personal`).
+    /// User-named alias. Defaults to `"default"` in the UI; users
+    /// override when stacking multiple aliases of the same provider
+    /// type (e.g. `anthropic-work`, `anthropic-personal`).
     pub alias: String,
-    /// Model id written to `providers.models.<type>.<alias>.model` and
-    /// `agents.<name>.model` at apply time.
+    /// Model id written to `providers.models.<type>.<alias>.model` at
+    /// apply time.
     pub model: String,
-    /// API key for cloud providers. `None` for local providers like
-    /// Ollama; required (and inline-validated) for cloud providers.
-    /// Stored in config via the secrets layer, never logged.
-    pub api_key: Option<String>,
-    /// Base URL override. Used by Ollama and OpenAI-compatible
-    /// gateways. `None` falls back to the provider's default endpoint.
-    pub base_url: Option<String>,
+    /// Round-trip of every field the daemon described in
+    /// `quickstart/fields`. Surfaces echo back exactly what was
+    /// emitted; the daemon writes each entry under `<prefix>.<key>`
+    /// using its own schema knowledge.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub fields: std::collections::HashMap<String, String>,
 }
 
 /// Single-channel entry submitted by the Channels widget. The
@@ -530,8 +529,10 @@ mod tests {
                 provider_type: "anthropic".into(),
                 alias: "anthropic".into(),
                 model: "claude-sonnet-4-5".into(),
-                api_key: Some("sk-test".into()),
-                base_url: None,
+                fields: std::collections::HashMap::from([(
+                    "api-key".to_string(),
+                    "sk-test".to_string(),
+                )]),
             }),
             risk_profile: SelectorChoice::Fresh("balanced".into()),
             runtime_profile: SelectorChoice::Fresh("balanced".into()),

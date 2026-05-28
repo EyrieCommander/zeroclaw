@@ -17,6 +17,8 @@
 //! the shape from scratch and risk drift.
 #![allow(dead_code)]
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -27,8 +29,12 @@ pub struct ModelProviderChoice {
     pub provider_type: String,
     pub alias: String,
     pub model: String,
-    pub api_key: Option<String>,
-    pub base_url: Option<String>,
+    /// Round-trip of every field the daemon described in
+    /// `quickstart/fields`, keyed by `FieldDescriptor.key`. The TUI
+    /// does not know what these keys mean; the daemon authored them
+    /// and consumes them on the way back.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub fields: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
