@@ -1673,10 +1673,12 @@ async fn run_quickstart_cli(
         runtime_profile,
         memory,
         channels,
+        peer_groups: Vec::new(),
         agent: AgentIdentity {
             name: agent_choice.name.clone(),
             system_prompt: agent_choice.system_prompt,
             personality_file: None,
+            personality_files: Vec::new(),
         },
     };
 

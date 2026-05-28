@@ -1166,6 +1166,8 @@ export interface QuickstartState {
   runtime_presets: QuickstartPreset[];
   /** Memory backend snake-case keys from `MemoryBackendKind`. */
   memory_kinds: string[];
+  /** Canonical personality filenames the Quickstart accepts. */
+  personality_files: string[];
 }
 
 /** One row in a closed-set preset table (risk / runtime). */

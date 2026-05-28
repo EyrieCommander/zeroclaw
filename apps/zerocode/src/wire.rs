@@ -43,6 +43,24 @@ pub struct AgentIdentity {
     pub name: String,
     pub system_prompt: String,
     pub personality_file: Option<String>,
+    #[serde(default)]
+    pub personality_files: Vec<QuickstartPersonalityFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuickstartPersonalityFile {
+    pub filename: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuickstartPeerGroup {
+    pub name: String,
+    pub channel: String,
+    #[serde(default)]
+    pub external_peers: Vec<String>,
+    #[serde(default)]
+    pub ignore: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -52,6 +70,8 @@ pub struct BuilderSubmission {
     pub runtime_profile: SelectorChoice<String>,
     pub memory: SelectorChoice<MemoryBackendKind>,
     pub channels: Vec<SelectorChoice<ChannelQuickStart>>,
+    #[serde(default)]
+    pub peer_groups: Vec<QuickstartPeerGroup>,
     pub agent: AgentIdentity,
 }
 
@@ -98,6 +118,8 @@ pub struct QuickstartState {
     pub runtime_presets: Vec<QuickstartPresetMirror>,
     #[serde(default)]
     pub memory_kinds: Vec<String>,
+    #[serde(default)]
+    pub personality_files: Vec<String>,
 }
 
 /// Wire view of `zeroclaw_config::presets::RiskPreset` / `RuntimePreset`.

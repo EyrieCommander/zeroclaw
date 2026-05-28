@@ -4,12 +4,14 @@ import {
   Bot,
   ChevronRight,
   Cpu,
+  FileText,
   Gauge,
   HardDrive,
   Plus,
   Radio,
   ShieldCheck,
   Trash2,
+  Users,
 } from "lucide-react";
 import {
   type ModelsResponse,
@@ -39,6 +41,19 @@ interface StagedChannel {
   extras: Record<string, string>;
 }
 
+interface StagedPeerGroup {
+  /** Default `<type>_<alias>_default`, derived from the channel ref. */
+  name: string;
+  /** `<type>.<alias>` — either a staged channel or an unassigned existing one. */
+  channel: string;
+  external_peers: string[];
+}
+
+interface StagedPersonalityFile {
+  filename: string;
+  content: string;
+}
+
 /** A preset selection — typed wrapper around a `preset_name` so the
  *  shape can't carry a raw user-typed string. The only way to construct
  *  one is via the `PresetSection` picker, which sources values from
@@ -53,8 +68,10 @@ interface FormState {
   runtime: StagedPreset | null;
   memory: StagedPreset | null;
   channels: StagedChannel[];
+  peerGroups: StagedPeerGroup[];
   agentName: string;
   agentSystemPrompt: string;
+  personalityFiles: StagedPersonalityFile[];
 }
 
 const DEFAULT_FORM: FormState = {
@@ -63,8 +80,10 @@ const DEFAULT_FORM: FormState = {
   runtime: null,
   memory: null,
   channels: [],
+  peerGroups: [],
   agentName: "",
   agentSystemPrompt: "",
+  personalityFiles: [],
 };
 
 const MUTED = { color: "var(--pc-text-muted)" } as const;
@@ -142,10 +161,12 @@ export default function Quickstart() {
               },
             },
       ),
+      peer_groups: form.peerGroups,
       agent: {
         name: form.agentName,
         system_prompt: form.agentSystemPrompt,
         personality_file: null,
+        personality_files: form.personalityFiles,
       },
     });
     setBusy(false);
@@ -265,9 +286,44 @@ export default function Quickstart() {
             recordStep("channels");
           }}
           onRemove={(i) =>
+            setForm((f) => {
+              const removed = f.channels[i];
+              const ref = removed
+                ? `${removed.channel_type}.${removed.alias}`
+                : null;
+              return {
+                ...f,
+                channels: f.channels.filter((_, idx) => idx !== i),
+                peerGroups: ref
+                  ? f.peerGroups.filter((pg) => pg.channel !== ref)
+                  : f.peerGroups,
+              };
+            })
+          }
+        />
+      </Section>
+
+      <Section
+        icon={<Users className="h-4 w-4" />}
+        title="Peer groups"
+        done={true}
+        summary={
+          form.peerGroups.length === 0
+            ? "none — channels accept no peers"
+            : `${form.peerGroups.length} configured`
+        }
+      >
+        <PeerGroupsList
+          state={state}
+          stagedChannels={form.channels}
+          stagedPeerGroups={form.peerGroups}
+          onAdd={(pg) =>
+            setForm((f) => ({ ...f, peerGroups: [...f.peerGroups, pg] }))
+          }
+          onRemove={(i) =>
             setForm((f) => ({
               ...f,
-              channels: f.channels.filter((_, idx) => idx !== i),
+              peerGroups: f.peerGroups.filter((_, idx) => idx !== i),
             }))
           }
         />
@@ -293,6 +349,38 @@ export default function Quickstart() {
           value={form.agentSystemPrompt}
           onChange={(v) => setForm((f) => ({ ...f, agentSystemPrompt: v }))}
           multiline
+        />
+      </Section>
+
+      <Section
+        icon={<FileText className="h-4 w-4" />}
+        title="Personality files"
+        done={true}
+        summary={
+          form.personalityFiles.length === 0
+            ? "none — agent uses bootstrap defaults"
+            : `${form.personalityFiles.length} staged`
+        }
+      >
+        <PersonalityFilesList
+          state={state}
+          staged={form.personalityFiles}
+          onStage={(file) =>
+            setForm((f) => {
+              const others = f.personalityFiles.filter(
+                (p) => p.filename !== file.filename,
+              );
+              return { ...f, personalityFiles: [...others, file] };
+            })
+          }
+          onRemove={(filename) =>
+            setForm((f) => ({
+              ...f,
+              personalityFiles: f.personalityFiles.filter(
+                (p) => p.filename !== filename,
+              ),
+            }))
+          }
         />
       </Section>
 
@@ -903,6 +991,285 @@ function ChannelAddForm({
           <Plus className="h-3.5 w-3.5" />
           Add
         </button>
+      </div>
+    </div>
+  );
+}
+
+function PeerGroupsList({
+  state,
+  stagedChannels,
+  stagedPeerGroups,
+  onAdd,
+  onRemove,
+}: {
+  state: QuickstartState | null;
+  stagedChannels: StagedChannel[];
+  stagedPeerGroups: StagedPeerGroup[];
+  onAdd: (pg: StagedPeerGroup) => void;
+  onRemove: (i: number) => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  // Available channel refs: staged channels (in this run) + unassigned
+  // channels already in config. Refs already covered by a staged
+  // peer-group are filtered out — one peer-group per channel in v1.
+  const stagedRefs = useMemo(
+    () => stagedChannels.map((c) => `${c.channel_type}.${c.alias}`),
+    [stagedChannels],
+  );
+  const claimed = useMemo(
+    () => new Set(stagedPeerGroups.map((pg) => pg.channel)),
+    [stagedPeerGroups],
+  );
+  const available = useMemo(
+    () =>
+      [...stagedRefs, ...(state?.unassigned_channels ?? [])].filter(
+        (r) => !claimed.has(r),
+      ),
+    [stagedRefs, state, claimed],
+  );
+
+  return (
+    <>
+      {stagedPeerGroups.length > 0 && (
+        <div
+          className="surface-panel divide-y rounded-xl overflow-hidden"
+          style={{ borderColor: "var(--pc-border)" }}
+        >
+          {stagedPeerGroups.map((pg, i) => (
+            <div
+              key={`${pg.name}.${i}`}
+              className="flex items-center justify-between gap-3 px-4 py-3 text-sm"
+            >
+              <div className="min-w-0">
+                <div style={{ fontWeight: 500 }}>{pg.name}</div>
+                <code className="block text-xs mt-0.5" style={FAINT}>
+                  channel: {pg.channel}
+                  {pg.external_peers.length > 0
+                    ? ` · ${pg.external_peers.length} peers`
+                    : " · no peers"}
+                </code>
+              </div>
+              <button
+                type="button"
+                className="btn-icon"
+                onClick={() => onRemove(i)}
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {available.length === 0 ? (
+        <div className="text-xs" style={MUTED}>
+          {stagedChannels.length === 0
+            ? "Stage at least one channel above to authorize peers."
+            : "Every available channel has a peer-group staged."}
+        </div>
+      ) : adding ? (
+        <PeerGroupAddForm
+          availableChannels={available}
+          onAdd={(pg) => {
+            onAdd(pg);
+            setAdding(false);
+          }}
+          onCancel={() => setAdding(false)}
+        />
+      ) : (
+        <button
+          type="button"
+          className="btn-secondary px-4 py-2 text-sm inline-flex items-center gap-2"
+          onClick={() => setAdding(true)}
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add peer group
+        </button>
+      )}
+    </>
+  );
+}
+
+function PeerGroupAddForm({
+  availableChannels,
+  onAdd,
+  onCancel,
+}: {
+  availableChannels: string[];
+  onAdd: (pg: StagedPeerGroup) => void;
+  onCancel: () => void;
+}) {
+  const [channel, setChannel] = useState(availableChannels[0] ?? "");
+  const [peersBuf, setPeersBuf] = useState("");
+
+  // Default name derived from the channel ref (`<type>_<alias>_default`).
+  // Backend re-derives if missing; surface fills for predictability.
+  const name = useMemo(() => {
+    const [type, alias] = channel.split(".");
+    if (!type || !alias) return "";
+    return `${type}_${alias}_default`;
+  }, [channel]);
+
+  const peers = useMemo(
+    () =>
+      peersBuf
+        .split(/[\n,]/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0),
+    [peersBuf],
+  );
+
+  const canAdd = channel !== "" && name !== "";
+
+  return (
+    <div
+      className="card p-4 space-y-3"
+      style={{ background: "var(--pc-bg-elevated)" }}
+    >
+      <label className="block">
+        <div className="text-xs uppercase tracking-wider mb-1" style={MUTED}>
+          Channel
+        </div>
+        <select
+          className="input-electric w-full px-3 py-2"
+          value={channel}
+          onChange={(e) => setChannel(e.target.value)}
+        >
+          {availableChannels.map((r) => (
+            <option key={r} value={r}>
+              {r}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <LabeledInput
+        label="External peers (one per line or comma-separated)"
+        value={peersBuf}
+        onChange={setPeersBuf}
+        multiline
+        placeholder="@alice&#10;@bob"
+      />
+
+      <div className="text-xs" style={MUTED}>
+        Peer group will be named <code>{name || "—"}</code>.
+      </div>
+
+      <div className="flex justify-end gap-2">
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={onCancel}
+          style={{ padding: "0.4rem 0.8rem", fontSize: "0.85rem" }}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="btn-primary px-4 py-2 text-sm inline-flex items-center gap-2"
+          disabled={!canAdd}
+          onClick={() => onAdd({ name, channel, external_peers: peers })}
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PersonalityFilesList({
+  state,
+  staged,
+  onStage,
+  onRemove,
+}: {
+  state: QuickstartState | null;
+  staged: StagedPersonalityFile[];
+  onStage: (file: StagedPersonalityFile) => void;
+  onRemove: (filename: string) => void;
+}) {
+  const [editing, setEditing] = useState<string | null>(null);
+  const [buf, setBuf] = useState("");
+  const filenames = state?.personality_files ?? [];
+  const stagedByFilename = useMemo(
+    () => new Map(staged.map((f) => [f.filename, f.content])),
+    [staged],
+  );
+
+  if (filenames.length === 0) {
+    return (
+      <div className="text-xs" style={MUTED}>
+        Loading…
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div
+        className="surface-panel divide-y rounded-xl overflow-hidden"
+        style={{ borderColor: "var(--pc-border)" }}
+      >
+        {filenames.map((fn) => {
+          const isStaged = stagedByFilename.has(fn);
+          const isEditing = editing === fn;
+          return (
+            <div key={fn} className="px-4 py-3 text-sm space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <span style={{ fontWeight: 500 }}>{fn}</span>
+                  {isStaged && (
+                    <span className="ml-2 text-xs" style={MUTED}>
+                      staged
+                    </span>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  {isStaged && (
+                    <button
+                      type="button"
+                      className="btn-icon"
+                      onClick={() => onRemove(fn)}
+                      title="Discard"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ padding: "0.3rem 0.7rem", fontSize: "0.8rem" }}
+                    onClick={() => {
+                      if (isEditing) {
+                        if (buf.trim() === "") {
+                          onRemove(fn);
+                        } else {
+                          onStage({ filename: fn, content: buf });
+                        }
+                        setEditing(null);
+                      } else {
+                        setBuf(stagedByFilename.get(fn) ?? "");
+                        setEditing(fn);
+                      }
+                    }}
+                  >
+                    {isEditing ? "Save" : isStaged ? "Edit" : "Add"}
+                  </button>
+                </div>
+              </div>
+              {isEditing && (
+                <textarea
+                  className="input-electric w-full px-3 py-2 min-h-32 font-mono text-xs"
+                  value={buf}
+                  onChange={(e) => setBuf(e.target.value)}
+                  placeholder={`Contents of ${fn}…`}
+                />
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

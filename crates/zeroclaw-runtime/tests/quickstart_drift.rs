@@ -27,10 +27,12 @@ fn fixture_submission() -> BuilderSubmission {
         runtime_profile: SelectorChoice::Fresh("balanced".into()),
         memory: SelectorChoice::Fresh(MemoryChoice::Sqlite),
         channels: vec![],
+        peer_groups: vec![],
         agent: AgentIdentity {
             name: "drift_bot".into(),
             system_prompt: String::new(),
             personality_file: None,
+            personality_files: vec![],
         },
     }
 }

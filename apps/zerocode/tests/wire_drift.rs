@@ -60,10 +60,12 @@ fn builder_submission_round_trips() {
             alias: "tg".into(),
             token: Some("xyz".into()),
         })],
+        peer_groups: vec![],
         agent: presets::AgentIdentity {
             name: "demo".into(),
             system_prompt: "be terse".into(),
             personality_file: Some("foo.md".into()),
+            personality_files: vec![],
         },
     };
     let json = serde_json::to_value(&canonical).expect("serialize canonical");
@@ -115,6 +117,7 @@ fn quickstart_state_mirrors_canonical() {
         risk_presets: zeroclaw_config::presets::RISK_PRESETS,
         runtime_presets: zeroclaw_config::presets::RUNTIME_PRESETS,
         memory_kinds: vec!["sqlite".into()],
+        personality_files: &[],
     };
     let json = serde_json::to_value(&canonical).expect("serialize");
     let mirror: wire::QuickstartState = serde_json::from_value(json.clone()).expect("deserialize");

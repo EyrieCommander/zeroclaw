@@ -332,6 +332,24 @@ pub struct AgentIdentity {
     /// `agents.<name>.personality_file`. `None` ships the agent with
     /// no personality file (the existing optional pattern).
     pub personality_file: Option<String>,
+    /// Staged personality file contents to write into the agent's
+    /// workspace during the atomic apply. Empty list = no files
+    /// written. Surfaces validate the filename against the canonical
+    /// `EDITABLE_PERSONALITY_FILES` list before staging.
+    #[serde(default)]
+    pub personality_files: Vec<QuickstartPersonalityFile>,
+}
+
+/// One personality file staged for write during Quickstart apply.
+/// The runtime writes `<workspace>/<filename>` with `content`,
+/// overwriting if the path already exists.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+pub struct QuickstartPersonalityFile {
+    /// Filename from `EDITABLE_PERSONALITY_FILES`.
+    pub filename: String,
+    /// File body. Subject to `MAX_FILE_CHARS` at apply time.
+    pub content: String,
 }
 
 /// The complete Quickstart submission both surfaces hand to
@@ -365,8 +383,33 @@ pub struct BuilderSubmission {
     /// The agent's `channels` field is auto-bound to every entry in
     /// this vec at apply time.
     pub channels: Vec<SelectorChoice<ChannelQuickStart>>,
+    /// Peer groups to materialize. Each entry can reference either a
+    /// staged channel from `channels` (above) or an already-configured
+    /// channel ref. Empty list = no peer-group rows written.
+    #[serde(default)]
+    pub peer_groups: Vec<QuickstartPeerGroup>,
     /// Agent identity (always create-new — there's no reuse path).
     pub agent: AgentIdentity,
+}
+
+/// Peer-group entry staged in the Quickstart. Maps 1:1 to a
+/// `[peer-groups.<name>]` table written at apply time. The `channel`
+/// field carries a `<type>.<alias>` ref pointing at either a staged
+/// channel from the same submission or a pre-existing one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+pub struct QuickstartPeerGroup {
+    /// Map key written to `peer-groups.<name>`. Synthesized by surfaces
+    /// from the channel ref so no `match` table is involved.
+    pub name: String,
+    /// Channel ref (`<type>.<alias>`) the peer group authorizes.
+    pub channel: String,
+    /// External (non-agent) peer usernames the channel should accept.
+    #[serde(default)]
+    pub external_peers: Vec<String>,
+    /// Per-group blocklist applied to the resolved peer set.
+    #[serde(default)]
+    pub ignore: Vec<String>,
 }
 
 /// Dual-mode selector outcome. Every Quickstart selector lets the
@@ -498,10 +541,12 @@ mod tests {
                 alias: "cli".into(),
                 token: None,
             })],
+            peer_groups: vec![],
             agent: AgentIdentity {
                 name: "my-bot".into(),
                 system_prompt: "You are a helpful assistant.".into(),
                 personality_file: None,
+                personality_files: vec![],
             },
         };
         let json = serde_json::to_string(&submission).expect("serialize");

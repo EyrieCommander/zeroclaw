@@ -1396,6 +1396,8 @@ pub struct QuickstartStateResult {
     pub runtime_presets: Vec<QuickstartPresetMirror>,
     #[serde(default)]
     pub memory_kinds: Vec<String>,
+    #[serde(default)]
+    pub personality_files: Vec<String>,
 }
 
 /// Mirror of `zeroclaw_config::presets::RiskPreset` / `RuntimePreset`.

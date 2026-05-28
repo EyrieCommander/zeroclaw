@@ -389,6 +389,9 @@ pub struct QuickstartState {
     pub runtime_presets: &'static [zeroclaw_config::presets::RuntimePreset],
     /// Memory backend snake-case kinds from `MemoryBackendKind`.
     pub memory_kinds: Vec<String>,
+    /// Canonical personality filenames the Quickstart will accept.
+    /// Surfaces iterate this; never hardcode the filename list.
+    pub personality_files: &'static [&'static str],
 }
 
 /// One row in the Quickstart "Create new …" picker, sourced from a
@@ -464,6 +467,7 @@ pub fn snapshot_state(cfg: &Config) -> QuickstartState {
         risk_presets: zeroclaw_config::presets::RISK_PRESETS,
         runtime_presets: zeroclaw_config::presets::RUNTIME_PRESETS,
         memory_kinds: memory_kind_keys(),
+        personality_files: crate::agent::personality::EDITABLE_PERSONALITY_FILES,
     }
 }
 
@@ -541,6 +545,7 @@ fn collect_aliased_refs<T: serde::Serialize>(value: &T) -> Vec<String> {
 pub enum FieldSection {
     ModelProvider,
     Channel,
+    PeerGroup,
 }
 
 /// One renderable input the TUI / web modal must draw.
@@ -589,6 +594,7 @@ pub fn field_shape(section: FieldSection, type_key: &str) -> Vec<FieldDescriptor
             MODEL_PROVIDER_ESSENTIALS,
         ),
         FieldSection::Channel => (format!("channels.{type_key}"), CHANNEL_ESSENTIALS),
+        FieldSection::PeerGroup => (format!("peer-groups.{type_key}"), PEER_GROUP_ESSENTIALS),
     };
 
     // A throwaway Config we can mutate freely. Inject one default
@@ -649,6 +655,7 @@ pub fn field_shape(section: FieldSection, type_key: &str) -> Vec<FieldDescriptor
 /// without.
 const MODEL_PROVIDER_ESSENTIALS: &[&str] = &["model", "api-key", "base-url"];
 const CHANNEL_ESSENTIALS: &[&str] = &["bot-token", "token", "webhook-url", "allowed-users"];
+const PEER_GROUP_ESSENTIALS: &[&str] = &["channel", "external-peers", "agents", "ignore"];
 
 fn humanize_field_key(key: &str) -> String {
     let mut s = key.replace('-', " ");
@@ -740,6 +747,31 @@ fn apply_into(
         errors,
     )?;
     emit_selector_pick(ctx, "agent", "create_new", &alias);
+
+    let peer_group_refs = apply_peer_groups(config, &submission.peer_groups, &channel_refs, errors);
+    if let Some(ctx) = ctx {
+        ::zeroclaw_log::record!(
+            DEBUG,
+            ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_attrs(
+                merge_attrs(
+                    ctx.base_attrs(),
+                    serde_json::json!({
+                        "selector": "peer_groups",
+                        "count": peer_group_refs.len(),
+                    }),
+                )
+            ),
+            "quickstart: selector peer_groups"
+        );
+    }
+
+    apply_personality_files(config, &alias, &submission.agent.personality_files, errors);
+
+    materialize_default_skills_bundle(config);
+
+    if !errors.is_empty() {
+        return None;
+    }
 
     Some(AppliedAgent {
         alias,
@@ -1152,6 +1184,188 @@ fn channel_exists(config: &Config, channel_type: &str, alias: &str) -> bool {
     config.get_prop(&probe).is_ok()
 }
 
+// ── Peer groups ────────────────────────────────────────────────────
+
+fn apply_peer_groups(
+    config: &mut Config,
+    peer_groups: &[zeroclaw_config::presets::QuickstartPeerGroup],
+    staged_channel_refs: &[String],
+    errors: &mut Vec<QuickstartError>,
+) -> Vec<String> {
+    let mut refs = Vec::with_capacity(peer_groups.len());
+    for (idx, pg) in peer_groups.iter().enumerate() {
+        if pg.name.trim().is_empty() {
+            errors.push(QuickstartError::new(
+                QuickstartStep::Channels,
+                format!("peer_groups[{idx}].name"),
+                "peer-group name is required",
+            ));
+            continue;
+        }
+        if pg.channel.trim().is_empty() {
+            errors.push(QuickstartError::new(
+                QuickstartStep::Channels,
+                format!("peer_groups[{idx}].channel"),
+                "peer-group channel ref is required",
+            ));
+            continue;
+        }
+        // Channel ref must resolve to either a channel already in config
+        // OR a channel staged in this same submission.
+        let staged_match = staged_channel_refs.iter().any(|r| r == &pg.channel);
+        let configured_match = match split_ref(&pg.channel) {
+            Some((family, alias)) => channel_exists(config, family, alias),
+            None => false,
+        };
+        if !staged_match && !configured_match {
+            errors.push(QuickstartError::new(
+                QuickstartStep::Channels,
+                format!("peer_groups[{idx}].channel"),
+                format!(
+                    "peer-group `{}` references unknown channel `{}`",
+                    pg.name, pg.channel
+                ),
+            ));
+            continue;
+        }
+        // Collision: existing peer-group block wins. Surface the conflict
+        // so the operator sees what they need to rename.
+        if config.peer_groups.contains_key(&pg.name) {
+            errors.push(QuickstartError::new(
+                QuickstartStep::Channels,
+                format!("peer_groups[{idx}].name"),
+                format!("peer-group `{}` already exists", pg.name),
+            ));
+            continue;
+        }
+        if let Err(err) = config.create_map_key("peer-groups", &pg.name) {
+            errors.push(QuickstartError::new(
+                QuickstartStep::Channels,
+                format!("peer_groups[{idx}]"),
+                err.to_string(),
+            ));
+            continue;
+        }
+        let prefix = format!("peer-groups.{}", pg.name);
+        if let Err(err) = config.set_prop_persistent(&format!("{prefix}.channel"), &pg.channel) {
+            errors.push(QuickstartError::new(
+                QuickstartStep::Channels,
+                format!("peer_groups[{idx}].channel"),
+                err.to_string(),
+            ));
+            continue;
+        }
+        if !pg.external_peers.is_empty() {
+            let joined = pg
+                .external_peers
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if let Err(err) =
+                config.set_prop_persistent(&format!("{prefix}.external-peers"), &joined)
+            {
+                errors.push(QuickstartError::new(
+                    QuickstartStep::Channels,
+                    format!("peer_groups[{idx}].external_peers"),
+                    err.to_string(),
+                ));
+                continue;
+            }
+        }
+        if !pg.ignore.is_empty() {
+            let joined = pg
+                .ignore
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if let Err(err) = config.set_prop_persistent(&format!("{prefix}.ignore"), &joined) {
+                errors.push(QuickstartError::new(
+                    QuickstartStep::Channels,
+                    format!("peer_groups[{idx}].ignore"),
+                    err.to_string(),
+                ));
+                continue;
+            }
+        }
+        refs.push(pg.name.clone());
+    }
+    refs
+}
+
+// ── Personality files ──────────────────────────────────────────────
+
+fn apply_personality_files(
+    config: &Config,
+    agent_alias: &str,
+    files: &[zeroclaw_config::presets::QuickstartPersonalityFile],
+    errors: &mut Vec<QuickstartError>,
+) {
+    if files.is_empty() {
+        return;
+    }
+    let workspace = config.agent_workspace_dir(agent_alias);
+    if let Err(err) = std::fs::create_dir_all(&workspace) {
+        errors.push(QuickstartError::new(
+            QuickstartStep::Agent,
+            "personality_files",
+            format!("could not create agent workspace: {err}"),
+        ));
+        return;
+    }
+    for (idx, file) in files.iter().enumerate() {
+        let trimmed = file.filename.trim();
+        if trimmed.is_empty() {
+            errors.push(QuickstartError::new(
+                QuickstartStep::Agent,
+                format!("personality_files[{idx}].filename"),
+                "filename is required",
+            ));
+            continue;
+        }
+        if !crate::agent::personality::EDITABLE_PERSONALITY_FILES.contains(&trimmed) {
+            errors.push(QuickstartError::new(
+                QuickstartStep::Agent,
+                format!("personality_files[{idx}].filename"),
+                format!("`{trimmed}` is not an editable personality file"),
+            ));
+            continue;
+        }
+        if file.content.chars().count() > crate::agent::personality::MAX_FILE_CHARS {
+            errors.push(QuickstartError::new(
+                QuickstartStep::Agent,
+                format!("personality_files[{idx}].content"),
+                format!(
+                    "content exceeds {} char limit",
+                    crate::agent::personality::MAX_FILE_CHARS
+                ),
+            ));
+            continue;
+        }
+        let path = workspace.join(trimmed);
+        if let Err(err) = std::fs::write(&path, &file.content) {
+            errors.push(QuickstartError::new(
+                QuickstartStep::Agent,
+                format!("personality_files[{idx}]"),
+                format!("write {trimmed} failed: {err}"),
+            ));
+        }
+    }
+}
+
+// ── Default skills bundle FTUE ─────────────────────────────────────
+
+fn materialize_default_skills_bundle(config: &mut Config) {
+    if !config.skill_bundles.is_empty() {
+        return;
+    }
+    // create_map_key returns Ok(false) on existing key (idempotent),
+    // Ok(true) on insertion. We don't propagate the error: the FTUE
+    // bundle is best-effort and the operator can configure one later.
+    let _ = config.create_map_key("skill-bundles", "default");
+}
+
 // ── Agent ──────────────────────────────────────────────────────────
 
 fn apply_agent(
@@ -1329,10 +1543,12 @@ mod tests {
             runtime_profile: SelectorChoice::Fresh("balanced".into()),
             memory: SelectorChoice::Fresh(MemoryChoice::Sqlite),
             channels: vec![],
+            peer_groups: vec![],
             agent: AgentIdentity {
                 name: agent_name.into(),
                 system_prompt: "You are helpful.".into(),
                 personality_file: None,
+                personality_files: vec![],
             },
         }
     }
@@ -1395,6 +1611,141 @@ mod tests {
         assert_eq!(
             cfg.risk_profiles["balanced"].allowed_commands, pre_allowed,
             "preset apply must not clobber an existing risk-profile block",
+        );
+    }
+
+    #[tokio::test]
+    async fn fresh_apply_materializes_default_skills_bundle() {
+        // FTUE rule: a Quickstart that lands on a config with no
+        // `[skill-bundles.*]` rows synthesizes a `default` bundle.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut cfg = Config::default();
+        cfg.config_path = tmp.path().join("config.toml");
+        cfg.data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&cfg.data_dir).expect("data dir");
+        assert!(cfg.skill_bundles.is_empty(), "precondition: no bundles");
+
+        let submission = fresh_submission("bot");
+        apply(submission, &mut cfg).await.expect("apply ok");
+        assert!(
+            cfg.skill_bundles.contains_key("default"),
+            "FTUE must synthesize the `default` skill bundle when none exist",
+        );
+    }
+
+    #[tokio::test]
+    async fn fresh_apply_with_peer_group_writes_peer_groups_block() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut cfg = Config::default();
+        cfg.config_path = tmp.path().join("config.toml");
+        cfg.data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&cfg.data_dir).expect("data dir");
+
+        let mut submission = fresh_submission("peer_bot");
+        submission.channels = vec![SelectorChoice::Fresh(ChannelQuickStart {
+            channel_type: "telegram".into(),
+            alias: "tg_one".into(),
+            token: Some("123:abc".into()),
+        })];
+        submission
+            .peer_groups
+            .push(zeroclaw_config::presets::QuickstartPeerGroup {
+                name: "telegram_tg_one_default".into(),
+                channel: "telegram.tg_one".into(),
+                external_peers: vec!["@operator".into()],
+                ignore: Vec::new(),
+            });
+        apply(submission, &mut cfg).await.expect("apply ok");
+        let pg = cfg
+            .peer_groups
+            .get("telegram_tg_one_default")
+            .expect("peer group materialized");
+        assert_eq!(pg.channel, "telegram.tg_one");
+        assert_eq!(pg.external_peers.len(), 1);
+        assert_eq!(pg.external_peers[0].as_str(), "@operator");
+    }
+
+    #[tokio::test]
+    async fn peer_group_unknown_channel_returns_structured_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut cfg = Config::default();
+        cfg.config_path = tmp.path().join("config.toml");
+        cfg.data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&cfg.data_dir).expect("data dir");
+
+        let mut submission = fresh_submission("orphan_pg_bot");
+        submission
+            .peer_groups
+            .push(zeroclaw_config::presets::QuickstartPeerGroup {
+                name: "orphan_default".into(),
+                channel: "telegram.does_not_exist".into(),
+                external_peers: Vec::new(),
+                ignore: Vec::new(),
+            });
+        let err = apply(submission, &mut cfg)
+            .await
+            .expect_err("orphan peer-group ref must reject");
+        assert!(
+            err.iter()
+                .any(|e| e.step == QuickstartStep::Channels && e.field.starts_with("peer_groups[")),
+            "expected a structured peer-group error; got {err:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn fresh_apply_writes_personality_files_into_agent_workspace() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut cfg = Config::default();
+        cfg.config_path = tmp.path().join("config.toml");
+        cfg.data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&cfg.data_dir).expect("data dir");
+
+        // Pick a real editable filename from the canonical list.
+        let filename = crate::agent::personality::EDITABLE_PERSONALITY_FILES
+            .first()
+            .copied()
+            .expect("at least one editable personality file");
+        let content = "## staged content\n\nfrom Quickstart tests.";
+
+        let mut submission = fresh_submission("personality_bot");
+        submission.agent.personality_files.push(
+            zeroclaw_config::presets::QuickstartPersonalityFile {
+                filename: filename.to_string(),
+                content: content.to_string(),
+            },
+        );
+
+        let applied = apply(submission, &mut cfg).await.expect("apply ok");
+        let workspace = cfg.agent_workspace_dir(&applied.alias);
+        let written = workspace.join(filename);
+        let read = std::fs::read_to_string(&written).expect("file exists");
+        assert_eq!(read, content);
+    }
+
+    #[tokio::test]
+    async fn personality_file_with_unknown_name_returns_structured_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut cfg = Config::default();
+        cfg.config_path = tmp.path().join("config.toml");
+        cfg.data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&cfg.data_dir).expect("data dir");
+
+        let mut submission = fresh_submission("bad_personality_bot");
+        submission.agent.personality_files.push(
+            zeroclaw_config::presets::QuickstartPersonalityFile {
+                filename: "NOT_A_REAL_FILE.md".into(),
+                content: "x".into(),
+            },
+        );
+
+        let err = apply(submission, &mut cfg)
+            .await
+            .expect_err("unknown personality filename must reject");
+        assert!(
+            err.iter()
+                .any(|e| e.step == QuickstartStep::Agent
+                    && e.field.starts_with("personality_files[")),
+            "expected a structured personality-file error; got {err:?}",
         );
     }
 }

@@ -394,10 +394,12 @@ impl FormState {
                     }
                 })
                 .collect(),
+            peer_groups: Vec::new(),
             agent: AgentIdentity {
                 name: self.agent_name.clone(),
                 system_prompt: String::new(),
                 personality_file: None,
+                personality_files: Vec::new(),
             },
         }
     }
