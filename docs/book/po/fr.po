@@ -2877,8 +2877,8 @@ msgid "`zeroclawlabs/zeroclaw:latest` — latest stable"
 msgstr "`zeroclawlabs/zeroclaw:latest` — dernière version stable"
 
 #: src/setup/container.md:10
-msgid "`zeroclawlabs/zeroclaw:v0.7.4` — pinned"
-msgstr "`zeroclawlabs/zeroclaw:v0.7.4` — épinglé"
+msgid "`zeroclawlabs/zeroclaw:v0.8.0-beta-1` — pinned"
+msgstr "`zeroclawlabs/zeroclaw:v0.8.0-beta-1` — épinglé"
 
 #: src/setup/container.md:11
 msgid ""
@@ -3132,8 +3132,8 @@ msgid "containers"
 msgstr "conteneurs"
 
 #: src/setup/container.md:94
-msgid "zeroclawlabs/zeroclaw:v0.7.4"
-msgstr "zeroclawlabs/zeroclaw:v0.7.4"
+msgid "zeroclawlabs/zeroclaw:v0.8.0-beta-1"
+msgstr "zeroclawlabs/zeroclaw:v0.8.0-beta-1"
 
 #: src/setup/container.md:96
 msgid "containerPort"
@@ -28417,8 +28417,8 @@ msgid "The gateway exposes three health views:"
 msgstr "La passerelle expose trois vues de santé :"
 
 #: src/ops/observability.md:151
-msgid "# { \"status\": \"ok\", \"version\": \"0.7.4\" }\n"
-msgstr "# { \"status\": \"ok\", \"version\": \"0.7.4\" }\n"
+msgid "# { \"status\": \"ok\", \"version\": \"0.8.0-beta-1\" }\n"
+msgstr "# { \"status\": \"ok\", \"version\": \"0.8.0-beta-1\" }\n"
 
 #: src/ops/observability.md:152
 msgid "# per-channel status\n"
@@ -55880,8 +55880,8 @@ msgstr ""
 "effectuer, et non une série de revues partielles."
 
 #: src/maintainers/pr-workflow.md:102
-msgid "`no-stale` reserved for accepted-but-blocked work."
-msgstr "`no-stale` réservé au travail accepté mais bloqué."
+msgid "`status:no-stale` reserved for accepted-but-blocked work."
+msgstr "`status:no-stale` réservé au travail accepté mais bloqué."
 
 #: src/maintainers/pr-workflow.md:104
 msgid ""
@@ -56481,8 +56481,8 @@ msgid "Non-actionable noise. Close with a polite pointer."
 msgstr "Bruit non exploitable. Fermez avec un pointeur poli."
 
 #: src/maintainers/reviewer-playbook.md:86 src/maintainers/labels.md:179
-msgid "`no-stale`"
-msgstr "`no-stale`"
+msgid "`status:no-stale`"
+msgstr "`status:no-stale`"
 
 #: src/maintainers/reviewer-playbook.md:86
 msgid ""
@@ -56629,9 +56629,9 @@ msgstr "Hygiène de la file d'attente hebdomadaire"
 
 #: src/maintainers/reviewer-playbook.md:122
 msgid ""
-"Walk the stale queue. Apply `no-stale` only to accepted-but-blocked work."
+"Walk the stale queue. Apply `status:no-stale` only to accepted-but-blocked work."
 msgstr ""
-"Parcourez la file d'attente des éléments périmés. Appliquez `no-stale` "
+"Parcourez la file d'attente des éléments périmés. Appliquez `status:no-stale` "
 "uniquement au travail accepté mais bloqué."
 
 #: src/maintainers/reviewer-playbook.md:123

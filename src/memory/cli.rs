@@ -1,11 +1,13 @@
 use super::traits::{Memory, MemoryCategory};
 use super::{
-    MemoryBackendKind, classify_memory_backend, create_memory_for_migration,
-    create_memory_with_storage_and_routes, effective_memory_backend_name,
+    MemoryBackendKind, backend_kind_from_dotted, classify_memory_backend,
+    create_memory_for_migration, create_memory_with_storage_and_routes,
 };
 use crate::config::Config;
 use anyhow::{Result, bail};
 use console::style;
+#[cfg(feature = "agent-runtime")]
+use zeroclaw_runtime::i18n;
 
 /// Handle `zeroclaw memory <subcommand>` CLI commands.
 pub async fn handle_command(command: crate::MemoryCommands, config: &Config) -> Result<()> {
@@ -30,26 +32,23 @@ pub async fn handle_command(command: crate::MemoryCommands, config: &Config) -> 
 /// Unlike `create_cli_memory`, which skips embedding setup for pure
 /// read/delete operations, this factory is used by commands that must
 /// actually compute embeddings (e.g. `reindex`). Mirrors the gateway's
-/// memory construction so the same provider/route resolution applies.
+/// memory construction so the same model provider / route resolution
+/// applies. Removed `model_providers.fallback`; the embedder API key falls
+/// back to the first configured model provider, matching how the gateway
+/// resolves it (`crates/zeroclaw-gateway/src/lib.rs` `fallback`).
 fn create_memory_with_embedder(config: &Config) -> Result<Box<dyn Memory>> {
-    let backend = effective_memory_backend_name(
-        &config.memory.backend,
-        Some(&config.storage.provider.config),
-    );
+    let backend = backend_kind_from_dotted(&config.memory.backend);
     if matches!(classify_memory_backend(&backend), MemoryBackendKind::None) {
         bail!("Memory backend is 'none' (disabled). No entries to manage.");
     }
     let fallback_api_key = config
-        .providers
-        .fallback
-        .as_ref()
-        .and_then(|name| config.providers.models.get(name))
+        .first_model_provider()
         .and_then(|e| e.api_key.as_deref());
     create_memory_with_storage_and_routes(
         &config.memory,
-        &config.providers.embedding_routes,
-        Some(&config.storage.provider.config),
-        &config.workspace_dir,
+        &config.embedding_routes,
+        config.resolve_active_storage(),
+        &config.data_dir,
         fallback_api_key,
     )
 }
@@ -76,19 +75,16 @@ async fn handle_reindex(config: &Config) -> Result<()> {
 /// Create a lightweight memory backend for CLI management operations.
 ///
 /// CLI commands (list/get/stats/clear) never use vector search, so we skip
-/// embedding provider initialisation for local backends by using the
+/// embedding model_provider initialisation for local backends by using the
 /// migration factory.
 fn create_cli_memory(config: &Config) -> Result<Box<dyn Memory>> {
-    let backend = effective_memory_backend_name(
-        &config.memory.backend,
-        Some(&config.storage.provider.config),
-    );
+    let backend = backend_kind_from_dotted(&config.memory.backend);
 
     match classify_memory_backend(&backend) {
         MemoryBackendKind::None => {
             bail!("Memory backend is 'none' (disabled). No entries to manage.");
         }
-        _ => create_memory_for_migration(&backend, &config.workspace_dir),
+        _ => create_memory_for_migration(&backend, &config.data_dir),
     }
 }
 
@@ -215,12 +211,36 @@ async fn handle_stats(config: &Config) -> Result<()> {
     Ok(())
 }
 
+fn unsupported_clear_backend_message(backend: &str) -> String {
+    #[cfg(feature = "agent-runtime")]
+    {
+        i18n::get_required_cli_string_with_args(
+            "cli-memory-clear-unsupported-backend",
+            &[("backend", backend)],
+        )
+    }
+
+    #[cfg(not(feature = "agent-runtime"))]
+    {
+        format!(
+            "memory clear is unsupported for append-only backend '{backend}'; switch to a deletable backend (sqlite, lucid, or postgres)"
+        )
+    }
+}
+
 async fn handle_clear(
     config: &Config,
     key: Option<String>,
     category: Option<String>,
     yes: bool,
 ) -> Result<()> {
+    let backend = backend_kind_from_dotted(&config.memory.backend);
+    if matches!(
+        classify_memory_backend(&backend),
+        MemoryBackendKind::Markdown | MemoryBackendKind::Qdrant
+    ) {
+        bail!(unsupported_clear_backend_message(&backend));
+    }
     let mem = create_cli_memory(config)?;
 
     // Single-key deletion (exact or prefix match).
@@ -335,6 +355,7 @@ fn truncate_content(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn parse_category_known_variants() {
@@ -373,5 +394,74 @@ mod tests {
     #[test]
     fn truncate_content_empty_string() {
         assert_eq!(truncate_content("", 10), "");
+    }
+
+    #[tokio::test]
+    async fn clear_rejects_append_only_markdown_backend() {
+        let tmp = TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.data_dir = tmp.path().to_path_buf();
+        config.memory.backend = "markdown".into();
+
+        let err = handle_command(
+            crate::MemoryCommands::Clear {
+                key: None,
+                category: None,
+                yes: true,
+            },
+            &config,
+        )
+        .await
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("append-only backend 'markdown'"));
+        assert!(msg.contains("switch to a deletable backend"));
+    }
+
+    #[tokio::test]
+    async fn clear_rejects_qdrant_backend_constructed_as_markdown() {
+        let tmp = TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.data_dir = tmp.path().to_path_buf();
+        config.memory.backend = "qdrant".into();
+
+        let err = handle_command(
+            crate::MemoryCommands::Clear {
+                key: None,
+                category: None,
+                yes: true,
+            },
+            &config,
+        )
+        .await
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("append-only backend 'qdrant'"));
+        assert!(!msg.contains("or qdrant"));
+    }
+
+    #[tokio::test]
+    async fn clear_rejects_dotted_qdrant_backend() {
+        let tmp = TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.data_dir = tmp.path().to_path_buf();
+        config.memory.backend = "qdrant.default".into();
+
+        let err = handle_command(
+            crate::MemoryCommands::Clear {
+                key: None,
+                category: None,
+                yes: true,
+            },
+            &config,
+        )
+        .await
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("append-only backend 'qdrant'"));
+        assert!(!msg.contains("or qdrant"));
     }
 }
