@@ -1768,34 +1768,44 @@ async fn run_quickstart_cli(
                     .into_iter()
                     .map(|(filename, content)| (filename.to_string(), content))
                     .collect();
-                let mut personality_files: Vec<
-                    zeroclaw_config::presets::QuickstartPersonalityFile,
-                > = Vec::new();
-                for filename in state.personality_files {
-                    let staged = prior_files.get(*filename).cloned().unwrap_or_default();
-                    let template_available = templates.contains_key(*filename);
+                let mut personality_results: std::collections::HashMap<String, String> =
+                    std::collections::HashMap::new();
 
-                    #[derive(Clone, Copy)]
-                    enum PersonalityAction {
-                        StartWithTemplate,
-                        StartFromScratch,
-                        Skip,
-                    }
-                    impl PersonalityAction {
-                        fn label(self, has_staged: bool) -> &'static str {
-                            match self {
-                                Self::StartWithTemplate => "Start with template (open in $EDITOR)",
-                                Self::StartFromScratch => {
-                                    if has_staged {
-                                        "Start from current content (open in $EDITOR)"
-                                    } else {
-                                        "Start from scratch (open in $EDITOR)"
-                                    }
+                #[derive(Clone, Copy)]
+                enum PersonalityAction {
+                    StartWithTemplate,
+                    StartFromScratch,
+                    Skip,
+                }
+                impl PersonalityAction {
+                    fn label(self, has_staged: bool) -> &'static str {
+                        match self {
+                            Self::StartWithTemplate => "Start with template (open in $EDITOR)",
+                            Self::StartFromScratch => {
+                                if has_staged {
+                                    "Start from current content (open in $EDITOR)"
+                                } else {
+                                    "Start from scratch (open in $EDITOR)"
                                 }
-                                Self::Skip => "Skip",
                             }
+                            Self::Skip => "Skip",
                         }
                     }
+                }
+
+                let files = state.personality_files;
+                let mut idx: usize = 0;
+                let mut back_to_checklist = false;
+                while idx < files.len() {
+                    let filename = files[idx];
+                    // Prefer a decision made earlier in this loop (e.g. after
+                    // stepping back), else fall back to any pre-staged content.
+                    let staged = personality_results
+                        .get(filename)
+                        .or_else(|| prior_files.get(filename))
+                        .cloned()
+                        .unwrap_or_default();
+                    let template_available = templates.contains_key(filename);
 
                     let mut actions: Vec<PersonalityAction> = Vec::with_capacity(3);
                     if template_available {
@@ -1805,7 +1815,17 @@ async fn run_quickstart_cli(
                     actions.push(PersonalityAction::Skip);
                     let has_staged = !staged.is_empty();
                     let choices: Vec<&str> = actions.iter().map(|a| a.label(has_staged)).collect();
-                    let label = format!("{filename} — what next?");
+                    let position = if files.len() > 1 {
+                        format!(" [{}/{}]", idx + 1, files.len())
+                    } else {
+                        String::new()
+                    };
+                    let back_hint = if idx > 0 {
+                        " (Esc to go back)"
+                    } else {
+                        " (Esc to return to checklist)"
+                    };
+                    let label = format!("{filename}{position} — what next?{back_hint}");
                     let Some(pick) = FuzzySelect::new()
                         .with_prompt(label)
                         .items(&choices)
@@ -1813,51 +1833,61 @@ async fn run_quickstart_cli(
                         .max_length(choices.len())
                         .interact_opt()?
                     else {
+                        // Esc steps back one file in the stack. On the first
+                        // file there's nowhere earlier to go, so it returns to
+                        // the base checklist.
+                        if idx == 0 {
+                            back_to_checklist = true;
+                            break;
+                        }
+                        idx -= 1;
                         continue;
                     };
                     match actions[pick] {
                         PersonalityAction::StartWithTemplate => {
                             let seed = templates
-                                .get(*filename)
+                                .get(filename)
                                 .cloned()
                                 .unwrap_or_else(|| staged.clone());
                             if let Some(edited) = Editor::new().edit(&seed)?
                                 && !edited.trim().is_empty()
                             {
-                                personality_files.push(
-                                    zeroclaw_config::presets::QuickstartPersonalityFile {
-                                        filename: (*filename).to_string(),
-                                        content: edited,
-                                    },
-                                );
+                                personality_results.insert(filename.to_string(), edited);
                             }
                         }
                         PersonalityAction::StartFromScratch => {
                             if let Some(edited) = Editor::new().edit(&staged)?
                                 && !edited.trim().is_empty()
                             {
-                                personality_files.push(
-                                    zeroclaw_config::presets::QuickstartPersonalityFile {
-                                        filename: (*filename).to_string(),
-                                        content: edited,
-                                    },
-                                );
+                                personality_results.insert(filename.to_string(), edited);
                             }
                         }
                         PersonalityAction::Skip => {
                             // Keep any previously-staged content rather than
                             // dropping it silently.
                             if has_staged {
-                                personality_files.push(
-                                    zeroclaw_config::presets::QuickstartPersonalityFile {
-                                        filename: (*filename).to_string(),
-                                        content: staged,
-                                    },
-                                );
+                                personality_results.insert(filename.to_string(), staged);
                             }
                         }
                     }
+                    idx += 1;
                 }
+                if back_to_checklist {
+                    continue;
+                }
+                // Materialize in canonical file order; only files with content.
+                let personality_files: Vec<zeroclaw_config::presets::QuickstartPersonalityFile> =
+                    files
+                        .iter()
+                        .filter_map(|filename| {
+                            personality_results.get(*filename).map(|content| {
+                                zeroclaw_config::presets::QuickstartPersonalityFile {
+                                    filename: (*filename).to_string(),
+                                    content: content.clone(),
+                                }
+                            })
+                        })
+                        .collect();
                 form.agent = Some(AgentChoice {
                     name,
                     system_prompt,
