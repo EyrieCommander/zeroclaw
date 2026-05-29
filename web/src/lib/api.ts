@@ -1179,6 +1179,14 @@ export interface QuickstartState {
   memory_kinds: string[];
   /** Canonical personality filenames the Quickstart accepts. */
   personality_files: string[];
+  /** Per-step help blurbs from `QUICKSTART_STEP_HELP`. */
+  step_help: QuickstartStepHelp[];
+}
+
+/** One step's help blurb, keyed by stable step identifier. */
+export interface QuickstartStepHelp {
+  step: QuickstartStep;
+  help: string;
 }
 
 /** One row in a closed-set preset table (risk / runtime). */
@@ -1280,6 +1288,7 @@ export type QuickstartStep =
   | "runtime_profile"
   | "memory"
   | "channels"
+  | "peer_groups"
   | "agent";
 
 export interface QuickstartDismissRequest {

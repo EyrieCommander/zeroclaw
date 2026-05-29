@@ -232,7 +232,7 @@ pub async fn handle_get(
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Json(PersonalityGetResult {
             filename: allowed.to_string(),
-            content: None,
+            content: Some(String::new()),
             exists: false,
             truncated: false,
             mtime_ms: None,

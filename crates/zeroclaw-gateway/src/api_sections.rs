@@ -909,8 +909,8 @@ fn apply_first_run_agent_defaults(cfg: &mut zeroclaw_config::schema::Config, ali
         .iter_entries()
         .next()
         .map(|(ty, alias, _)| format!("{ty}.{alias}"));
-    let risk_profile = first_alias_preferring_default(cfg.risk_profiles.keys());
-    let runtime_profile = first_alias_preferring_default(cfg.runtime_profiles.keys());
+    let risk_profile = first_alias(cfg.risk_profiles.keys());
+    let runtime_profile = first_alias(cfg.runtime_profiles.keys());
 
     let Some(agent) = cfg.agents.get_mut(alias) else {
         return;
@@ -946,14 +946,10 @@ fn mark_section_completed(cfg: &mut zeroclaw_config::schema::Config, section: &s
     }
 }
 
-fn first_alias_preferring_default<'a>(aliases: impl Iterator<Item = &'a String>) -> Option<String> {
+fn first_alias<'a>(aliases: impl Iterator<Item = &'a String>) -> Option<String> {
     let mut aliases: Vec<&String> = aliases.collect();
     aliases.sort();
-    aliases
-        .iter()
-        .find(|alias| alias.as_str() == "default")
-        .or_else(|| aliases.first())
-        .map(|alias| (*alias).clone())
+    aliases.first().map(|alias| (*alias).clone())
 }
 
 /// `tunnel`-flavored picker: same as `schema_walk_picker` plus a synthetic

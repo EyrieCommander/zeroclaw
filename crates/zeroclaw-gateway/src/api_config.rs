@@ -247,6 +247,12 @@ pub struct ListEntry {
     /// rendering — same source the CLI wizard uses, no schema attribute.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub section: Option<&'static str>,
+    /// Tab grouping label from the field's `#[tab(...)]` annotation
+    /// (`ConfigTab::label`). Absent for `ConfigTab::None`. Surfaces group
+    /// list entries into a tab bar by this; the agent edit form depends on
+    /// it to split General / Providers / Channels / etc.
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub tab: &'static str,
 }
 
 /// Stable wire-form name for a `PropKind` variant. Matches the lower-kebab
@@ -788,6 +794,7 @@ pub async fn handle_list(
                 is_env_overridden,
                 enum_variants,
                 section,
+                tab: info.tab.label(),
             }
         })
         .collect();
@@ -2210,6 +2217,7 @@ mod tests {
             is_env_overridden: false,
             enum_variants: vec![],
             section: Some("providers.models"),
+            tab: "",
         };
         let json = serde_json::to_value(&entry).expect("serialize");
         let obj = json.as_object().expect("object");

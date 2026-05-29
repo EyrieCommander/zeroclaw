@@ -14,7 +14,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, ChevronRight, Plus, Sparkles, Trash2 } from "lucide-react";
+import { ArrowLeft, ChevronRight, FolderOpen, Plus, Sparkles, Trash2 } from "lucide-react";
 import {
   ApiError,
   deleteMapKey,
@@ -338,6 +338,7 @@ export default function Config() {
             onSaved={fetchDrift}
             drift={drifted}
             extraTabs={extraTabs.length > 0 ? extraTabs : undefined}
+            agentAlias={isAgent ? typeParam : undefined}
           />
         </div>
       );
@@ -899,6 +900,10 @@ function wireTabSpecs(
     onSaved: () => void;
     drifted: DriftEntry[];
   },
+  // Optional node rendered above the FieldForm for a given tab label —
+  // used to re-attach the agent Workspace tab's file-explorer link, which
+  // is navigation rather than a config field.
+  tabPrelude?: (tabLabel: string) => React.ReactNode,
 ): SectionTabSpec[] | null {
   // Group paths by tab, preserving first-occurrence order.
   const tabOrder: string[] = [];
@@ -916,18 +921,22 @@ function wireTabSpecs(
 
   return tabOrder.map((tab) => {
     const paths = tabPaths.get(tab)!;
+    const prelude = tabPrelude?.(tab);
     return {
       key: tab.toLowerCase().replace(/\s+/g, "-"),
       label: tab,
       render: () => (
-        <FieldForm
-          key={`${ctx.reloadKey}-${prefix}-${tab}`}
-          prefix={prefix}
-          title={ctx.title}
-          onSaved={ctx.onSaved}
-          drift={ctx.drifted}
-          includePath={(p) => paths.has(p)}
-        />
+        <div className="flex flex-col gap-3 flex-1 min-h-0">
+          {prelude}
+          <FieldForm
+            key={`${ctx.reloadKey}-${prefix}-${tab}`}
+            prefix={prefix}
+            title={ctx.title}
+            onSaved={ctx.onSaved}
+            drift={ctx.drifted}
+            includePath={(p) => paths.has(p)}
+          />
+        </div>
       ),
     };
   });
@@ -946,6 +955,7 @@ function WireTabForm({
   onSaved,
   drift,
   extraTabs,
+  agentAlias,
 }: {
   prefix: string;
   title: string;
@@ -953,6 +963,8 @@ function WireTabForm({
   onSaved: () => void;
   drift: DriftEntry[];
   extraTabs?: SectionTabSpec[];
+  /** When set, the Workspace tab gets a file-explorer link prepended. */
+  agentAlias?: string;
 }) {
   const [entries, setEntries] = useState<ListResponseEntry[] | null>(null);
 
@@ -969,7 +981,19 @@ function WireTabForm({
   if (!entries) return null; // loading
 
   const ctx = { reloadKey, title, onSaved, drifted: drift };
-  const tabs = wireTabSpecs(entries, prefix, ctx);
+  const tabPrelude = agentAlias
+    ? (tabLabel: string) =>
+        tabLabel === "Workspace" ? (
+          <Link
+            to={`/agent/${encodeURIComponent(agentAlias)}/workspace`}
+            className="btn-secondary inline-flex items-center gap-2 text-sm px-3 py-1.5 self-start"
+          >
+            <FolderOpen className="h-4 w-4" />
+            Open file explorer →
+          </Link>
+        ) : null
+    : undefined;
+  const tabs = wireTabSpecs(entries, prefix, ctx, tabPrelude);
 
   if (tabs || extraTabs) {
     const all = [...(tabs ?? []), ...(extraTabs ?? [])];
