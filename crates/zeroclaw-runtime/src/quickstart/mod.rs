@@ -103,6 +103,21 @@ pub enum QuickstartStep {
     Agent,
 }
 
+impl QuickstartStep {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ModelProvider => "Model provider",
+            Self::RiskProfile => "Risk profile",
+            Self::RuntimeProfile => "Runtime profile",
+            Self::Memory => "Memory",
+            Self::Channels => "Channels",
+            Self::PeerGroups => "Peer groups",
+            Self::Agent => "Agent",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QuickstartError {
     pub step: QuickstartStep,

@@ -1202,7 +1202,7 @@ async fn run_quickstart_cli(
                 "{} Channels (0..N)    — {channels_summary}",
                 glyph(form.channels_done())
             ),
-            format!("   Peer groups        — {peer_groups_summary}",),
+            format!("{} Peer groups        — {peer_groups_summary}", glyph(true)),
             format!(
                 "{} Agent identity     — {agent_summary}",
                 glyph(form.agent_done())
@@ -1214,7 +1214,6 @@ async fn run_quickstart_cli(
         } else {
             "── Create agent (locked — fill every selector first)".to_string()
         });
-        labels.push("── Quit (no config written)".to_string());
 
         let actions = [
             Action::Provider,
@@ -1225,11 +1224,10 @@ async fn run_quickstart_cli(
             Action::PeerGroups,
             Action::Agent,
             Action::Create,
-            Action::Quit,
         ];
 
         let pick = FuzzySelect::new()
-            .with_prompt("Open a selector (Enter), or pick Create / Quit")
+            .with_prompt("Open a selector (Enter), or pick Create. Esc to quit.")
             .items(&labels)
             .default(0)
             .max_length(labels.len())
@@ -1927,10 +1925,20 @@ async fn run_quickstart_cli(
             Ok(())
         }
         Err(errs) => {
+            eprintln!();
+            eprintln!("Your agent was not created — and nothing on disk was changed.");
+            eprintln!(
+                "Your existing config is untouched. Fix the following and run quickstart again:"
+            );
+            eprintln!();
             for e in &errs {
-                eprintln!("error: {e}");
+                eprintln!("  • {}: {}", e.step.label(), e.message);
             }
-            anyhow::bail!("quickstart rejected: {} errors", errs.len())
+            eprintln!();
+            anyhow::bail!(
+                "quickstart could not finish: {} problem(s) to fix",
+                errs.len()
+            )
         }
     }
 }
