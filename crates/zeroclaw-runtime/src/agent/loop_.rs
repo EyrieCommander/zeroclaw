@@ -1399,7 +1399,22 @@ pub async fn run_tool_call_loop(
         // counterpart was dropped by proactive trimming, context compression,
         // or session history reloading.  Without this, model_providers like MiniMax
         // reject the request with "tool result's tool id not found" (bug #5743).
-        crate::agent::history_pruner::remove_orphaned_tool_messages(history);
+        let pruned_in_loop = crate::agent::history_pruner::remove_orphaned_tool_messages(history);
+        if !pruned_in_loop.is_empty() {
+            ::zeroclaw_log::record!(
+                WARN,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Unknown)
+                    .with_attrs(::serde_json::json!({
+                        "removed": pruned_in_loop.removed,
+                        "orphan_tool_call_ids": pruned_in_loop.orphan_tool_call_ids,
+                    })),
+                "remove_orphaned_tool_messages fired inside run_tool_call_loop: \
+                 assistant tool_use blocks and/or tool_results were stripped from \
+                 the live history. If this fires mid-conversation the model loses \
+                 the in-flight tool work and acts like it just woke up."
+            );
+        }
         normalize_system_messages(history);
 
         // Check if model switch was requested via model_switch tool
@@ -10556,18 +10571,44 @@ Let me check the result."#;
     }
 
     #[test]
-    fn trim_history_removes_oldest_non_system() {
+    fn trim_history_keeps_first_user_anchor_and_recent_tail() {
+        // The framing anchor (first user message) must survive trim so the
+        // model doesn't start a turn thinking "Continue" is the first thing
+        // it ever saw. Middle messages are the ones that get dropped.
         let mut history = vec![
             ChatMessage::system("system"),
-            ChatMessage::user("old msg"),
-            ChatMessage::assistant("old reply"),
-            ChatMessage::user("new msg"),
-            ChatMessage::assistant("new reply"),
+            ChatMessage::user("anchor: what's the task"),
+            ChatMessage::assistant("middle reply 1"),
+            ChatMessage::user("middle user 1"),
+            ChatMessage::assistant("middle reply 2"),
+            ChatMessage::user("recent user"),
+            ChatMessage::assistant("recent reply"),
         ];
-        trim_history(&mut history, 2);
-        assert_eq!(history.len(), 3); // system + 2 kept
+        // max_history = 3 → keep anchor + 2 most recent (=3 non-system).
+        trim_history(&mut history, 3);
         assert_eq!(history[0].role, "system");
-        assert_eq!(history[1].content, "new msg");
+        assert_eq!(
+            history[1].content, "anchor: what's the task",
+            "first user message (framing anchor) must survive"
+        );
+        let last = history.last().expect("history not empty");
+        assert_eq!(last.content, "recent reply", "tail must be preserved");
+    }
+
+    #[test]
+    fn trim_history_falls_back_to_tail_when_max_history_is_one() {
+        // With max_history=1 there's no room for both anchor and tail; fall
+        // back to plain head-drop so we don't produce a degenerate window.
+        let mut history = vec![
+            ChatMessage::system("system"),
+            ChatMessage::user("anchor"),
+            ChatMessage::assistant("middle"),
+            ChatMessage::user("recent"),
+        ];
+        trim_history(&mut history, 1);
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].role, "system");
+        assert_eq!(history[1].content, "recent");
     }
 
     /// When `build_system_prompt_with_mode` is called with `native_tools = true`,

@@ -79,37 +79,70 @@ impl PrunedOrphans {
 /// The Anthropic API (and others) reject these with a 400 error.
 pub fn remove_orphaned_tool_messages(messages: &mut Vec<ChatMessage>) -> PrunedOrphans {
     let mut outcome = PrunedOrphans::default();
-    // Pass 1: Remove assistant(tool_calls) + their tool_results when the
-    // assistant is preceded by another assistant. Normalization would merge
-    // them, destroying structured tool_use blocks and orphaning the results.
+    // Pass 1: Remove a second `assistant(tool_calls)` only when the
+    // preceding assistant *also* has unresolved tool_calls — i.e. the
+    // earlier dispatch was poisoned (no matching tool_result rows
+    // between the two assistants). A healthy turn shape is
+    // `assistant(text preamble)` → `assistant(tool_calls)` → `tool` and
+    // must NOT be touched here: nuking the dispatch in that case
+    // produces the "amnesia mid-tool-loop" failure where the model
+    // sees the user's next turn with none of the work it just did.
     let mut i = 0;
     while i < messages.len() {
-        if messages[i].role == "assistant"
+        if !(messages[i].role == "assistant"
             && extract_assistant_tool_call_ids(&messages[i].content).is_some()
             && i > 0
-            && messages[i - 1].role == "assistant"
+            && messages[i - 1].role == "assistant")
         {
-            let doomed_ids =
-                extract_assistant_tool_call_ids(&messages[i].content).unwrap_or_default();
-            outcome
-                .orphan_tool_call_ids
-                .extend(doomed_ids.iter().cloned());
-            messages.remove(i);
-            outcome.removed += 1;
-            while i < messages.len() && messages[i].role == "tool" {
-                let dominated = match extract_tool_call_id(&messages[i].content) {
-                    Some(id) => doomed_ids.iter().any(|d| d == &id),
-                    None => true,
-                };
-                if dominated {
-                    messages.remove(i);
-                    outcome.removed += 1;
-                } else {
-                    break;
-                }
-            }
-        } else {
             i += 1;
+            continue;
+        }
+
+        // Only treat as poisoned if the *prior* assistant also has
+        // tool_calls AND none of them have been answered by tool
+        // results sitting between i-1 and i. Adjacent assistants where
+        // the earlier one is plain text (preamble) are kept — that's
+        // the natural shape of a real tool-using turn.
+        let prior_ids = extract_assistant_tool_call_ids(&messages[i - 1].content);
+        let prior_is_unresolved_dispatch = match prior_ids {
+            Some(ids) if !ids.is_empty() => {
+                // No tool rows between i-1 and i means the prior dispatch
+                // never landed — that's the poisoned shape Pass 1 is for.
+                let between = &messages[i - 1 + 1..i];
+                !between.iter().any(|m| m.role == "tool")
+                    || !ids.iter().all(|id| {
+                        between.iter().any(|m| {
+                            m.role == "tool"
+                                && extract_tool_call_id(&m.content).as_ref() == Some(id)
+                        })
+                    })
+            }
+            _ => false,
+        };
+
+        if !prior_is_unresolved_dispatch {
+            i += 1;
+            continue;
+        }
+
+        let doomed_ids =
+            extract_assistant_tool_call_ids(&messages[i].content).unwrap_or_default();
+        outcome
+            .orphan_tool_call_ids
+            .extend(doomed_ids.iter().cloned());
+        messages.remove(i);
+        outcome.removed += 1;
+        while i < messages.len() && messages[i].role == "tool" {
+            let dominated = match extract_tool_call_id(&messages[i].content) {
+                Some(id) => doomed_ids.iter().any(|d| d == &id),
+                None => true,
+            };
+            if dominated {
+                messages.remove(i);
+                outcome.removed += 1;
+            } else {
+                break;
+            }
         }
     }
 
@@ -716,38 +749,63 @@ mod tests {
     }
 
     #[test]
-    fn consecutive_assistant_with_tool_calls_stripped() {
-        // When poisoned turn removal leaves an assistant(text) followed by
-        // assistant(tool_calls), the second assistant and its tool_results
-        // must be removed — normalization would merge them, destroying the
-        // structured tool_use blocks and orphaning the results at the API.
-        let tool_calls_assistant = r#"{"content":null,"tool_calls":[{"id":"toolu_DEAD","name":"shell","arguments":"{}"}]}"#;
+    fn preamble_then_tool_calls_is_kept_intact() {
+        // Healthy shape: `[A: "let me check"] [A: tool_calls] [T: result]`.
+        // The assistant first emits a brief preamble, then dispatches the
+        // tool, then the tool returns. This is the normal flow of a real
+        // tool-using turn — Pass 1 must NOT touch it.
+        let tool_calls_assistant =
+            r#"{"content":null,"tool_calls":[{"id":"toolu_LIVE","name":"shell","arguments":"{}"}]}"#;
         let mut messages = vec![
             msg("system", "sys"),
             msg("user", "do something"),
-            msg("assistant", "Here are the results."),
+            msg("assistant", "Let me check."),
             msg("assistant", tool_calls_assistant),
+            msg("tool", r#"{"content":"ok","tool_call_id":"toolu_LIVE"}"#),
+            msg("assistant", "Here are the results."),
+        ];
+        let before = messages.len();
+        let pruned = remove_orphaned_tool_messages(&mut messages);
+        assert_eq!(
+            pruned.removed, 0,
+            "preamble + dispatch + result is a healthy turn, not orphan poisoning"
+        );
+        assert_eq!(messages.len(), before);
+    }
+
+    #[test]
+    fn back_to_back_unresolved_tool_calls_strips_later_dispatch() {
+        // Genuinely poisoned shape: `[A: tool_calls A]` followed
+        // immediately by `[A: tool_calls B]` with no tool result for A
+        // sitting between them. The earlier dispatch is unresolved, so
+        // the later assistant + its results are removed to restore a
+        // well-formed turn.
+        let first_dispatch =
+            r#"{"content":null,"tool_calls":[{"id":"toolu_LOST","name":"shell","arguments":"{}"}]}"#;
+        let second_dispatch =
+            r#"{"content":null,"tool_calls":[{"id":"toolu_DEAD","name":"shell","arguments":"{}"}]}"#;
+        let mut messages = vec![
+            msg("system", "sys"),
+            msg("user", "do something"),
+            msg("assistant", first_dispatch),
+            msg("assistant", second_dispatch),
             msg("tool", r#"{"content":"ok","tool_call_id":"toolu_DEAD"}"#),
-            msg(
-                "assistant",
-                "The model_provider returned an empty response.",
-            ),
+            msg("assistant", "summary"),
         ];
         let pruned = remove_orphaned_tool_messages(&mut messages);
         assert_eq!(
             pruned.removed, 2,
-            "should remove assistant(tool_calls) + tool_result"
+            "second dispatch + its tool_result must be removed when prior dispatch is unresolved"
         );
+        // What survives: sys, user, first_dispatch (now orphaned), summary.
+        // Pass 2 then sweeps any remaining orphan tool messages — there
+        // are none after Pass 1, but the orphaned first_dispatch itself
+        // (assistant with tool_calls and no responses) stays, because
+        // this function only removes *tool*-role orphans in Pass 2,
+        // not stranded assistant dispatches.
         assert_eq!(messages.len(), 4);
-        assert_eq!(messages[0].role, "system");
-        assert_eq!(messages[1].role, "user");
-        assert_eq!(messages[2].role, "assistant");
-        assert_eq!(messages[2].content, "Here are the results.");
-        assert_eq!(messages[3].role, "assistant");
-        assert_eq!(
-            messages[3].content,
-            "The model_provider returned an empty response."
-        );
+        assert_eq!(messages[2].content, first_dispatch);
+        assert_eq!(messages[3].content, "summary");
     }
 
     #[test]
