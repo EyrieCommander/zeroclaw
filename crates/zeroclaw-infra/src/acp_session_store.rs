@@ -81,8 +81,8 @@ impl AcpSessionStore {
             .with_context(|| format!("Failed to open ACP session DB: {}", db_path.display()))?;
 
         conn.execute_batch(
-            "PRAGMA journal_mode = DELETE;
-             PRAGMA synchronous = FULL;
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
              PRAGMA foreign_keys = ON;
              PRAGMA temp_store = MEMORY;",
         )
@@ -650,6 +650,16 @@ mod tests {
                 .unwrap_or_else(|_| panic!("table {table} should exist"));
             assert_eq!(name, table);
         }
+    }
+
+    #[test]
+    fn opens_in_wal_mode_to_avoid_blocking_runtime_threads() {
+        let (_tmp, store) = open_store();
+        let conn = store.conn.lock();
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(mode.to_lowercase(), "wal", "ACP session DB must use WAL");
     }
 
     #[test]

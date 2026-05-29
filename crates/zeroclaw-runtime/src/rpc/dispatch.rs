@@ -688,34 +688,45 @@ impl RpcDispatcher {
         match chat_mode {
             crate::rpc::types::ChatMode::Acp => {
                 if let Some(ref store) = self.ctx.acp_session_store {
-                    match store.load_session(&session_id) {
-                        Ok(Some(data)) => {
+                    let store_cloned = store.clone();
+                    let sid = session_id.clone();
+                    let alias = req.agent_alias.clone();
+                    let cwd_owned = cwd.clone();
+                    let loaded = tokio::task::spawn_blocking(move || {
+                        match store_cloned.load_session(&sid) {
+                            Ok(Some(data)) => Ok(Some(data)),
+                            Ok(None) => store_cloned
+                                .create_session(&sid, &alias, &cwd_owned)
+                                .map(|_| None),
+                            Err(e) => Err(e),
+                        }
+                    })
+                    .await;
+                    match loaded {
+                        Ok(Ok(Some(data))) => {
                             message_count = data.messages.len();
                             self.ctx
                                 .sessions
                                 .seed_conversation_history(&session_id, data.messages)
                                 .await;
                         }
-                        Ok(None) => {
-                            if let Err(e) =
-                                store.create_session(&session_id, &req.agent_alias, &cwd)
-                            {
-                                ::zeroclaw_log::record!(
-                                    WARN,
-                                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
-                                        .with_outcome(::zeroclaw_log::EventOutcome::Unknown)
-                                        .with_attrs(::serde_json::json!({"session_id": session_id, "error": e.to_string()})),
-                                    "Failed to create ACP session row"
-                                );
-                            }
-                        }
-                        Err(e) => {
+                        Ok(Ok(None)) => {}
+                        Ok(Err(e)) => {
                             ::zeroclaw_log::record!(
                                 WARN,
                                 ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
                                     .with_outcome(::zeroclaw_log::EventOutcome::Unknown)
                                     .with_attrs(::serde_json::json!({"session_id": session_id, "error": e.to_string()})),
-                                "Failed to load ACP session"
+                                "Failed to load or create ACP session"
+                            );
+                        }
+                        Err(join) => {
+                            ::zeroclaw_log::record!(
+                                WARN,
+                                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                                    .with_outcome(::zeroclaw_log::EventOutcome::Unknown)
+                                    .with_attrs(::serde_json::json!({"session_id": session_id, "error": join.to_string()})),
+                                "ACP session load task panicked"
                             );
                         }
                     }
@@ -909,7 +920,12 @@ impl RpcDispatcher {
                         },
                     ) = (acp_token_store.as_ref(), &event)
                     {
-                        let _ = store.set_token_count(&sid, *it);
+                        let store = store.clone();
+                        let sid = sid.clone();
+                        let it = *it;
+                        let _ =
+                            tokio::task::spawn_blocking(move || store.set_token_count(&sid, it))
+                                .await;
                     }
                     if let Some(n) = notification_for_turn_event(&sid, &event, max_ctx) {
                         let _ = rpc.send_raw(n).await;
@@ -934,17 +950,30 @@ impl RpcDispatcher {
                         .history_slice_from(sid, pre_history_len)
                         .await
                     && !new_msgs.is_empty()
-                    && let Err(e) = store.append_turn(sid, &new_msgs)
                 {
-                    ::zeroclaw_log::record!(
-                        WARN,
-                        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                    let store = store.clone();
+                    let sid_owned = sid.to_string();
+                    let persisted = tokio::task::spawn_blocking(move || {
+                        store.append_turn(&sid_owned, &new_msgs)
+                    })
+                    .await;
+                    let error = match persisted {
+                        Ok(Ok(())) => None,
+                        Ok(Err(e)) => Some(e.to_string()),
+                        Err(join) => Some(join.to_string()),
+                    };
+                    if let Some(detail) = error {
+                        ::zeroclaw_log::record!(
+                            WARN,
+                            ::zeroclaw_log::Event::new(
+                                module_path!(),
+                                ::zeroclaw_log::Action::Note
+                            )
                             .with_outcome(::zeroclaw_log::EventOutcome::Unknown)
-                            .with_attrs(
-                                ::serde_json::json!({"session_id": sid, "error": e.to_string()})
-                            ),
-                        "Failed to persist ACP turn"
-                    );
+                            .with_attrs(::serde_json::json!({"session_id": sid, "error": detail})),
+                            "Failed to persist ACP turn"
+                        );
+                    }
                 }
             }
             crate::rpc::types::ChatMode::Chat => {

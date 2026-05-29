@@ -587,16 +587,27 @@ impl AcpServer {
             })),
         );
 
-        if let Some(store) = &self.store
-            && let Err(e) = store.create_session(&session_id, &agent_alias, &workspace_dir)
-        {
-            // Roll back: remove the session we just inserted and surface the error.
-            sessions.remove(&session_id);
-            return Err(RpcError {
-                code: INTERNAL_ERROR,
-                message: format!("Failed to persist session: {e}"),
-                data: None,
-            });
+        if let Some(store) = &self.store {
+            let store = store.clone();
+            let sid = session_id.clone();
+            let alias = agent_alias.clone();
+            let wsd = workspace_dir.clone();
+            let created =
+                tokio::task::spawn_blocking(move || store.create_session(&sid, &alias, &wsd)).await;
+            let error = match created {
+                Ok(Ok(_)) => None,
+                Ok(Err(e)) => Some(e.to_string()),
+                Err(join) => Some(join.to_string()),
+            };
+            if let Some(detail) = error {
+                // Roll back: remove the session we just inserted and surface the error.
+                sessions.remove(&session_id);
+                return Err(RpcError {
+                    code: INTERNAL_ERROR,
+                    message: format!("Failed to persist session: {detail}"),
+                    data: None,
+                });
+            }
         }
 
         let mp = self
@@ -1218,23 +1229,33 @@ impl AcpServer {
             // notification builder so the helper match can stay exhaustive
             // on the four UI-relevant variants.
             if let TurnEvent::Usage { input_tokens, .. } = &event {
-                if let (Some(store), Some(it)) = (&self.store, input_tokens)
-                    && let Err(e) = store.set_token_count(&session_id, *it)
-                {
-                    ::zeroclaw_log::record!(
-                        WARN,
-                        ::zeroclaw_log::Event::new(
-                            module_path!(),
-                            ::zeroclaw_log::Action::Write,
-                        )
-                        .with_outcome(::zeroclaw_log::EventOutcome::Failure)
-                        .with_attrs(::serde_json::json!({
-                            "session_id": session_id,
-                            "input_tokens": *it,
-                            "error": e.to_string(),
-                        })),
-                        "Failed to persist ACP session token_count"
-                    );
+                if let (Some(store), Some(it)) = (&self.store, input_tokens) {
+                    let store = store.clone();
+                    let sid = session_id.clone();
+                    let it = *it;
+                    let persisted =
+                        tokio::task::spawn_blocking(move || store.set_token_count(&sid, it)).await;
+                    let error = match persisted {
+                        Ok(Ok(())) => None,
+                        Ok(Err(e)) => Some(e.to_string()),
+                        Err(join) => Some(join.to_string()),
+                    };
+                    if let Some(detail) = error {
+                        ::zeroclaw_log::record!(
+                            WARN,
+                            ::zeroclaw_log::Event::new(
+                                module_path!(),
+                                ::zeroclaw_log::Action::Write,
+                            )
+                            .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                            .with_attrs(::serde_json::json!({
+                                "session_id": session_id,
+                                "input_tokens": it,
+                                "error": detail,
+                            })),
+                            "Failed to persist ACP session token_count"
+                        );
+                    }
                 }
                 continue;
             }
@@ -1329,17 +1350,28 @@ impl AcpServer {
         // Persist new messages on successful, non-cancelled turns.
         if let Some(store) = &self.store
             && !new_turn_msgs.is_empty()
-            && let Err(e) = store.append_turn(&session_id, &new_turn_msgs)
         {
-            ::zeroclaw_log::record!(
-                WARN,
-                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_category(::zeroclaw_log::EventCategory::Channel)
-                    .with_outcome(::zeroclaw_log::EventOutcome::Unknown)
-                    .with_attrs(::serde_json::json!({
-                        "error": e.to_string(),
-                    })),
-                "Failed to persist turn; session continues in memory"
-            );
+            let store = store.clone();
+            let sid = session_id.clone();
+            let msgs = new_turn_msgs;
+            let persisted =
+                tokio::task::spawn_blocking(move || store.append_turn(&sid, &msgs)).await;
+            let error = match persisted {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => Some(e.to_string()),
+                Err(join) => Some(join.to_string()),
+            };
+            if let Some(detail) = error {
+                ::zeroclaw_log::record!(
+                    WARN,
+                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_category(::zeroclaw_log::EventCategory::Channel)
+                        .with_outcome(::zeroclaw_log::EventOutcome::Unknown)
+                        .with_attrs(::serde_json::json!({
+                            "error": detail,
+                        })),
+                    "Failed to persist turn; session continues in memory"
+                );
+            }
         }
 
         ::zeroclaw_log::record!(
