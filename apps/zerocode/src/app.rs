@@ -777,16 +777,24 @@ fn draw_quit_confirm_modal(frame: &mut ratatui::Frame, area: Rect) {
 
 /// Render every chord bound to `action` from its `bindings()` table as a
 /// `a/b` display string. Surfaces read the harness; no key literals.
+/// Display strings are deduplicated — chords that render identically
+/// (e.g. `'y'` and `'Y'` both render as `Y`) collapse to one slot.
 fn chords_for<ActionType: PartialEq>(
     bindings: Vec<(crate::keymap::Chord, ActionType)>,
     action: ActionType,
 ) -> String {
-    bindings
-        .into_iter()
-        .filter(|(_, bound_action)| *bound_action == action)
-        .map(|(chord, _)| chord.display())
-        .collect::<Vec<_>>()
-        .join("/")
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for (chord, bound_action) in bindings {
+        if bound_action != action {
+            continue;
+        }
+        let label = chord.display();
+        if seen.insert(label.clone()) {
+            out.push(label);
+        }
+    }
+    out.join("/")
 }
 
 fn draw_reload_status_toast(frame: &mut ratatui::Frame, area: Rect, msg: &str) {
