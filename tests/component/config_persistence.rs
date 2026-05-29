@@ -7,7 +7,7 @@
 //! and config file round-trips to verify workspace discovery and persistence.
 
 use std::fs;
-use zeroclaw::config::{AliasedAgentConfig, Config, MemoryConfig};
+use zeroclaw::config::{Config, MemoryConfig};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Config default construction

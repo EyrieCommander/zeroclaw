@@ -688,9 +688,9 @@ pub fn field_shape(section: FieldSection, type_key: &str) -> Vec<FieldDescriptor
             is_secret: info.is_secret,
             enum_variants: info.enum_variants.map(|f| f()),
             // `uri` is an override-only field — operators set it only
-            // when pointing at a self-hosted gateway. `requires-openai-auth`
-            // and `wire-api` are OpenAI Codex subscription fields — optional
-            // for all providers, meaningful only for OpenAI. `api-key` is
+            // when pointing at a self-hosted gateway. `requires_openai_auth`
+            // and `wire_api` are OpenAI Codex subscription fields — optional
+            // for all providers, meaningful only for OpenAI. `api_key` is
             // left non-required because local providers (Ollama) and Codex
             // subscription auth don't need one — the runtime surfaces a
             // clear error at request time if a remote provider is missing
@@ -698,7 +698,7 @@ pub fn field_shape(section: FieldSection, type_key: &str) -> Vec<FieldDescriptor
             // to actually issue a request.
             required: !matches!(
                 field_path,
-                "uri" | "api-key" | "requires-openai-auth" | "wire-api"
+                "uri" | "api_key" | "requires_openai_auth" | "wire_api"
             ),
             default,
         });
@@ -716,7 +716,13 @@ pub fn field_shape(section: FieldSection, type_key: &str) -> Vec<FieldDescriptor
 /// provider type or channel kind lights up Quickstart for free,
 /// while keeping the modal focused on what an agent cannot start
 /// without.
-const MODEL_PROVIDER_ESSENTIALS: &[&str] = &["model", "api_key", "uri"];
+const MODEL_PROVIDER_ESSENTIALS: &[&str] = &[
+    "model",
+    "api_key",
+    "uri",
+    "requires_openai_auth",
+    "wire_api",
+];
 const CHANNEL_ESSENTIALS: &[&str] = &["bot_token", "token", "webhook_url", "allowed_users"];
 const PEER_GROUP_ESSENTIALS: &[&str] = &["channel", "external_peers", "agents", "ignore"];
 
@@ -1759,7 +1765,7 @@ mod tests {
     }
 
     /// Codex subscription auth: `field_shape(ModelProvider, "openai")` must
-    /// include the `requires-openai-auth` and `wire-api` rows so the
+    /// include the `requires_openai_auth` and `wire_api` rows so the
     /// Quickstart form can offer Codex subscription auth (no API key needed).
     /// These fields are non-required — they default to `false`/empty and are
     /// harmless for non-OpenAI providers.
@@ -1768,16 +1774,16 @@ mod tests {
         let rows = super::field_shape(super::FieldSection::ModelProvider, "openai");
         let keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
         assert!(
-            keys.contains(&"requires-openai-auth"),
-            "field_shape for openai must include `requires-openai-auth` for Codex subscription; got {keys:?}",
+            keys.contains(&"requires_openai_auth"),
+            "field_shape for openai must include `requires_openai_auth` for Codex subscription; got {keys:?}",
         );
         assert!(
-            keys.contains(&"wire-api"),
-            "field_shape for openai must include `wire-api` for Codex subscription; got {keys:?}",
+            keys.contains(&"wire_api"),
+            "field_shape for openai must include `wire_api` for Codex subscription; got {keys:?}",
         );
         // Both must be non-required so Quickstart doesn't block on them.
         for row in &rows {
-            if row.key == "requires-openai-auth" || row.key == "wire-api" {
+            if row.key == "requires_openai_auth" || row.key == "wire_api" {
                 assert!(
                     !row.required,
                     "`{}` must be non-required in the Quickstart form",
@@ -1787,21 +1793,21 @@ mod tests {
         }
     }
 
-    /// `api-key` must be non-required in the Quickstart form so Codex
+    /// `api_key` must be non-required in the Quickstart form so Codex
     /// subscription (no API key) and local providers (Ollama) can proceed
     /// without one.
     #[test]
     fn field_shape_api_key_is_not_required() {
         for kind in ["openai", "ollama"] {
             let rows = super::field_shape(super::FieldSection::ModelProvider, kind);
-            let api_key_row = rows.iter().find(|r| r.key == "api-key");
+            let api_key_row = rows.iter().find(|r| r.key == "api_key");
             assert!(
                 api_key_row.is_some(),
-                "field_shape for `{kind}` must include `api-key`",
+                "field_shape for `{kind}` must include `api_key`",
             );
             assert!(
                 !api_key_row.unwrap().required,
-                "`api-key` must be non-required for `{kind}` (Codex subscription / local providers don't need one)",
+                "`api_key` must be non-required for `{kind}` (Codex subscription / local providers don't need one)",
             );
         }
     }
