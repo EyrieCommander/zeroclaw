@@ -18,8 +18,27 @@ use crate::agent::personality::EDITABLE_PERSONALITY_FILES;
 use crate::agent::personality_templates::{TemplateContext, render as render_personality};
 use crate::i18n;
 
-const CUSTOM_OPENAI_COMPAT_LABEL: &str = "Custom OpenAI-compatible endpoint";
 const OPENAI_COMPAT_MODELS_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn tr(key: &str) -> String {
+    i18n::get_required_cli_string(key)
+}
+
+fn tr_args(key: &str, args: &[(&str, &str)]) -> String {
+    i18n::get_required_cli_string_with_args(key, args)
+}
+
+fn select_item_tr(key: &str) -> SelectItem {
+    SelectItem::new(tr(key))
+}
+
+fn done_item() -> SelectItem {
+    select_item_tr("onboard-item-done")
+}
+
+fn add_new_item() -> SelectItem {
+    select_item_tr("onboard-item-add-new")
+}
 
 /// Sections without a tailored interactive wizard. Single source for
 /// the variant list used by `dispatch_section` and `section_has_signal`.
@@ -137,10 +156,9 @@ async fn dispatch_section(
             Box::pin(no_wizard_acknowledge(
                 ui,
                 section,
-                &format!(
-                    "No interactive wizard yet. Configure via the dashboard at \
-                 /config/{section} or \
-                 `zeroclaw config set {section}.<type>.<alias>.<field> <value>`."
+                tr_args(
+                    "onboard-provider-no-wizard-explanation",
+                    &[("section", section.as_str())],
                 ),
             ))
             .await
@@ -157,7 +175,7 @@ async fn dispatch_section(
                 ui,
                 section,
                 "skill-bundles",
-                "Skill bundle",
+                tr("onboard-skill-bundle-prompt"),
             ))
             .await
         }
@@ -167,7 +185,7 @@ async fn dispatch_section(
                 ui,
                 section,
                 "risk-profiles",
-                "Risk profile",
+                tr("onboard-risk-profile-prompt"),
             ))
             .await
         }
@@ -177,7 +195,7 @@ async fn dispatch_section(
                 ui,
                 section,
                 "runtime-profiles",
-                "Runtime profile",
+                tr("onboard-runtime-profile-prompt"),
             ))
             .await
         }
@@ -187,7 +205,7 @@ async fn dispatch_section(
                 ui,
                 section,
                 "peer-groups",
-                "Peer group",
+                tr("onboard-peer-group-prompt"),
             ))
             .await
         }
@@ -195,10 +213,9 @@ async fn dispatch_section(
             Box::pin(no_wizard_acknowledge(
                 ui,
                 section,
-                &format!(
-                    "Configured via the dashboard at /config/{section} or \
-                 `zeroclaw config set {section}.<alias>.<field> <value>` \
-                 (not part of the initial wizard)."
+                tr_args(
+                    "onboard-no-wizard-explanation",
+                    &[("section", section.as_str())],
                 ),
             ))
             .await
@@ -212,7 +229,7 @@ async fn dispatch_section(
 async fn no_wizard_acknowledge(
     ui: &mut dyn OnboardUi,
     section: Section,
-    explanation: &str,
+    explanation: String,
 ) -> Result<Nav> {
     let mut label = section.as_str().replace(['_', '-', '.'], " ");
     if let Some(c) = label.get_mut(0..1) {
@@ -221,12 +238,13 @@ async fn no_wizard_acknowledge(
     ui.heading(1, &label);
     let canonical = section.help();
     let note = if canonical.is_empty() {
-        explanation.to_string()
+        explanation
     } else {
         format!("{canonical}\n\n{explanation}")
     };
     ui.note(&note);
-    let _ = ui.confirm("Continue", false).await?;
+    let continue_prompt = tr("onboard-prompt-continue");
+    let _ = ui.confirm(&continue_prompt, false).await?;
     Ok(Nav::Done)
 }
 
@@ -376,10 +394,9 @@ async fn prompt_field(
     // when navigation moves to next/previous step.
     if cfg.prop_is_env_overridden(name) {
         let env_var = format!("ZEROCLAW_{}", name.replace('.', "__").replace('-', "_"),);
-        ui.note(&format!(
-            "\u{1f489} {name}\n\
-             overridden by env: {env_var}\n\
-             config.toml path: [{name}] — skipping prompt, value sourced from environment.",
+        ui.note(&tr_args(
+            "onboard-field-env-overridden-note",
+            &[("name", name), ("env_var", &env_var)],
         ));
         return Ok(Nav::Done);
     }
@@ -423,7 +440,7 @@ async fn prompt_field(
         if !help.is_empty() {
             help.push('\n');
         }
-        help.push_str("Format: alice,bob or [\"alice\", \"bob\"]. Empty = clear list.");
+        help.push_str(&tr("onboard-string-array-format-help"));
     }
     if !is_set
         && let Some(d) = default
@@ -432,12 +449,12 @@ async fn prompt_field(
         if !help.is_empty() {
             help.push('\n');
         }
-        help.push_str(&format!("Default: {d}. Press Enter to accept."));
+        help.push_str(&tr_args("onboard-default-help", &[("value", d)]));
     } else if is_set {
         if !help.is_empty() {
             help.push('\n');
         }
-        help.push_str(&format!("Current: {current}. Enter to keep."));
+        help.push_str(&tr_args("onboard-current-help", &[("value", &current)]));
     }
     ui.note(&help);
 
@@ -518,7 +535,7 @@ async fn prompt_field(
                     Answer::Value(new) => {
                         let trimmed = new.trim();
                         if trimmed.starts_with('[') && !parses_as_string_array(trimmed) {
-                            ui.note("Invalid array. Use alice,bob or [\"alice\", \"bob\"].");
+                            ui.note(&tr("onboard-invalid-string-array"));
                             continue;
                         }
                         if (is_set || !new.is_empty()) && new != current {
@@ -533,7 +550,7 @@ async fn prompt_field(
         PropKind::Enum => {
             let variants = field.enum_variants.map(|get| get()).unwrap_or_default();
             if variants.is_empty() {
-                ui.warn(&format!("skipping {name}: no enum variants exposed"));
+                ui.warn(&tr_args("onboard-enum-variants-missing", &[("name", name)]));
                 return Ok(Nav::Done);
             }
             let items: Vec<SelectItem> = variants.iter().map(SelectItem::new).collect();
@@ -585,9 +602,7 @@ async fn prompt_field(
             } else {
                 default.map(str::to_string).unwrap_or_default()
             };
-            let hint = format!(
-                "Editing {name}. Save and exit to apply, or quit without saving to keep the current value."
-            );
+            let hint = tr_args("onboard-object-editor-hint", &[("name", name)]);
             match ui.editor(&hint, &initial).await? {
                 Answer::Back => return Ok(Nav::Back),
                 Answer::Value(new) => {
@@ -651,7 +666,7 @@ async fn skip_if_configured(
     ui: &mut dyn OnboardUi,
     flags: &Flags,
     section: Section,
-    label: &str,
+    label: String,
     has_signal: bool,
 ) -> Result<SkipNav> {
     if flags.force {
@@ -666,13 +681,8 @@ async fn skip_if_configured(
     if !seen && !has_signal {
         return Ok(SkipNav::Enter);
     }
-    match ui
-        .confirm(
-            &format!("{label} is already configured. Reconfigure?"),
-            false,
-        )
-        .await?
-    {
+    let prompt = tr_args("onboard-section-reconfigure-prompt", &[("label", &label)]);
+    match ui.confirm(&prompt, false).await? {
         Answer::Back => Ok(SkipNav::Back),
         Answer::Value(true) => Ok(SkipNav::Enter),
         Answer::Value(false) => Ok(SkipNav::Skip),
@@ -727,13 +737,17 @@ fn is_known_model_provider_name(model_provider: &str) -> bool {
 fn openai_compat_models_endpoint(base_url: &str) -> Result<reqwest::Url> {
     let raw = base_url.trim();
     if raw.is_empty() {
-        anyhow::bail!("OpenAI-compatible model discovery requires a base URL");
+        anyhow::bail!(tr("onboard-openai-compatible-base-url-required-error"));
     }
 
-    let mut endpoint = reqwest::Url::parse(raw)
-        .with_context(|| format!("OpenAI-compatible base URL is invalid: {raw}"))?;
+    let mut endpoint = reqwest::Url::parse(raw).with_context(|| {
+        tr_args(
+            "onboard-openai-compatible-base-url-invalid-error",
+            &[("url", raw)],
+        )
+    })?;
     if !matches!(endpoint.scheme(), "http" | "https") {
-        anyhow::bail!("OpenAI-compatible base URL must use http:// or https://");
+        anyhow::bail!(tr("onboard-openai-compatible-base-url-scheme-error"));
     }
 
     let path = endpoint.path().trim_end_matches('/');
@@ -827,14 +841,15 @@ fn openai_compat_discovery_base_url(
 
 async fn prompt_custom_openai_base_url(ui: &mut dyn OnboardUi) -> Result<Option<String>> {
     loop {
-        match ui.string("OpenAI-compatible base URL", None, None).await? {
+        let prompt = tr("onboard-openai-compatible-base-url-prompt");
+        match ui.string(&prompt, None, None).await? {
             Answer::Back => return Ok(None),
             Answer::Value(value) => {
                 let normalized = value.trim().trim_end_matches('/').to_string();
                 if openai_compat_models_endpoint(&normalized).is_ok() {
                     return Ok(Some(normalized));
                 }
-                ui.note("Enter an http:// or https:// URL for an OpenAI-compatible API base.");
+                ui.note(&tr("onboard-openai-compatible-base-url-invalid"));
             }
         }
     }
@@ -848,14 +863,8 @@ async fn prompt_alias_name(ui: &mut dyn OnboardUi, suggestion: &str) -> Result<O
         // Alias suggestion is a default the user can accept by hitting
         // Enter, not a pre-filled string to edit — surface it as the
         // ghost-text placeholder so the input box is otherwise empty.
-        match ui
-            .string(
-                "Alias (name for this configuration)",
-                None,
-                Some(suggestion),
-            )
-            .await?
-        {
+        let prompt = tr("onboard-alias-name-prompt");
+        match ui.string(&prompt, None, Some(suggestion)).await? {
             Answer::Back => return Ok(None),
             Answer::Value(s) => {
                 let trimmed = if s.trim().is_empty() {
@@ -865,7 +874,7 @@ async fn prompt_alias_name(ui: &mut dyn OnboardUi, suggestion: &str) -> Result<O
                 };
                 match zeroclaw_config::helpers::validate_alias_key(&trimmed) {
                     Ok(()) => return Ok(Some(trimmed)),
-                    Err(msg) => ui.warn(&format!("Invalid alias: {msg}")),
+                    Err(msg) => ui.warn(&tr_args("onboard-invalid-alias", &[("message", &msg)])),
                 }
             }
         }
@@ -894,7 +903,11 @@ async fn mark_completed(cfg: &mut Config, section: Section) -> Result<()> {
 // prompt_fields_under / per-section loop), never propagates to the parent.
 
 async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Result<Nav> {
-    emit_section_header(ui, Section::ModelProviders, "Providers");
+    emit_section_header(
+        ui,
+        Section::ModelProviders,
+        &tr("onboard-section-providers"),
+    );
 
     // Menu is driven by zeroclaw_providers::list_model_providers() — single source
     // of truth for canonical names, display names, aliases.
@@ -917,7 +930,7 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
                         // shows which row the operator is hovering, so a
                         // second "[active]" badge for current selection
                         // was redundant and misleading.
-                        let badge = configured.then(|| "[configured]".into());
+                        let badge = configured.then(|| tr("onboard-badge-configured"));
                         SelectItem {
                             label: p.display_name.to_string(),
                             badge,
@@ -925,14 +938,15 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
                     })
                     .collect();
                 let custom_idx = options.len();
-                options.push(SelectItem::new(CUSTOM_OPENAI_COMPAT_LABEL));
+                options.push(select_item_tr("onboard-custom-openai-compatible-label"));
                 // "Done" lets the user exit model_providers without picking one —
                 // matches the channels picker's escape hatch. Highlight it
                 // by default when no fallback is set yet (first-time setup).
                 let done_idx = options.len();
-                options.push(SelectItem::new("Done"));
+                options.push(done_item());
                 let initial = current_idx.or(Some(done_idx));
-                let idx = match ui.select("ModelProvider", &options, initial).await? {
+                let prompt = tr("onboard-model-provider-prompt");
+                let idx = match ui.select(&prompt, &options, initial).await? {
                     Answer::Back => return Ok(Nav::Back),
                     Answer::Value(idx) => idx,
                 };
@@ -955,18 +969,19 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
         // advanced settings) reads against this header. Without the
         // up-front set, the alias prompt rendered under a generic
         // "Providers" breadcrumb with no provider-name context.
+        let custom_openai_label = tr("onboard-custom-openai-compatible-label");
         let display_name = entries
             .iter()
             .find(|p| p.name == picked)
-            .map(|p| p.display_name)
+            .map(|p| p.display_name.to_string())
             .unwrap_or_else(|| {
                 if picked == "custom" {
-                    CUSTOM_OPENAI_COMPAT_LABEL
+                    custom_openai_label.clone()
                 } else {
-                    picked.as_str()
+                    picked.clone()
                 }
             });
-        ui.heading(2, display_name);
+        ui.heading(2, &display_name);
 
         // When --model-provider is forced via CLI flags skip the alias prompt.
         // Otherwise show existing aliases as a selectable list with "+ Add new".
@@ -979,9 +994,9 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
             if existing_aliases.is_empty() {
                 // Override the API-key help text inherited from the
                 // section intro with alias-specific guidance.
-                ui.note(&format!(
-                    "Short identifier for this {display_name} configuration. \
-                     Letters, digits, underscores. Empty = use the suggested default."
+                ui.note(&tr_args(
+                    "onboard-alias-name-help",
+                    &[("display_name", &display_name)],
                 ));
                 let Some(a) = prompt_alias_name(ui, "default").await? else {
                     continue;
@@ -993,15 +1008,16 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
                     .map(|a| SelectItem::new(a.clone()))
                     .collect();
                 let add_new_idx = alias_options.len();
-                alias_options.push(SelectItem::new("+ Add new"));
-                let alias_idx = match ui.select("Alias", &alias_options, Some(0)).await? {
+                alias_options.push(add_new_item());
+                let alias_prompt = tr("onboard-alias-prompt");
+                let alias_idx = match ui.select(&alias_prompt, &alias_options, Some(0)).await? {
                     Answer::Back => continue,
                     Answer::Value(i) => i,
                 };
                 if alias_idx == add_new_idx {
-                    ui.note(&format!(
-                        "Short identifier for this {display_name} configuration. \
-                         Letters, digits, underscores. Empty = use the suggested default."
+                    ui.note(&tr_args(
+                        "onboard-alias-name-help",
+                        &[("display_name", &display_name)],
                     ));
                     let suggestion = format!("{}-2", existing_aliases[0]);
                     let Some(a) = prompt_alias_name(ui, &suggestion).await? else {
@@ -1060,7 +1076,8 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
         // lost among other fields. The heading(2) also overrides the
         // model_provider subsection so the panel reads "Providers › Authentication".
         if flags.api_key.is_none() {
-            ui.heading(2, &format!("{display_name} › Authentication"));
+            let auth_heading = tr("onboard-openai-auth-prompt");
+            ui.heading(2, &format!("{display_name} › {auth_heading}"));
 
             // OpenAI supports two auth modes: standard API key (platform.openai.com)
             // and Codex subscription (ChatGPT Plus/Pro OAuth, no API key needed).
@@ -1072,11 +1089,11 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
                     .find("openai", &alias)
                     .map(|c| c.requires_openai_auth)
                     .unwrap_or(false);
-                ui.note(&i18n::get_required_cli_string("onboard-openai-auth-note"));
-                let auth_prompt = i18n::get_required_cli_string("onboard-openai-auth-prompt");
+                ui.note(&tr("onboard-openai-auth-note"));
+                let auth_prompt = tr("onboard-openai-auth-prompt");
                 let auth_items = [
-                    SelectItem::new(i18n::get_required_cli_string("onboard-openai-auth-api-key")),
-                    SelectItem::new(i18n::get_required_cli_string("onboard-openai-auth-codex")),
+                    select_item_tr("onboard-openai-auth-api-key"),
+                    select_item_tr("onboard-openai-auth-codex"),
                 ];
                 let auth_default = if currently_codex { Some(1) } else { Some(0) };
                 let codex_chosen = match ui.select(&auth_prompt, &auth_items, auth_default).await? {
@@ -1096,9 +1113,7 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
                 if codex_chosen {
                     persist(cfg, &format!("{prefix}.requires-openai-auth"), "true").await?;
                     persist(cfg, &format!("{prefix}.wire-api"), "responses").await?;
-                    ui.note(&i18n::get_required_cli_string(
-                        "onboard-openai-codex-followup",
-                    ));
+                    ui.note(&tr("onboard-openai-codex-followup"));
                 } else {
                     if currently_codex {
                         persist(cfg, &format!("{prefix}.requires-openai-auth"), "false").await?;
@@ -1132,11 +1147,14 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
                     Nav::Done => {}
                 }
             }
-            ui.heading(2, display_name);
+            ui.heading(2, &display_name);
         }
 
         if flags.model.is_none() {
-            ui.heading(2, &format!("{display_name} › Model"));
+            ui.heading(
+                2,
+                &format!("{display_name} › {}", tr("onboard-model-prompt")),
+            );
             match prompt_model(cfg, ui, &prefix).await? {
                 Nav::Back => {
                     if flags.model_provider.is_some() {
@@ -1150,7 +1168,7 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
                 }
                 Nav::Done => {}
             }
-            ui.heading(2, display_name);
+            ui.heading(2, &display_name);
         }
 
         // Advanced settings (temperature, timeout, base-url override,
@@ -1182,13 +1200,10 @@ async fn offer_advanced_settings(
     ui: &mut dyn OnboardUi,
     prefix: &str,
 ) -> Result<Nav> {
-    ui.heading(2, "Advanced settings");
-    ui.note(
-        "Temperature, timeout, base-URL override, wire protocol, etc. The \
-         model_provider's own defaults are used when these are left unset — skip \
-         unless you need to override something specific.",
-    );
-    match ui.confirm("Configure advanced settings?", false).await? {
+    ui.heading(2, &tr("onboard-advanced-settings-heading"));
+    ui.note(&tr("onboard-advanced-settings-note"));
+    let prompt = tr("onboard-advanced-settings-confirm");
+    match ui.confirm(&prompt, false).await? {
         Answer::Back => return Ok(Nav::Back),
         Answer::Value(false) => return Ok(Nav::Done),
         Answer::Value(true) => {}
@@ -1269,7 +1284,7 @@ async fn prompt_model(cfg: &mut Config, ui: &mut dyn OnboardUi, prefix: &str) ->
 
     let catalog_models = match zeroclaw_providers::create_model_provider(&model_provider, None) {
         Ok(handle) => {
-            ui.status("Fetching models...");
+            ui.status(&tr("onboard-models-fetching-status"));
             match handle.list_models().await {
                 Ok(models) => Some(models),
                 Err(e) => {
@@ -1287,7 +1302,7 @@ async fn prompt_model(cfg: &mut Config, ui: &mut dyn OnboardUi, prefix: &str) ->
         Some(models) => Some(models),
         None if should_try_openai_compat => {
             if let Some(base_url) = discovery_base_url.as_deref() {
-                ui.status("Fetching models from /v1/models...");
+                ui.status(&tr("onboard-models-fetching-openai-compatible-status"));
                 match discover_openai_compat_models(base_url, api_key).await {
                     Ok(models) => Some(models),
                     Err(e) => {
@@ -1324,7 +1339,8 @@ async fn prompt_model(cfg: &mut Config, ui: &mut dyn OnboardUi, prefix: &str) ->
         Some(models) => {
             let items: Vec<SelectItem> = models.iter().map(SelectItem::new).collect();
             let current_idx = models.iter().position(|m| m == &current);
-            match ui.select("Model", &items, current_idx).await? {
+            let prompt = tr("onboard-model-prompt");
+            match ui.select(&prompt, &items, current_idx).await? {
                 Answer::Back => return Ok(Nav::Back),
                 Answer::Value(idx) => models[idx].clone(),
             }
@@ -1334,12 +1350,13 @@ async fn prompt_model(cfg: &mut Config, ui: &mut dyn OnboardUi, prefix: &str) ->
             // a no-auth listing). The underlying error was traced at debug
             // level; surface a short provider-named nudge to the user and
             // fall back to manual entry.
-            ui.note(&format!(
-                "Catalog lookup failed for {model_provider} — enter a model id manually \
-                 (see the model_provider's docs for the exact format)."
+            ui.note(&tr_args(
+                "onboard-model-catalog-failed-note",
+                &[("model_provider", &model_provider)],
             ));
             let prefill = if is_set { Some(current.as_str()) } else { None };
-            match ui.string("Model id", prefill, None).await? {
+            let prompt = tr("onboard-model-id-prompt");
+            match ui.string(&prompt, prefill, None).await? {
                 Answer::Back => return Ok(Nav::Back),
                 Answer::Value(v) => v,
             }
@@ -1353,7 +1370,7 @@ async fn prompt_model(cfg: &mut Config, ui: &mut dyn OnboardUi, prefix: &str) ->
 }
 
 async fn channels(cfg: &mut Config, ui: &mut dyn OnboardUi, _flags: &Flags) -> Result<Nav> {
-    emit_section_header(ui, Section::Channels, "Channels");
+    emit_section_header(ui, Section::Channels, &tr("onboard-section-channels"));
     loop {
         // Master list of all channels that exist in the schema, derived from
         // the static map_key_sections() metadata. Feature-gated channels drop
@@ -1397,18 +1414,19 @@ async fn channels(cfg: &mut Config, ui: &mut dyn OnboardUi, _flags: &Flags) -> R
                         && cfg.get_prop(f).ok().as_deref() == Some("true")
                 });
                 if is_active {
-                    SelectItem::with_badge(name.clone(), "[active]")
+                    SelectItem::with_badge(name.clone(), tr("onboard-badge-active"))
                 } else if configured.contains(name) {
-                    SelectItem::with_badge(name.clone(), "[configured]")
+                    SelectItem::with_badge(name.clone(), tr("onboard-badge-configured"))
                 } else {
                     SelectItem::new(name.clone())
                 }
             })
             .collect();
         let done_idx = options.len();
-        options.push(SelectItem::new("Done"));
+        options.push(done_item());
 
-        let idx = match ui.select("Channel", &options, Some(done_idx)).await? {
+        let prompt = tr("onboard-channel-prompt");
+        let idx = match ui.select(&prompt, &options, Some(done_idx)).await? {
             Answer::Back => return Ok(Nav::Back),
             Answer::Value(i) => i,
         };
@@ -1432,8 +1450,9 @@ async fn channels(cfg: &mut Config, ui: &mut dyn OnboardUi, _flags: &Flags) -> R
                 .map(|a| SelectItem::new(a.clone()))
                 .collect();
             let add_new_idx = alias_options.len();
-            alias_options.push(SelectItem::new("+ Add new"));
-            let alias_idx = match ui.select("Alias", &alias_options, Some(0)).await? {
+            alias_options.push(add_new_item());
+            let alias_prompt = tr("onboard-alias-prompt");
+            let alias_idx = match ui.select(&alias_prompt, &alias_options, Some(0)).await? {
                 Answer::Back => continue,
                 Answer::Value(i) => i,
             };
@@ -1462,14 +1481,14 @@ async fn channels(cfg: &mut Config, ui: &mut dyn OnboardUi, _flags: &Flags) -> R
 }
 
 async fn memory(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Result<Nav> {
-    emit_section_header(ui, Section::Memory, "Memory");
+    emit_section_header(ui, Section::Memory, &tr("onboard-section-memory"));
     if flags.memory.is_none() {
         match skip_if_configured(
             cfg,
             ui,
             flags,
             Section::Memory,
-            "Memory",
+            tr("onboard-section-memory"),
             section_has_signal(cfg, Section::Memory),
         )
         .await?
@@ -1487,7 +1506,8 @@ async fn memory(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Resu
             let options: Vec<SelectItem> =
                 backends.iter().map(|b| SelectItem::new(b.label)).collect();
             let current_idx = backends.iter().position(|b| b.key == current_backend);
-            match ui.select("Memory backend", &options, current_idx).await? {
+            let prompt = tr("onboard-memory-backend-prompt");
+            match ui.select(&prompt, &options, current_idx).await? {
                 Answer::Back => return Ok(Nav::Back),
                 Answer::Value(idx) => backends[idx].key.to_string(),
             }
@@ -1504,13 +1524,13 @@ async fn memory(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Resu
 }
 
 async fn hardware(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Result<Nav> {
-    emit_section_header(ui, Section::Hardware, "Hardware");
+    emit_section_header(ui, Section::Hardware, &tr("onboard-section-hardware"));
     match skip_if_configured(
         cfg,
         ui,
         flags,
         Section::Hardware,
-        "Hardware",
+        tr("onboard-section-hardware"),
         section_has_signal(cfg, Section::Hardware),
     )
     .await?
@@ -1539,13 +1559,13 @@ async fn hardware(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Re
 }
 
 async fn tunnel(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Result<Nav> {
-    emit_section_header(ui, Section::Tunnel, "Tunnel");
+    emit_section_header(ui, Section::Tunnel, &tr("onboard-section-tunnel"));
     match skip_if_configured(
         cfg,
         ui,
         flags,
         Section::Tunnel,
-        "Tunnel",
+        tr("onboard-section-tunnel"),
         section_has_signal(cfg, Section::Tunnel),
     )
     .await?
@@ -1574,10 +1594,8 @@ async fn tunnel(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Resu
         let current_idx = provider_names
             .iter()
             .position(|p| p == &current_model_provider);
-        let idx = match ui
-            .select("Public tunnel model_provider", &options, current_idx)
-            .await?
-        {
+        let prompt = tr("onboard-tunnel-provider-prompt");
+        let idx = match ui.select(&prompt, &options, current_idx).await? {
             Answer::Back => return Ok(Nav::Back),
             Answer::Value(i) => i,
         };
@@ -1606,7 +1624,7 @@ async fn tunnel(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Resu
 }
 
 async fn agents(cfg: &mut Config, ui: &mut dyn OnboardUi, _flags: &Flags) -> Result<Nav> {
-    emit_section_header(ui, Section::Agents, "Agents");
+    emit_section_header(ui, Section::Agents, &tr("onboard-section-agents"));
     loop {
         let existing_aliases: Vec<String> = cfg.get_map_keys("agents").unwrap_or_default();
         let mut options: Vec<SelectItem> = existing_aliases
@@ -1615,18 +1633,19 @@ async fn agents(cfg: &mut Config, ui: &mut dyn OnboardUi, _flags: &Flags) -> Res
                 let enabled_path = format!("agents.{a}.enabled");
                 let is_active = cfg.get_prop(&enabled_path).ok().as_deref() == Some("true");
                 if is_active {
-                    SelectItem::with_badge(a.clone(), "[active]")
+                    SelectItem::with_badge(a.clone(), tr("onboard-badge-active"))
                 } else {
-                    SelectItem::with_badge(a.clone(), "[configured]")
+                    SelectItem::with_badge(a.clone(), tr("onboard-badge-configured"))
                 }
             })
             .collect();
         let add_new_idx = options.len();
-        options.push(SelectItem::new("+ Add new"));
+        options.push(add_new_item());
         let done_idx = options.len();
-        options.push(SelectItem::new("Done"));
+        options.push(done_item());
 
-        let idx = match ui.select("Agent", &options, Some(done_idx)).await? {
+        let prompt = tr("onboard-agent-prompt");
+        let idx = match ui.select(&prompt, &options, Some(done_idx)).await? {
             Answer::Back => return Ok(Nav::Back),
             Answer::Value(i) => i,
         };
@@ -1650,9 +1669,11 @@ async fn agents(cfg: &mut Config, ui: &mut dyn OnboardUi, _flags: &Flags) -> Res
         cfg.save_dirty().await?;
         let workspace_dir = cfg.agent_workspace_dir(&alias);
         if let Err(err) = tokio::fs::create_dir_all(&workspace_dir).await {
-            ui.warn(&format!(
-                "Could not create agent workspace at {}: {err}",
-                workspace_dir.display()
+            let workspace = workspace_dir.display().to_string();
+            let error = err.to_string();
+            ui.warn(&tr_args(
+                "onboard-agent-workspace-create-failed",
+                &[("workspace", &workspace), ("error", &error)],
             ));
         } else if let Err(err) =
             zeroclaw_config::schema::ensure_bootstrap_files(&workspace_dir).await
@@ -1675,9 +1696,9 @@ async fn one_tier_alias_section(
     ui: &mut dyn OnboardUi,
     section: Section,
     section_path: &str,
-    select_label: &str,
+    select_label: String,
 ) -> Result<Nav> {
-    emit_section_header(ui, section, select_label);
+    emit_section_header(ui, section, &select_label);
     loop {
         let existing: Vec<String> = cfg.get_map_keys(section_path).unwrap_or_default();
         let mut options: Vec<SelectItem> = existing
@@ -1685,11 +1706,11 @@ async fn one_tier_alias_section(
             .map(|a| SelectItem::new(a.clone()))
             .collect();
         let add_new_idx = options.len();
-        options.push(SelectItem::new("+ Add new"));
+        options.push(add_new_item());
         let done_idx = options.len();
-        options.push(SelectItem::new("Done"));
+        options.push(done_item());
 
-        let idx = match ui.select(select_label, &options, Some(done_idx)).await? {
+        let idx = match ui.select(&select_label, &options, Some(done_idx)).await? {
             Answer::Back => return Ok(Nav::Back),
             Answer::Value(i) => i,
         };
@@ -1720,7 +1741,7 @@ async fn one_tier_alias_section(
 }
 
 async fn skills(cfg: &mut Config, ui: &mut dyn OnboardUi, _flags: &Flags) -> Result<Nav> {
-    emit_section_header(ui, Section::Skills, "Skills");
+    emit_section_header(ui, Section::Skills, &tr("onboard-section-skills"));
     let nav = prompt_fields_under(cfg, ui, "skills", &[], &[]).await?;
     if matches!(nav, Nav::Back) {
         return Ok(Nav::Back);
@@ -1835,13 +1856,18 @@ async fn prompt_agent_system_prompt(
                 let exists = workspace.join(filename).is_file();
                 SelectItem::with_badge(
                     (*filename).to_string(),
-                    if exists { "saved" } else { "not saved" },
+                    if exists {
+                        tr("onboard-personality-file-saved")
+                    } else {
+                        tr("onboard-personality-file-not-saved")
+                    },
                 )
             })
             .collect();
-        items.push(SelectItem::new("Done"));
+        items.push(done_item());
 
-        match ui.select("Personality file to edit", &items, None).await? {
+        let prompt = tr("onboard-personality-file-prompt");
+        match ui.select(&prompt, &items, None).await? {
             Answer::Back => return Ok(Nav::Back),
             Answer::Value(idx) if idx == EDITABLE_PERSONALITY_FILES.len() => break,
             Answer::Value(idx) => {
@@ -1852,7 +1878,11 @@ async fn prompt_agent_system_prompt(
                 } else {
                     render_personality(filename, &template_ctx).unwrap_or_default()
                 };
-                match ui.editor(&format!("Editing {filename}"), &initial).await? {
+                let editor_title = tr_args(
+                    "onboard-personality-editor-title",
+                    &[("filename", filename)],
+                );
+                match ui.editor(&editor_title, &initial).await? {
                     Answer::Back => continue,
                     Answer::Value(content) => {
                         tokio::fs::create_dir_all(&workspace)
@@ -1895,8 +1925,9 @@ async fn prompt_agent_alias_single(
     ui.note(&help);
 
     if available.is_empty() {
-        ui.note(&format!(
-            "{help}\nNo {field} aliases configured yet. Press Enter to leave empty."
+        ui.note(&tr_args(
+            "onboard-agent-alias-none-available-note",
+            &[("help", &help), ("field", field)],
         ));
         match ui.string(field, Some(&current), None).await? {
             Answer::Back => return Ok(Nav::Back),
@@ -1909,7 +1940,7 @@ async fn prompt_agent_alias_single(
         }
     }
 
-    let mut items: Vec<SelectItem> = vec![SelectItem::new("(none)")];
+    let mut items: Vec<SelectItem> = vec![select_item_tr("onboard-item-none")];
     for a in available {
         items.push(SelectItem::new(a.as_str()));
     }
@@ -1969,17 +2000,23 @@ async fn prompt_agent_alias_multi(
     let help = field_doc(cfg, &path).unwrap_or_default();
 
     if available.is_empty() {
-        ui.note(&format!(
-            "{help}\nNo {field} aliases configured yet — skipping."
+        ui.note(&tr_args(
+            "onboard-agent-alias-none-available-skip-note",
+            &[("help", &help), ("field", field)],
         ));
         return Ok(Nav::Done);
     }
 
     loop {
-        ui.note(&format!(
-            "{help}\nEnter toggles a row. Pick `Done` to commit. ({} of {} selected)",
-            selected.len(),
-            available.len(),
+        let selected_count = selected.len().to_string();
+        let total_count = available.len().to_string();
+        ui.note(&tr_args(
+            "onboard-agent-alias-multi-help",
+            &[
+                ("help", &help),
+                ("selected", &selected_count),
+                ("total", &total_count),
+            ],
         ));
 
         let mut items: Vec<SelectItem> = available
@@ -1988,13 +2025,13 @@ async fn prompt_agent_alias_multi(
                 let is_selected = selected.contains(a);
                 let label = format!("[{}] {a}", if is_selected { "x" } else { " " });
                 if is_selected {
-                    SelectItem::with_badge(label, "selected")
+                    SelectItem::with_badge(label, tr("onboard-badge-selected"))
                 } else {
                     SelectItem::new(label)
                 }
             })
             .collect();
-        items.push(SelectItem::new("Done"));
+        items.push(done_item());
         let done_idx = items.len() - 1;
 
         match ui.select(field, &items, Some(done_idx)).await? {
@@ -2228,7 +2265,7 @@ mod tests {
             &mut ui,
             &Flags::default(),
             Section::Memory,
-            "Memory",
+            tr("onboard-section-memory"),
             false,
         )
         .await
@@ -2247,7 +2284,7 @@ mod tests {
             &mut ui,
             &Flags::default(),
             Section::Memory,
-            "Memory",
+            tr("onboard-section-memory"),
             true,
         )
         .await
@@ -2266,9 +2303,16 @@ mod tests {
             force: true,
             ..Default::default()
         };
-        let result = skip_if_configured(&cfg, &mut ui, &flags, Section::Memory, "Memory", true)
-            .await
-            .unwrap();
+        let result = skip_if_configured(
+            &cfg,
+            &mut ui,
+            &flags,
+            Section::Memory,
+            tr("onboard-section-memory"),
+            true,
+        )
+        .await
+        .unwrap();
         assert_eq!(result, SkipNav::Enter);
     }
 
@@ -2282,7 +2326,7 @@ mod tests {
             &mut ui,
             &Flags::default(),
             Section::Memory,
-            "Memory",
+            tr("onboard-section-memory"),
             false,
         )
         .await
@@ -2410,11 +2454,14 @@ mod tests {
 
         let flags = Flags::default();
         let mut ui = QuickUi::new()
-            .with("ModelProvider", CUSTOM_OPENAI_COMPAT_LABEL)
-            .with("OpenAI-compatible base URL", &base_url)
-            .with("alias", "default")
+            .with(
+                tr("onboard-model-provider-prompt"),
+                tr("onboard-custom-openai-compatible-label"),
+            )
+            .with(tr("onboard-openai-compatible-base-url-prompt"), &base_url)
+            .with(tr("onboard-alias-name-prompt"), "default")
             .with("api-key", "sk-custom-test")
-            .with("Model", "qwen-local");
+            .with(tr("onboard-model-prompt"), "qwen-local");
 
         Box::pin(run(
             &mut cfg,
@@ -2452,7 +2499,7 @@ mod tests {
             .expect("custom typed slot");
         entry.api_key = Some("sk-gateway-test".into());
         entry.uri = Some(base_url);
-        let mut ui = QuickUi::new().with("Model", "gateway-large");
+        let mut ui = QuickUi::new().with(tr("onboard-model-prompt"), "gateway-large");
 
         prompt_model(&mut cfg, &mut ui, "providers.models.custom.default")
             .await
@@ -2606,7 +2653,10 @@ mod tests {
             // Vec<String> with #[serde(default)]; empty answer keeps the
             // default empty list. Same shape as proxy-url above.
             .with("excluded-tools", "")
-            .with_sequence("Channel", ["telegram", "Done"]);
+            .with_sequence(
+                tr("onboard-channel-prompt"),
+                ["telegram".to_string(), tr("onboard-item-done")],
+            );
         Box::pin(run(&mut cfg, &mut ui, Some(Section::Channels), &flags))
             .await
             .unwrap();
@@ -2641,7 +2691,10 @@ mod tests {
             // Vec<String> with #[serde(default)]; empty answer keeps the
             // default empty list.
             .with("excluded-tools", "")
-            .with_sequence("Channel", ["mochat", "Done"]);
+            .with_sequence(
+                tr("onboard-channel-prompt"),
+                ["mochat".to_string(), tr("onboard-item-done")],
+            );
         Box::pin(run(&mut cfg, &mut ui, Some(Section::Channels), &flags))
             .await
             .unwrap();
@@ -2753,7 +2806,7 @@ mod tests {
             .anthropic
             .insert("work".into(), AnthropicModelProviderConfig::default());
 
-        let mut ui = QuickUi::new().with("Model", "claude-opus-4-7");
+        let mut ui = QuickUi::new().with(tr("onboard-model-prompt"), "claude-opus-4-7");
         prompt_model(&mut cfg, &mut ui, "providers.models.anthropic.work")
             .await
             .unwrap();
@@ -2805,8 +2858,11 @@ mod tests {
         let mut ui = BackAt::new(
             "api-key",
             QuickUi::new()
-                .with_sequence("ModelProvider", ["Anthropic", "Done"])
-                .with("Alias", "my-alias"),
+                .with_sequence(
+                    tr("onboard-model-provider-prompt"),
+                    ["Anthropic".to_string(), tr("onboard-item-done")],
+                )
+                .with(tr("onboard-alias-prompt"), "my-alias"),
         );
         run(
             &mut cfg,
@@ -2843,8 +2899,11 @@ mod tests {
         let mut ui = BackAt::new(
             "api-key",
             QuickUi::new()
-                .with_sequence("ModelProvider", ["Anthropic", "Done"])
-                .with("Alias (name for this configuration)", "fresh"),
+                .with_sequence(
+                    tr("onboard-model-provider-prompt"),
+                    ["Anthropic".to_string(), tr("onboard-item-done")],
+                )
+                .with(tr("onboard-alias-name-prompt"), "fresh"),
         );
         run(
             &mut cfg,
@@ -2995,11 +3054,11 @@ mod tests {
             ..Default::default()
         };
         let mut ui = QuickUi::new()
-            .with("ModelProvider", "OpenAI")
+            .with(tr("onboard-model-provider-prompt"), "OpenAI")
             // Accept "default" alias via placeholder fallback (no scripted answer needed)
             .with(
-                i18n::get_required_cli_string("onboard-openai-auth-prompt"),
-                i18n::get_required_cli_string("onboard-openai-auth-codex"),
+                tr("onboard-openai-auth-prompt"),
+                tr("onboard-openai-auth-codex"),
             );
 
         Box::pin(run(
@@ -3059,11 +3118,11 @@ mod tests {
             ..Default::default()
         };
         let mut ui = QuickUi::new()
-            .with("ModelProvider", "OpenAI")
-            .with("Alias", "default")
+            .with(tr("onboard-model-provider-prompt"), "OpenAI")
+            .with(tr("onboard-alias-prompt"), "default")
             .with(
-                i18n::get_required_cli_string("onboard-openai-auth-prompt"),
-                i18n::get_required_cli_string("onboard-openai-auth-api-key"),
+                tr("onboard-openai-auth-prompt"),
+                tr("onboard-openai-auth-api-key"),
             )
             .with("api-key", "sk-test-key");
 

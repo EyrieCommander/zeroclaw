@@ -384,6 +384,86 @@ channel-wecom-ws-dm-access-denied =
 
     Ask an administrator to add your userid to {$allowed_users_path}.
 
+# Onboarding — shared CLI wizard copy
+onboard-item-done = Done
+onboard-item-add-new = + Add new
+onboard-item-none = (none)
+onboard-prompt-continue = Continue
+onboard-badge-active = [active]
+onboard-badge-configured = [configured]
+onboard-badge-selected = selected
+
+onboard-section-providers = Providers
+onboard-section-channels = Channels
+onboard-section-memory = Memory
+onboard-section-hardware = Hardware
+onboard-section-tunnel = Tunnel
+onboard-section-agents = Agents
+onboard-section-skills = Skills
+
+onboard-provider-no-wizard-explanation =
+    No interactive wizard yet. Configure via the dashboard at /config/{$section} or `zeroclaw config set {$section}.<type>.<alias>.<field> <value>`.
+onboard-no-wizard-explanation =
+    Configured via the dashboard at /config/{$section} or `zeroclaw config set {$section}.<alias>.<field> <value>` (not part of the initial wizard).
+onboard-section-reconfigure-prompt = {$label} is already configured. Reconfigure?
+
+onboard-field-env-overridden-note =
+    💉 {$name}
+    overridden by env: {$env_var}
+    config.toml path: [{$name}] — skipping prompt, value sourced from environment.
+onboard-string-array-format-help = Format: alice,bob or ["alice", "bob"]. Empty = clear list.
+onboard-default-help = Default: {$value}. Press Enter to accept.
+onboard-current-help = Current: {$value}. Enter to keep.
+onboard-invalid-string-array = Invalid array. Use alice,bob or ["alice", "bob"].
+onboard-enum-variants-missing = skipping {$name}: no enum variants exposed
+onboard-object-editor-hint = Editing {$name}. Save and exit to apply, or quit without saving to keep the current value.
+
+onboard-openai-compatible-base-url-prompt = OpenAI-compatible base URL
+onboard-openai-compatible-base-url-invalid = Enter an http:// or https:// URL for an OpenAI-compatible API base.
+onboard-openai-compatible-base-url-required-error = OpenAI-compatible model discovery requires a base URL
+onboard-openai-compatible-base-url-invalid-error = OpenAI-compatible base URL is invalid: {$url}
+onboard-openai-compatible-base-url-scheme-error = OpenAI-compatible base URL must use http:// or https://
+onboard-custom-openai-compatible-label = Custom OpenAI-compatible endpoint
+
+onboard-alias-name-prompt = Alias (name for this configuration)
+onboard-alias-name-help =
+    Short identifier for this {$display_name} configuration. Use lowercase letters, digits, and single internal underscores. Empty = use the suggested default.
+onboard-invalid-alias = Invalid alias: {$message}
+onboard-model-provider-prompt = ModelProvider
+onboard-alias-prompt = Alias
+onboard-tunnel-provider-prompt = Public tunnel model_provider
+onboard-advanced-settings-heading = Advanced settings
+onboard-advanced-settings-note =
+    Temperature, timeout, base-URL override, wire protocol, etc. The model_provider's own defaults are used when these are left unset — skip unless you need to override something specific.
+onboard-advanced-settings-confirm = Configure advanced settings?
+onboard-models-fetching-status = Fetching models...
+onboard-models-fetching-openai-compatible-status = Fetching models from /v1/models...
+onboard-model-prompt = Model
+onboard-model-catalog-failed-note =
+    Catalog lookup failed for {$model_provider} — enter a model id manually (see the model_provider's docs for the exact format).
+onboard-model-id-prompt = Model id
+onboard-channel-prompt = Channel
+onboard-memory-backend-prompt = Memory backend
+onboard-agent-prompt = Agent
+onboard-skill-bundle-prompt = Skill bundle
+onboard-risk-profile-prompt = Risk profile
+onboard-runtime-profile-prompt = Runtime profile
+onboard-peer-group-prompt = Peer group
+onboard-agent-workspace-create-failed = Could not create agent workspace at {$workspace}: {$error}
+onboard-personality-file-saved = saved
+onboard-personality-file-not-saved = not saved
+onboard-personality-file-prompt = Personality file to edit
+onboard-personality-editor-title = Editing {$filename}
+onboard-agent-alias-none-available-note =
+    {$help}
+    No {$field} aliases configured yet. Press Enter to leave empty.
+onboard-agent-alias-none-available-skip-note =
+    {$help}
+    No {$field} aliases configured yet — skipping.
+onboard-agent-alias-multi-help =
+    {$help}
+    Enter toggles a row. Pick `Done` to commit. ({$selected} of {$total} selected)
+
 # Onboarding — OpenAI auth picker
 onboard-openai-auth-note =
     OpenAI authentication:
