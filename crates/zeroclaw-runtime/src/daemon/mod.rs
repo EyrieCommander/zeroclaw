@@ -367,18 +367,42 @@ pub async fn run(
                     interval.tick().await;
                     let evicted = reaper_sessions.evict_expired().await;
                     let queue_evicted = reaper_queue.evict_idle().await;
-                    if evicted > 0 || queue_evicted > 0 {
+                    for ev in &evicted {
+                        let span = ::zeroclaw_log::info_span!(
+                            target: "zeroclaw_log_internal_scope",
+                            "zeroclaw_scope",
+                            session_key = %ev.session_key,
+                            agent_alias = %ev.agent_alias,
+                            owner_tui_id = %ev.owner_tui_id.as_deref().unwrap_or(""),
+                            channel = "rpc",
+                        );
+                        let _guard = span.enter();
                         ::zeroclaw_log::record!(
                             INFO,
                             ::zeroclaw_log::Event::new(
                                 module_path!(),
                                 ::zeroclaw_log::Action::Note,
                             )
+                            .with_category(::zeroclaw_log::EventCategory::Agent)
                             .with_attrs(::serde_json::json!({
-                                "evicted_sessions": evicted,
+                                "reason": ev.reason,
+                                "idle_secs": ev.idle_secs,
+                            })),
+                            "Session reaper freed agent and conversation history"
+                        );
+                    }
+                    if queue_evicted > 0 {
+                        ::zeroclaw_log::record!(
+                            INFO,
+                            ::zeroclaw_log::Event::new(
+                                module_path!(),
+                                ::zeroclaw_log::Action::Note,
+                            )
+                            .with_category(::zeroclaw_log::EventCategory::Agent)
+                            .with_attrs(::serde_json::json!({
                                 "evicted_queue_slots": queue_evicted,
                             })),
-                            "Session reaper swept orphaned entries"
+                            "Session reaper released idle actor-queue slots"
                         );
                     }
                 }

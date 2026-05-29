@@ -532,16 +532,26 @@ impl RpcDispatcher {
 
         let tui_sig = self.ctx.tui_registry.sign(&tui_id);
         let reclaimed = self.ctx.sessions.reclaim(&tui_id).await;
-        if reclaimed > 0 {
-            ::zeroclaw_log::record!(
-                INFO,
-                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
-                    .with_attrs(::serde_json::json!({
-                        "tui_id": tui_id,
-                        "reclaimed_sessions": reclaimed,
-                    })),
-                "TUI reconnected within grace; sessions reclaimed"
+        for (session_key, agent_alias) in &reclaimed {
+            use ::zeroclaw_log::Instrument as _;
+            let span = ::zeroclaw_log::info_span!(
+                target: "zeroclaw_log_internal_scope",
+                "zeroclaw_scope",
+                session_key = %session_key,
+                agent_alias = %agent_alias,
+                owner_tui_id = %tui_id,
+                channel = "rpc",
             );
+            async {
+                ::zeroclaw_log::record!(
+                    INFO,
+                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                        .with_category(::zeroclaw_log::EventCategory::Agent),
+                    "TUI reconnected within grace; session reclaimed"
+                );
+            }
+            .instrument(span)
+            .await;
         }
         self.ctx
             .tui_registry
@@ -762,12 +772,25 @@ impl RpcDispatcher {
                 .channel_handles()
                 .unregister_channel("rpc");
             let strong = std::sync::Arc::strong_count(&agent);
+            let agent_alias = self
+                .ctx
+                .sessions
+                .get_agent_alias(&req.session_id)
+                .await
+                .unwrap_or_default();
+            let span = ::zeroclaw_log::info_span!(
+                target: "zeroclaw_log_internal_scope",
+                "zeroclaw_scope",
+                session_key = %req.session_id,
+                agent_alias = %agent_alias,
+                channel = "rpc",
+            );
+            let _guard = span.enter();
             ::zeroclaw_log::record!(
                 INFO,
                 ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
                     .with_category(::zeroclaw_log::EventCategory::Agent)
                     .with_attrs(::serde_json::json!({
-                        "session_id": req.session_id,
                         "agent_arc_strong_count_before_remove": strong,
                     })),
                 "session close: dropping local Agent handle before remove"

@@ -15,6 +15,38 @@ use zeroclaw_infra::session_queue::SessionActorQueue;
 /// long. Reclaimed early on reconnect via [`SessionStore::reclaim`].
 pub const SESSION_DISCONNECT_GRACE: Duration = Duration::from_secs(1);
 
+/// Hard upper bound on how long a live session may sit idle (no prompt,
+/// no touch) before the reaper drops it regardless of connection state.
+/// This is the backstop that keeps daemon RSS bounded: a client that
+/// connects, opens sessions, and walks away without a clean disconnect
+/// still has its agents reclaimed once they go cold. Ten minutes matches
+/// the SessionActorQueue idle TTL so the two layers expire in step.
+pub const SESSION_IDLE_TTL: Duration = Duration::from_secs(600);
+
+/// Why the reaper removed a session — drives the eviction log so an
+/// operator can tell a disconnect-orphan from a cold idle session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvictReason {
+    /// The owning TUI/WSS transport disconnected and the grace window
+    /// elapsed without a reconnect.
+    Orphaned,
+    /// The session sat idle past [`SESSION_IDLE_TTL`] with no prompt.
+    Idle,
+}
+
+/// Record of one session the reaper freed. Carries enough provenance for
+/// the eviction log to be useful: which session, which agent, the owning
+/// TUI (if any), why it died, and how long it had been idle.
+#[derive(Debug, Clone)]
+pub struct EvictedSession {
+    pub session_key: String,
+    pub agent_alias: String,
+    pub owner_tui_id: Option<String>,
+    pub reason: EvictReason,
+    pub idle_secs: u64,
+}
+
 /// Per-session runtime overrides. All fields are optional — `None` means
 /// "use config default". Overrides are session-scoped, do not persist,
 /// and evaporate when the session ends.
@@ -271,45 +303,64 @@ impl SessionStore {
 
     /// Cancel any pending eviction for sessions owned by `tui_id`. Called
     /// when the same TUI ID reconnects within the grace window.
-    pub async fn reclaim(&self, tui_id: &str) -> usize {
+    pub async fn reclaim(&self, tui_id: &str) -> Vec<(String, String)> {
         let mut sessions = self.sessions.lock().await;
-        let mut count = 0usize;
-        for s in sessions.values_mut() {
+        let mut reclaimed = Vec::new();
+        for (key, s) in sessions.iter_mut() {
             if s.owner_tui_id.as_deref() == Some(tui_id) && s.evict_at.is_some() {
                 s.evict_at = None;
-                count += 1;
+                reclaimed.push((key.clone(), s.agent_alias.clone()));
             }
         }
-        count
+        reclaimed
     }
 
-    /// Drop every session whose pending eviction deadline has passed. Any
-    /// in-flight turn has its cancel token fired before the agent goes,
-    /// so spawned tasks wind down instead of holding the agent past
-    /// eviction. Returns the number of sessions removed.
-    pub async fn evict_expired(&self) -> usize {
+    /// Drop every session whose pending eviction deadline has passed, or
+    /// that has sat idle past [`SESSION_IDLE_TTL`]. The idle backstop keeps
+    /// daemon memory bounded even when a client never sends a clean
+    /// disconnect. Any in-flight turn has its cancel token fired before the
+    /// agent goes, so spawned tasks wind down instead of holding the agent
+    /// past eviction. Returns one [`EvictedSession`] per removed entry so the
+    /// caller can log exactly what was freed and why.
+    pub async fn evict_expired(&self) -> Vec<EvictedSession> {
         let now = Instant::now();
         let mut sessions = self.sessions.lock().await;
-        let stale: Vec<String> = sessions
+        let stale: Vec<(String, EvictReason, u64)> = sessions
             .iter()
-            .filter(|(_, s)| s.evict_at.is_some_and(|d| now >= d))
-            .map(|(k, _)| k.clone())
+            .filter_map(|(k, s)| {
+                let orphaned = s.evict_at.is_some_and(|d| now >= d);
+                let idle_secs = now.duration_since(s.last_active).as_secs();
+                let idle = now.duration_since(s.last_active) >= SESSION_IDLE_TTL;
+                if orphaned {
+                    Some((k.clone(), EvictReason::Orphaned, idle_secs))
+                } else if idle {
+                    Some((k.clone(), EvictReason::Idle, idle_secs))
+                } else {
+                    None
+                }
+            })
             .collect();
         if stale.is_empty() {
-            return 0;
+            return Vec::new();
         }
         {
             let mut tokens = self.cancel_tokens.lock().unwrap_or_else(|e| e.into_inner());
-            for id in &stale {
+            for (id, _, _) in &stale {
                 if let Some(token) = tokens.remove(id) {
                     token.cancel();
                 }
             }
         }
-        let mut evicted = 0usize;
-        for id in &stale {
-            if sessions.remove(id).is_some() {
-                evicted += 1;
+        let mut evicted = Vec::with_capacity(stale.len());
+        for (id, reason, idle_secs) in stale {
+            if let Some(s) = sessions.remove(&id) {
+                evicted.push(EvictedSession {
+                    session_key: id,
+                    agent_alias: s.agent_alias,
+                    owner_tui_id: s.owner_tui_id,
+                    reason,
+                    idle_secs,
+                });
             }
         }
         evicted
