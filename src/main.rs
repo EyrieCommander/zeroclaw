@@ -1774,16 +1774,37 @@ async fn run_quickstart_cli(
                 for filename in state.personality_files {
                     let staged = prior_files.get(*filename).cloned().unwrap_or_default();
                     let template_available = templates.contains_key(*filename);
-                    let mut choices: Vec<&str> = Vec::with_capacity(3);
-                    choices.push(if staged.is_empty() {
-                        "Edit in $EDITOR"
-                    } else {
-                        "Edit in $EDITOR (current content seeded)"
-                    });
-                    if template_available {
-                        choices.push("Use template (and stage as-is)");
+
+                    #[derive(Clone, Copy)]
+                    enum PersonalityAction {
+                        StartWithTemplate,
+                        StartFromScratch,
+                        Skip,
                     }
-                    choices.push("Skip");
+                    impl PersonalityAction {
+                        fn label(self, has_staged: bool) -> &'static str {
+                            match self {
+                                Self::StartWithTemplate => "Start with template (open in $EDITOR)",
+                                Self::StartFromScratch => {
+                                    if has_staged {
+                                        "Start from current content (open in $EDITOR)"
+                                    } else {
+                                        "Start from scratch (open in $EDITOR)"
+                                    }
+                                }
+                                Self::Skip => "Skip",
+                            }
+                        }
+                    }
+
+                    let mut actions: Vec<PersonalityAction> = Vec::with_capacity(3);
+                    if template_available {
+                        actions.push(PersonalityAction::StartWithTemplate);
+                    }
+                    actions.push(PersonalityAction::StartFromScratch);
+                    actions.push(PersonalityAction::Skip);
+                    let has_staged = !staged.is_empty();
+                    let choices: Vec<&str> = actions.iter().map(|a| a.label(has_staged)).collect();
                     let label = format!("{filename} — what next?");
                     let Some(pick) = FuzzySelect::new()
                         .with_prompt(label)
@@ -1794,18 +1815,15 @@ async fn run_quickstart_cli(
                     else {
                         continue;
                     };
-                    let action = choices[pick];
-                    if action.starts_with("Edit in $EDITOR") {
-                        let seed = if staged.is_empty() && template_available {
-                            templates
+                    match actions[pick] {
+                        PersonalityAction::StartWithTemplate => {
+                            let seed = templates
                                 .get(*filename)
                                 .cloned()
-                                .unwrap_or_else(|| staged.clone())
-                        } else {
-                            staged.clone()
-                        };
-                        if let Some(edited) = Editor::new().edit(&seed)? {
-                            if !edited.trim().is_empty() {
+                                .unwrap_or_else(|| staged.clone());
+                            if let Some(edited) = Editor::new().edit(&seed)?
+                                && !edited.trim().is_empty()
+                            {
                                 personality_files.push(
                                     zeroclaw_config::presets::QuickstartPersonalityFile {
                                         filename: (*filename).to_string(),
@@ -1814,24 +1832,30 @@ async fn run_quickstart_cli(
                                 );
                             }
                         }
-                    } else if action.starts_with("Use template") {
-                        if let Some(content) = templates.get(*filename).cloned() {
-                            personality_files.push(
-                                zeroclaw_config::presets::QuickstartPersonalityFile {
-                                    filename: (*filename).to_string(),
-                                    content,
-                                },
-                            );
+                        PersonalityAction::StartFromScratch => {
+                            if let Some(edited) = Editor::new().edit(&staged)?
+                                && !edited.trim().is_empty()
+                            {
+                                personality_files.push(
+                                    zeroclaw_config::presets::QuickstartPersonalityFile {
+                                        filename: (*filename).to_string(),
+                                        content: edited,
+                                    },
+                                );
+                            }
                         }
-                    } else if !staged.is_empty() {
-                        // "Skip" keeps any previously-staged content rather
-                        // than dropping it silently.
-                        personality_files.push(
-                            zeroclaw_config::presets::QuickstartPersonalityFile {
-                                filename: (*filename).to_string(),
-                                content: staged,
-                            },
-                        );
+                        PersonalityAction::Skip => {
+                            // Keep any previously-staged content rather than
+                            // dropping it silently.
+                            if has_staged {
+                                personality_files.push(
+                                    zeroclaw_config::presets::QuickstartPersonalityFile {
+                                        filename: (*filename).to_string(),
+                                        content: staged,
+                                    },
+                                );
+                            }
+                        }
                     }
                 }
                 form.agent = Some(AgentChoice {
