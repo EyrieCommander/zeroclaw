@@ -76,6 +76,21 @@ pub(crate) struct LogDetail {
     raw: Value,
 }
 
+/// Three-state lifecycle for the detail pane body. `logs/get` can
+/// legitimately fail — events that arrive via the `logs/event` push
+/// before the daemon's writer has flushed them carry a fallback id
+/// (the timestamp) that the persistent store cannot resolve. Without
+/// a distinct failed state the renderer cannot tell an in-flight
+/// fetch from a resolved-but-empty one, and the pane sticks on
+/// "Loading…" forever. `Ready` carries either the full payload or a
+/// preview-only fallback built from the list row.
+pub(crate) enum DetailState {
+    /// `logs/get` is in flight (or the pane just opened).
+    Loading,
+    /// The fetch resolved — full payload or preview-only fallback.
+    Ready(LogDetail),
+}
+
 impl LogEntry {
     fn from_value(v: &Value) -> Option<Self> {
         // Prefer the persistent id from the log store. Fall back to
@@ -144,6 +159,31 @@ impl LogEntry {
 impl LogDetail {
     pub(crate) fn new(raw: Value) -> Self {
         Self { raw }
+    }
+
+    /// Build a detail body from the preview row alone, for events whose
+    /// full payload could not be fetched (e.g. push-delivered rows not
+    /// yet flushed to the persistent store). Carries only the fields the
+    /// list already holds; the renderer marks it as preview-only.
+    fn from_preview(entry: &LogEntry) -> Self {
+        let raw = serde_json::json!({
+            "@timestamp": entry.timestamp,
+            "severity_number": entry.severity_number,
+            "event": {
+                "category": entry.category,
+                "action": entry.action,
+            },
+            "message": entry.message,
+            "_preview_only": true,
+        });
+        Self { raw }
+    }
+
+    fn is_preview_only(&self) -> bool {
+        self.raw
+            .get("_preview_only")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
     }
 
     fn timestamp(&self) -> &str {
@@ -305,6 +345,14 @@ impl LogDetail {
             }
         }
 
+        if self.is_preview_only() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "Full payload unavailable — showing preview fields only.",
+                theme::dim_style(),
+            )));
+        }
+
         lines
     }
 
@@ -370,12 +418,12 @@ pub(crate) struct Logs<'a> {
     min_severity: u8,
     subscribed: bool,
     detail_open: bool,
-    /// Lazy-loaded full event payload. `Some` only while the
-    /// detail pane is open and the daemon has returned the body
-    /// via `logs/get`; `None` otherwise. Closing the pane drops
-    /// this back to `None` so long sessions never accumulate
-    /// detail bodies for events the user has scrolled past.
-    detail: Option<LogDetail>,
+    /// Lazy-loaded full event payload, tracked as a three-state
+    /// machine so the renderer can tell a fetch still in flight
+    /// apart from one that resolved with no payload. Closing the
+    /// pane resets this to `Loading` so long sessions never
+    /// accumulate detail bodies for events scrolled past.
+    detail: DetailState,
     /// Id of the event whose detail is currently being fetched
     /// or shown. Used to ignore stale `logs/get` responses when
     /// the user moves the selection before the daemon answers.
@@ -408,7 +456,7 @@ impl<'a> Logs<'a> {
             min_severity: SEV_DEBUG,
             subscribed: false,
             detail_open: false,
-            detail: None,
+            detail: DetailState::Loading,
             detail_request_id: None,
             detail_scroll: 0,
             detail_pct: 50,
@@ -746,12 +794,15 @@ impl<'a> Logs<'a> {
         };
 
         // Detail body is lazy-loaded via `logs/get` when the pane
-        // opens (see `open_detail`). While the daemon is still
-        // answering the request — or if the lookup failed — show a
-        // friendly placeholder rather than blocking on the call.
+        // opens (see `sync_detail_to_selection`). While the daemon is
+        // still answering, show a placeholder; once the fetch resolves
+        // — with the full payload or a preview-only fallback — render
+        // the fields so the pane never sticks on "Loading…".
         let lines = match &self.detail {
-            Some(d) => d.detail_lines(),
-            None => vec![Line::from(Span::styled("Loading…", theme::dim_style()))],
+            DetailState::Ready(d) => d.detail_lines(),
+            DetailState::Loading => {
+                vec![Line::from(Span::styled("Loading…", theme::dim_style()))]
+            }
         };
         let para = Paragraph::new(lines)
             .wrap(Wrap { trim: false })
@@ -804,7 +855,7 @@ impl<'a> Logs<'a> {
             Some(LogsTabAction::CloseDetail) | Some(LogsTabAction::OpenDetail) => {
                 self.detail_open = false;
                 self.detail_scroll = 0;
-                self.detail = None;
+                self.detail = DetailState::Loading;
                 self.detail_request_id = None;
             }
             Some(LogsTabAction::ClearSearch) if !self.search_query.is_empty() => {
@@ -813,8 +864,8 @@ impl<'a> Logs<'a> {
                 self.search_buf.clear();
                 self.refilter(anchor);
             }
-            Some(LogsTabAction::CopyDetail) if self.detail.is_some() => {
-                if let Some(d) = self.detail.as_ref() {
+            Some(LogsTabAction::CopyDetail) => {
+                if let DetailState::Ready(d) = &self.detail {
                     crate::mouse::copy_osc52(&d.clipboard_text());
                 }
             }
@@ -1019,24 +1070,32 @@ impl<'a> Logs<'a> {
             return;
         }
         let Some(idx) = self.selected_event_idx() else {
-            self.detail = None;
+            self.detail = DetailState::Loading;
             self.detail_request_id = None;
             return;
         };
         let id = self.events[idx].id.clone();
-        if self.detail_request_id.as_deref() == Some(id.as_str()) && self.detail.is_some() {
+        // Already resolved for this id — don't re-fire. This guard is
+        // what stops a failed `logs/get` from looping forever: the
+        // fetch below always resolves to `Ready` (full payload or
+        // preview fallback), so once it lands this short-circuits.
+        if self.detail_request_id.as_deref() == Some(id.as_str())
+            && matches!(self.detail, DetailState::Ready(_))
+        {
             return;
         }
-        self.detail = None;
+        self.detail = DetailState::Loading;
         self.detail_request_id = Some(id.clone());
-        let fetched = self
-            .rpc
-            .logs_get(&id)
-            .await
-            .ok()
-            .map(|r| LogDetail::new(r.event));
+        // `logs/get` can fail for push-delivered rows the persistent
+        // store hasn't flushed yet (their id falls back to the
+        // timestamp). Fall back to the preview row rather than leaving
+        // the pane stuck on "Loading…".
+        let resolved = match self.rpc.logs_get(&id).await {
+            Ok(r) => LogDetail::new(r.event),
+            Err(_) => LogDetail::from_preview(&self.events[idx]),
+        };
         if self.detail_request_id.as_deref() == Some(id.as_str()) {
-            self.detail = fetched;
+            self.detail = DetailState::Ready(resolved);
         }
     }
 
@@ -1119,5 +1178,68 @@ impl crate::widgets::HelpContext for Logs<'_> {
                 ),
             ])
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_entry() -> LogEntry {
+        LogEntry {
+            id: "2026-05-29T11:31:43.543Z".into(),
+            timestamp: "2026-05-29T11:31:43.543Z".into(),
+            severity_number: SEV_INFO,
+            category: "internal".into(),
+            action: "note".into(),
+            message: "TUI disconnected; session ended".into(),
+        }
+    }
+
+    #[test]
+    fn preview_fallback_renders_row_fields() {
+        let detail = LogDetail::from_preview(&sample_entry());
+        assert!(detail.is_preview_only());
+        assert_eq!(detail.timestamp(), "2026-05-29T11:31:43.543Z");
+        assert_eq!(detail.severity_number(), SEV_INFO);
+        assert_eq!(detail.event_field("category"), "internal");
+        assert_eq!(detail.event_field("action"), "note");
+        assert_eq!(detail.message(), "TUI disconnected; session ended");
+    }
+
+    #[test]
+    fn preview_fallback_is_not_empty_and_notes_partial_payload() {
+        let detail = LogDetail::from_preview(&sample_entry());
+        let lines = detail.detail_lines();
+        assert!(!lines.is_empty());
+        // The fallback must visibly signal the payload is partial so
+        // the pane never silently masquerades as a full detail view.
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(text.contains("preview fields only"));
+        // And it must not sit on the "Loading…" placeholder.
+        assert!(!text.contains("Loading"));
+    }
+
+    #[test]
+    fn full_payload_is_not_marked_preview_only() {
+        let raw = serde_json::json!({
+            "@timestamp": "2026-05-29T11:31:43.543Z",
+            "severity_number": SEV_INFO,
+            "event": { "category": "internal", "action": "note" },
+            "message": "hello",
+        });
+        let detail = LogDetail::new(raw);
+        assert!(!detail.is_preview_only());
+        let text: String = detail
+            .detail_lines()
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(!text.contains("preview fields only"));
     }
 }
