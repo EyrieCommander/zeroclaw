@@ -3190,7 +3190,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let dispatcher = make_config_set_test_dispatcher(make_secret_test_config(&tmp));
         let params = json!({
-            "prop": "providers.models.anthropic.default.api-key",
+            "prop": "providers.models.anthropic.default.api_key",
             "value": "sk-real-test-key"
         });
         let res = dispatcher.handle_config_set(&params).await;
@@ -3224,7 +3224,7 @@ mod tests {
 
         for masked in [zeroclaw_config::traits::MASKED_SECRET, "****", ""] {
             let params = json!({
-                "prop": "providers.models.anthropic.default.api-key",
+                "prop": "providers.models.anthropic.default.api_key",
                 "value": masked
             });
             let res = dispatcher.handle_config_set(&params).await;

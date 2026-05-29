@@ -1045,7 +1045,7 @@ pub async fn handle_map_key(
         // skill-bundles: materialize the bundle's resolved directory so
         // skills have a home immediately. Run before persist so a failed
         // mkdir surfaces in logs alongside the config write.
-        if path == "skill-bundles" || path == "skill_bundles" {
+        if path == "skill_bundles" {
             let install_root = working.install_root_dir();
             if let Ok(dir) =
                 zeroclaw_config::skill_bundles::resolve_directory(&working, &install_root, &key)
@@ -1877,10 +1877,10 @@ mod tests {
             "default".into(),
             zeroclaw_config::schema::RiskProfileConfig::default(),
         );
-        cfg.set_prop("risk-profiles.default.workspace-only", "true")
+        cfg.set_prop("risk_profiles.default.workspace_only", "true")
             .expect("set_prop bool");
         let actual = cfg
-            .get_prop("risk-profiles.default.workspace-only")
+            .get_prop("risk_profiles.default.workspace_only")
             .expect("get_prop");
         let want_typed = json_to_setprop_string(&serde_json::json!(true), Some(PropKind::Bool))
             .expect("coerce bool true");
@@ -1970,10 +1970,10 @@ mod tests {
             "default".into(),
             zeroclaw_config::schema::RiskProfileConfig::default(),
         );
-        cfg.set_prop("risk-profiles.default.workspace-only", "true")
+        cfg.set_prop("risk_profiles.default.workspace_only", "true")
             .expect("set_prop");
         let actual = cfg
-            .get_prop("risk-profiles.default.workspace-only")
+            .get_prop("risk_profiles.default.workspace_only")
             .expect("get_prop");
         let want = json_to_setprop_string(&serde_json::json!(false), Some(PropKind::Bool))
             .expect("coerce bool false");

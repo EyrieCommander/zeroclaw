@@ -171,13 +171,13 @@ sections! {
     // .runtime_profile are required alias refs; both must exist before
     // an Agent that points at them can resolve.
     RiskProfiles => {
-        key:   "risk-profiles",
+        key:   "risk_profiles",
         shape: OneTierAliasMap,
         help:  "Named risk profiles binding allowlists, denylists, and approval \
                 thresholds. Agents reference one via `agents.<alias>.risk_profile`.",
     },
     RuntimeProfiles => {
-        key:   "runtime-profiles",
+        key:   "runtime_profiles",
         shape: OneTierAliasMap,
         help:  "Named runtime tuning profiles (token limits, retry policy, timeouts). \
                 Agents reference one via `agents.<alias>.runtime_profile`.",
@@ -211,7 +211,7 @@ sections! {
                 repositories. Add skill BUNDLES under `skill-bundles` below.",
     },
     SkillBundles => {
-        key:   "skill-bundles",
+        key:   "skill_bundles",
         shape: OneTierAliasMap,
         help:  "Named bundles of skill files. Agents reference a bundle to load a \
                 set of capabilities at startup.",
@@ -223,13 +223,13 @@ sections! {
                 or eager loading. Individual MCP servers live under `mcp.servers[]`.",
     },
     McpBundles => {
-        key:   "mcp-bundles",
+        key:   "mcp_bundles",
         shape: OneTierAliasMap,
         help:  "Named bundles of MCP servers. Agents reference a bundle to pull in \
                 a set of MCP tools as one unit.",
     },
     KnowledgeBundles => {
-        key:   "knowledge-bundles",
+        key:   "knowledge_bundles",
         shape: OneTierAliasMap,
         help:  "Named bundles of knowledge sources (RAG indexes, doc folders). Agents \
                 reference a bundle to surface relevant snippets at inference time.",
@@ -281,7 +281,7 @@ sections! {
     // Tier 8 — Topology. Multi-agent relationships and scheduled
     // invocations; both reference agents and must follow Agents.
     PeerGroups => {
-        key:   "peer-groups",
+        key:   "peer_groups",
         shape: OneTierAliasMap,
         help:  "Named groups binding a channel, member agents, and external peers. \
                 Mutual opt-in: two agents become peers only when both appear in the \

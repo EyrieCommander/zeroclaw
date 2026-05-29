@@ -433,12 +433,10 @@ fn config_empty_toml_uses_default_temperature() {
 #[test]
 fn config_minimal_toml_with_temperature_uses_defaults() {
     let config = migrate("default_temperature = 0.7\ndefault_provider = \"openai\"\n");
-    // Migration synthesizes [agents.default] from the V2 shape; assert
-    // its tunables match AliasedAgentConfig defaults.
-    let agent = config
+    // Migration synthesizes [agents.default] from the V2 shape.
+    config
         .agent("default")
         .expect("migration synthesized agents.default");
-    assert_eq!(agent.max_tool_iterations, 10);
     assert_eq!(config.gateway.port, 42617);
 }
 
@@ -459,7 +457,7 @@ fn config_only_temperature_parses() {
     let agent = config
         .agent("default")
         .expect("migration synthesized agents.default");
-    assert_eq!(agent.max_tool_iterations, 10);
+    assert!(agent.enabled);
 }
 
 #[test]

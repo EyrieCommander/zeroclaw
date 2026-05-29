@@ -270,11 +270,11 @@ pub fn build_agent_options(cfg: &zeroclaw_config::schema::Config) -> AgentOption
         channels,
         channel_types,
         model_providers: dotted_aliases(cfg, "providers.models"),
-        risk_profiles: cfg.get_map_keys("risk-profiles").unwrap_or_default(),
-        runtime_profiles: cfg.get_map_keys("runtime-profiles").unwrap_or_default(),
-        skill_bundles: cfg.get_map_keys("skill-bundles").unwrap_or_default(),
-        knowledge_bundles: cfg.get_map_keys("knowledge-bundles").unwrap_or_default(),
-        mcp_bundles: cfg.get_map_keys("mcp-bundles").unwrap_or_default(),
+        risk_profiles: cfg.get_map_keys("risk_profiles").unwrap_or_default(),
+        runtime_profiles: cfg.get_map_keys("runtime_profiles").unwrap_or_default(),
+        skill_bundles: cfg.get_map_keys("skill_bundles").unwrap_or_default(),
+        knowledge_bundles: cfg.get_map_keys("knowledge_bundles").unwrap_or_default(),
+        mcp_bundles: cfg.get_map_keys("mcp_bundles").unwrap_or_default(),
         agents: cfg.get_map_keys("agents").unwrap_or_default(),
     }
 }
@@ -489,7 +489,7 @@ fn humanize_section(key: &str) -> String {
 fn section_group(key: &str) -> &'static str {
     match key {
         "providers.models" | "channels" | "memory" | "hardware" | "tunnel" | "agents"
-        | "skills" | "skill-bundles" | "risk-profiles" | "runtime-profiles" | "peer-groups" => {
+        | "skills" | "skill_bundles" | "risk_profiles" | "runtime_profiles" | "peer_groups" => {
             "Foundation"
         }
         // Agent loop, scheduling, and orchestration.
@@ -942,7 +942,7 @@ fn mark_section_completed(cfg: &mut zeroclaw_config::schema::Config, section: &s
         cfg.onboard_state
             .completed_sections
             .push(section.to_string());
-        cfg.mark_dirty("onboard-state.completed-sections");
+        cfg.mark_dirty("onboard_state.completed_sections");
     }
 }
 
@@ -1010,24 +1010,6 @@ pub struct SectionSelectBody {
     pub alias: Option<String>,
 }
 
-fn typed_family_config_key(section: zeroclaw_config::sections::Section, key: &str) -> String {
-    if matches!(
-        section,
-        zeroclaw_config::sections::Section::ModelProviders
-            | zeroclaw_config::sections::Section::TtsProviders
-            | zeroclaw_config::sections::Section::TranscriptionProviders
-    ) {
-        // Provider catalog/runtime identifiers use snake_case
-        // (`atomic_chat`, `local_whisper`), while Configurable field paths
-        // are kebab-case (`atomic-chat`, `local-whisper`). Keep references
-        // snake_case; normalize only the config-map path used to create and
-        // edit the alias block.
-        key.replace('_', "-")
-    } else {
-        key.to_string()
-    }
-}
-
 pub async fn handle_section_select(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1065,16 +1047,15 @@ pub async fn handle_section_select(
             // an existing type/alias is a no-op for the bucket and just
             // returns the form prefix for the alias.
             let family = section_enum.as_str();
-            let config_key = typed_family_config_key(section_enum, &key);
             let created = working
-                .create_map_key(&format!("{family}.{config_key}"), &alias)
+                .create_map_key(&format!("{family}.{key}"), &alias)
                 .map_err(|msg| {
                     error_response(
                         ConfigApiError::new(
                             ConfigApiCode::PathNotFound,
                             format!("could not select {family} `{key}` alias `{alias}`: {msg}"),
                         )
-                        .with_path(format!("{family}.{config_key}")),
+                        .with_path(format!("{family}.{key}")),
                     )
                 });
             let created = match created {
@@ -1083,7 +1064,7 @@ pub async fn handle_section_select(
             };
             // Per-family typed configs derive their own default endpoint
             // URI via family traits at runtime construction time.
-            (format!("{family}.{config_key}.{alias}"), created)
+            (format!("{family}.{key}.{alias}"), created)
         }
         Section::Channels => {
             let created = working
@@ -1286,13 +1267,13 @@ mod tests {
         let mut cfg = zeroclaw_config::schema::Config::default();
         cfg.create_map_key("providers.models.anthropic", "default")
             .unwrap();
-        cfg.create_map_key("risk-profiles", "alpha_risk").unwrap();
-        cfg.create_map_key("runtime-profiles", "alpha_runtime")
+        cfg.create_map_key("risk_profiles", "alpha_risk").unwrap();
+        cfg.create_map_key("runtime_profiles", "alpha_runtime")
             .unwrap();
-        cfg.create_map_key("skill-bundles", "alpha_skills").unwrap();
-        cfg.create_map_key("knowledge-bundles", "alpha_knowledge")
+        cfg.create_map_key("skill_bundles", "alpha_skills").unwrap();
+        cfg.create_map_key("knowledge_bundles", "alpha_knowledge")
             .unwrap();
-        cfg.create_map_key("mcp-bundles", "alpha_mcp").unwrap();
+        cfg.create_map_key("mcp_bundles", "alpha_mcp").unwrap();
         cfg.create_map_key("agents", "alpha_agent").unwrap();
 
         let resp = build_agent_options(&cfg);
@@ -1307,34 +1288,18 @@ mod tests {
     }
 
     #[test]
-    fn typed_provider_catalog_keys_can_create_kebab_config_sections() {
+    fn typed_provider_catalog_keys_create_snake_config_sections() {
         let mut cfg = zeroclaw_config::schema::Config::default();
         let cases = [
-            (
-                zeroclaw_config::sections::Section::ModelProviders,
-                "providers.models",
-                "atomic_chat",
-                "providers.models.atomic-chat",
-            ),
-            (
-                zeroclaw_config::sections::Section::ModelProviders,
-                "providers.models",
-                "gemini_cli",
-                "providers.models.gemini-cli",
-            ),
-            (
-                zeroclaw_config::sections::Section::TranscriptionProviders,
-                "providers.transcription",
-                "local_whisper",
-                "providers.transcription.local-whisper",
-            ),
+            ("providers.models", "atomic_chat"),
+            ("providers.models", "gemini_cli"),
+            ("providers.transcription", "local_whisper"),
         ];
 
-        for (section, family, key, expected_path) in cases {
-            let path = format!("{family}.{}", typed_family_config_key(section, key));
-            assert_eq!(path, expected_path);
+        for (family, key) in cases {
+            let path = format!("{family}.{key}");
             cfg.create_map_key(&path, "default")
-                .unwrap_or_else(|e| panic!("{key} should map to `{expected_path}`: {e}"));
+                .unwrap_or_else(|e| panic!("{key} should map to `{path}`: {e}"));
         }
 
         assert!(
@@ -1371,8 +1336,8 @@ mod tests {
         assert_eq!(resp.reason, "incomplete_agent");
         assert!(resp.has_partial_state);
 
-        cfg.create_map_key("risk-profiles", "default").unwrap();
-        cfg.create_map_key("runtime-profiles", "default").unwrap();
+        cfg.create_map_key("risk_profiles", "default").unwrap();
+        cfg.create_map_key("runtime_profiles", "default").unwrap();
         cfg.create_map_key("agents", "default").unwrap();
         let resp = derive_section_status(&cfg);
         assert!(
@@ -1414,7 +1379,7 @@ mod tests {
                 .any(|m| m == "Set credential/auth for model provider `anthropic.default`.")
         );
 
-        cfg.set_prop_persistent("providers.models.anthropic.default.api-key", "sk-test")
+        cfg.set_prop_persistent("providers.models.anthropic.default.api_key", "sk-test")
             .unwrap();
         let resp = derive_section_status(&cfg);
         assert!(!resp.needs_quickstart);
@@ -1441,8 +1406,8 @@ mod tests {
         let mut cfg = zeroclaw_config::schema::Config::default();
         cfg.create_map_key("providers.models.anthropic", "work")
             .unwrap();
-        cfg.create_map_key("risk-profiles", "default").unwrap();
-        cfg.create_map_key("runtime-profiles", "deep_work").unwrap();
+        cfg.create_map_key("risk_profiles", "default").unwrap();
+        cfg.create_map_key("runtime_profiles", "deep_work").unwrap();
         cfg.create_map_key("agents", "default").unwrap();
 
         apply_first_run_agent_defaults(&mut cfg, "default");
@@ -1541,7 +1506,7 @@ mod tests {
 
         // The form would issue a PATCH whose set_prop call hits this path.
         cfg.set_prop(
-            "channels.matrix.mymatrixalias.allowed-rooms",
+            "channels.matrix.mymatrixalias.allowed_rooms",
             r#"["alice","bob"]"#,
         )
         .expect("set_prop on initialized matrix subsection must succeed");
@@ -1612,7 +1577,7 @@ mod tests {
             "claude-sonnet-4-5",
         )
         .expect("set model");
-        cfg.set_prop("providers.models.anthropic.default.api-key", "sk-test")
+        cfg.set_prop("providers.models.anthropic.default.api_key", "sk-test")
             .expect("set api key");
         let items = providers_picker(&cfg);
         let anthropic = items.iter().find(|i| i.key == "anthropic").unwrap();
@@ -1699,13 +1664,13 @@ mod tests {
     fn one_tier_alias_map_picker_is_empty_for_unconfigured_section() {
         let cfg = empty_cfg();
         for section in [
-            "peer-groups",
+            "peer_groups",
             "cron",
-            "mcp-bundles",
-            "knowledge-bundles",
-            "skill-bundles",
-            "risk-profiles",
-            "runtime-profiles",
+            "mcp_bundles",
+            "knowledge_bundles",
+            "skill_bundles",
+            "risk_profiles",
+            "runtime_profiles",
         ] {
             let items = one_tier_alias_map_picker(&cfg, section);
             assert!(
@@ -1723,13 +1688,13 @@ mod tests {
     #[test]
     fn one_tier_alias_map_picker_surfaces_created_aliases() {
         let cases: &[(&str, &str)] = &[
-            ("peer-groups", "team_chat"),
+            ("peer_groups", "team_chat"),
             ("cron", "daily_brief"),
-            ("mcp-bundles", "core_tools"),
-            ("knowledge-bundles", "house_docs"),
-            ("skill-bundles", "ops_skills"),
-            ("risk-profiles", "tight"),
-            ("runtime-profiles", "fast_model"),
+            ("mcp_bundles", "core_tools"),
+            ("knowledge_bundles", "house_docs"),
+            ("skill_bundles", "ops_skills"),
+            ("risk_profiles", "tight"),
+            ("runtime_profiles", "fast_model"),
         ];
         for (section, alias) in cases {
             let mut cfg = empty_cfg();

@@ -1996,7 +1996,7 @@ fn has_attr(field: &syn::Field, name: &str) -> bool {
 }
 
 fn snake_to_kebab(s: &str) -> String {
-    s.replace('_', "-")
+    s.to_string()
 }
 
 /// Title-case a snake_case identifier for use as a default display name
@@ -2210,10 +2210,10 @@ mod tests {
     use syn::parse_quote;
 
     #[test]
-    fn snake_to_kebab_converts_underscores() {
-        assert_eq!(snake_to_kebab("access_token"), "access-token");
-        assert_eq!(snake_to_kebab("api_key"), "api-key");
-        assert_eq!(snake_to_kebab("bot_token"), "bot-token");
+    fn snake_to_kebab_is_identity_passthrough() {
+        assert_eq!(snake_to_kebab("access_token"), "access_token");
+        assert_eq!(snake_to_kebab("api_key"), "api_key");
+        assert_eq!(snake_to_kebab("bot_token"), "bot_token");
         assert_eq!(snake_to_kebab("simple"), "simple");
     }
 

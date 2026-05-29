@@ -249,7 +249,7 @@ pub async fn apply_with_surface(
     let applied = applied.expect("apply_into yields Some when errors is empty");
 
     config
-        .set_prop_persistent("onboard-state.quickstart-completed", "true")
+        .set_prop_persistent("onboard_state.quickstart_completed", "true")
         .map_err(|err| {
             vec![QuickstartError::new(
                 QuickstartStep::Agent,
@@ -708,9 +708,9 @@ pub fn field_shape(section: FieldSection, type_key: &str) -> Vec<FieldDescriptor
 /// provider type or channel kind lights up Quickstart for free,
 /// while keeping the modal focused on what an agent cannot start
 /// without.
-const MODEL_PROVIDER_ESSENTIALS: &[&str] = &["model", "api-key", "uri"];
-const CHANNEL_ESSENTIALS: &[&str] = &["bot-token", "token", "webhook-url", "allowed-users"];
-const PEER_GROUP_ESSENTIALS: &[&str] = &["channel", "external-peers", "agents", "ignore"];
+const MODEL_PROVIDER_ESSENTIALS: &[&str] = &["model", "api_key", "uri"];
+const CHANNEL_ESSENTIALS: &[&str] = &["bot_token", "token", "webhook_url", "allowed_users"];
+const PEER_GROUP_ESSENTIALS: &[&str] = &["channel", "external_peers", "agents", "ignore"];
 
 fn apply_into(
     config: &mut Config,
@@ -1021,7 +1021,7 @@ fn write_risk_preset(config: &mut Config, preset_name: &str) -> Result<String, S
         return Ok(preset.preset_name.to_string());
     }
     config
-        .create_map_key("risk-profiles", preset.preset_name)
+        .create_map_key("risk_profiles", preset.preset_name)
         .map_err(|e| e.to_string())?;
     config
         .risk_profiles
@@ -1037,7 +1037,7 @@ fn write_runtime_preset(config: &mut Config, preset_name: &str) -> Result<String
         return Ok(preset.preset_name.to_string());
     }
     config
-        .create_map_key("runtime-profiles", preset.preset_name)
+        .create_map_key("runtime_profiles", preset.preset_name)
         .map_err(|e| e.to_string())?;
     config
         .runtime_profiles
@@ -1198,7 +1198,7 @@ fn apply_channels(
                     continue;
                 }
                 let token_path =
-                    format!("channels.{}.{}.bot-token", entry.channel_type, entry.alias);
+                    format!("channels.{}.{}.bot_token", entry.channel_type, entry.alias);
                 if let Some(tok) = &entry.token {
                     if let Err(err) = config.set_prop_persistent(&token_path, tok) {
                         errors.push(QuickstartError::new(
@@ -1315,7 +1315,7 @@ fn apply_peer_groups(
                 .collect::<Vec<_>>()
                 .join("\n");
             if let Err(err) =
-                config.set_prop_persistent(&format!("{prefix}.external-peers"), &joined)
+                config.set_prop_persistent(&format!("{prefix}.external_peers"), &joined)
             {
                 errors.push(QuickstartError::new(
                     QuickstartStep::Channels,
@@ -1501,9 +1501,9 @@ fn apply_agent(
         return None;
     }
     let writes: [(&str, &str); 3] = [
-        ("model-provider", provider_ref),
-        ("risk-profile", risk_alias),
-        ("runtime-profile", runtime_alias),
+        ("model_provider", provider_ref),
+        ("risk_profile", risk_alias),
+        ("runtime_profile", runtime_alias),
     ];
     for (field, value) in writes {
         let path = format!("{prefix}.{field}");
@@ -1634,7 +1634,7 @@ mod tests {
                 alias: "anthropic".into(),
                 model: "claude-sonnet-4-5".into(),
                 fields: std::collections::HashMap::from([(
-                    "api-key".to_string(),
+                    "api_key".to_string(),
                     "sk-test".to_string(),
                 )]),
             }),
@@ -1661,8 +1661,8 @@ mod tests {
         let applied = apply_into(&mut cfg, &submission, &mut staged, &mut errors, None);
         assert!(errors.is_empty(), "apply_into errors: {errors:?}");
         assert!(applied.is_some(), "apply_into should yield an agent");
-        // The submission carries the web-shaped kebab field key `api-key`.
-        // It must land on disk as the snake serde field `api_key`.
+        // The submission carries the snake field key `api_key` and it must
+        // land on disk as the snake serde field `api_key`, never kebab.
         let toml = toml::to_string(&cfg).expect("serialize config");
         assert!(
             toml.contains("api_key"),
@@ -1744,8 +1744,8 @@ mod tests {
                 "field_shape for `{kind}` is missing `model` row; got {keys:?}",
             );
             assert!(
-                keys.contains(&"api-key"),
-                "field_shape for `{kind}` is missing `api-key` row; got {keys:?}",
+                keys.contains(&"api_key"),
+                "field_shape for `{kind}` is missing `api_key` row; got {keys:?}",
             );
         }
     }

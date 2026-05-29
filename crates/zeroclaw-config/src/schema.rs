@@ -2806,7 +2806,7 @@ impl Default for ResolvedRuntime {
 /// entries here to dispatch a subtask to a named sibling agent.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "delegate-agent"]
+#[prefix = "delegate_agent"]
 pub struct AliasedAgentConfig {
     /// Whether this agent is active. Set false to disable without removing the definition.
     #[tab(General)]
@@ -3789,7 +3789,7 @@ impl Default for McpConfig {
 /// Verifiable Intent (VI) credential verification and issuance (`[verifiable_intent]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "verifiable-intent"]
+#[prefix = "verifiable_intent"]
 pub struct VerifiableIntentConfig {
     /// Enable VI credential verification on commerce tool calls (default: false).
     #[serde(default)]
@@ -3906,7 +3906,7 @@ impl Default for TtsConfig {
 /// are quietly ignored.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "tts-provider"]
+#[prefix = "tts_provider"]
 #[serde(default)]
 pub struct TtsProviderConfig {
     /// API key (openai, elevenlabs, google).
@@ -4393,7 +4393,7 @@ pub struct GoogleSttConfig {
 /// Configures a self-hosted STT endpoint. Can be on localhost, a private network host, or any reachable URL.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "transcription.local-whisper"]
+#[prefix = "transcription.local_whisper"]
 pub struct LocalWhisperConfig {
     /// HTTP or HTTPS endpoint URL, e.g. `"http://10.10.0.1:8001/v1/transcribe"`.
     pub url: String,
@@ -4431,7 +4431,7 @@ fn default_local_whisper_timeout_secs() -> u64 {
 /// `docs/book/src/security/tool-receipts.md`.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "delegate-agent.tool_receipts"]
+#[prefix = "delegate_agent.tool_receipts"]
 pub struct ToolReceiptsConfig {
     /// Generate HMAC receipts on every tool execution. Default: `false`.
     /// When false, the entire receipt subsystem is inert (no key, no
@@ -4614,7 +4614,7 @@ pub struct SkillsConfig {
 /// Autonomous skill creation configuration (`[skills.skill_creation]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "skills.skill-creation"]
+#[prefix = "skills.skill_creation"]
 #[serde(default)]
 pub struct SkillCreationConfig {
     /// Enable automatic skill creation after successful multi-step tasks.
@@ -4641,7 +4641,7 @@ impl Default for SkillCreationConfig {
 /// Prompt-triggered skill install suggestions (`[skills.install_suggestions]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable, Default)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "skills.install-suggestions"]
+#[prefix = "skills.install_suggestions"]
 #[serde(default)]
 pub struct SkillInstallSuggestionsConfig {
     /// Enable suggestions for installable skills before normal agent turns.
@@ -4652,7 +4652,7 @@ pub struct SkillInstallSuggestionsConfig {
 /// Skill self-improvement configuration (`[skills.auto_improve]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "skills.skill-improvement"]
+#[prefix = "skills.skill_improvement"]
 pub struct SkillImprovementConfig {
     /// Enable automatic skill improvement after successful skill usage.
     /// Default: `true`.
@@ -4807,7 +4807,7 @@ impl Default for MultimodalConfig {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "media-pipeline"]
+#[prefix = "media_pipeline"]
 pub struct MediaPipelineConfig {
     /// Master toggle for the media pipeline (default: false).
     #[serde(default)]
@@ -5366,7 +5366,7 @@ impl Default for GatewayConfig {
 /// Pairing dashboard configuration (`[gateway.pairing_dashboard]`).
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "gateway.pairing-dashboard"]
+#[prefix = "gateway.pairing_dashboard"]
 pub struct PairingDashboardConfig {
     /// Length of pairing codes (default: 8)
     #[serde(default = "default_pairing_code_length")]
@@ -5434,7 +5434,7 @@ pub struct GatewayTlsConfig {
 /// Client certificate authentication (mTLS) configuration (`[gateway.tls.client_auth]`).
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "gateway.tls.client-auth"]
+#[prefix = "gateway.tls.client_auth"]
 pub struct GatewayClientAuthConfig {
     /// Enable client certificate verification (default: false).
     #[serde(default)]
@@ -5511,7 +5511,7 @@ fn default_wss_port() -> u16 {
 /// Secure transport configuration for inter-node communication (`[node_transport]`).
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "node-transport"]
+#[prefix = "node_transport"]
 pub struct NodeTransportConfig {
     /// Enable the secure transport layer.
     #[serde(default = "default_node_transport_enabled")]
@@ -5708,7 +5708,7 @@ impl Default for SecretsConfig {
 /// Delegates OS-level mouse, keyboard, and screenshot actions to a local sidecar.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "browser.computer-use"]
+#[prefix = "browser.computer_use"]
 pub struct BrowserComputerUseConfig {
     /// Sidecar endpoint for computer-use actions (OS-level mouse/keyboard/screenshot)
     #[serde(default = "default_browser_computer_use_endpoint")]
@@ -5837,7 +5837,7 @@ impl Default for BrowserConfig {
 /// requests are rejected.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "http-request"]
+#[prefix = "http_request"]
 pub struct HttpRequestConfig {
     /// Enable `http_request` tool for API interactions
     #[serde(default)]
@@ -5887,7 +5887,7 @@ fn default_http_timeout_secs() -> u64 {
 /// If `allowed_domains` is empty, all requests are rejected (deny-by-default).
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "web-fetch"]
+#[prefix = "web_fetch"]
 pub struct WebFetchConfig {
     /// Enable `web_fetch` tool for fetching web page content
     #[serde(default)]
@@ -5933,7 +5933,7 @@ pub enum FirecrawlMode {
 /// falls back to the Firecrawl API for stealth content extraction.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "web-fetch.firecrawl"]
+#[prefix = "web_fetch.firecrawl"]
 pub struct FirecrawlConfig {
     /// Enable Firecrawl fallback
     #[serde(default)]
@@ -6004,7 +6004,7 @@ impl Default for WebFetchConfig {
 /// explicit tool call.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "link-enricher"]
+#[prefix = "link_enricher"]
 pub struct LinkEnricherConfig {
     /// Enable the link enricher pipeline stage (default: false)
     #[serde(default)]
@@ -6043,7 +6043,7 @@ impl Default for LinkEnricherConfig {
 /// text. Designed for headless/SSH environments without graphical browsers.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "text-browser"]
+#[prefix = "text_browser"]
 pub struct TextBrowserConfig {
     /// Enable `text_browser` tool
     #[serde(default)]
@@ -6079,7 +6079,7 @@ impl Default for TextBrowserConfig {
 /// shell command may run before it is killed.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "shell-tool"]
+#[prefix = "shell_tool"]
 pub struct ShellToolConfig {
     /// Maximum shell command execution time in seconds (default: 60).
     #[serde(default = "default_shell_tool_timeout_secs")]
@@ -6123,7 +6123,7 @@ pub struct EscalationConfig {
 /// Web search tool configuration (`[web_search]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "web-search"]
+#[prefix = "web_search"]
 pub struct WebSearchConfig {
     /// Enable `web_search_tool` for web searches
     #[serde(default)]
@@ -6183,7 +6183,7 @@ impl Default for WebSearchConfig {
 /// Project delivery intelligence configuration (`[project_intel]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "project-intel"]
+#[prefix = "project_intel"]
 pub struct ProjectIntelConfig {
     /// Enable the project_intel tool. Default: false.
     #[serde(default)]
@@ -6308,7 +6308,7 @@ impl Default for BackupConfig {
 /// Data retention and purge configuration (`[data_retention]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "data-retention"]
+#[prefix = "data_retention"]
 pub struct DataRetentionConfig {
     /// Enable the `data_management` tool.
     #[serde(default)]
@@ -6435,7 +6435,7 @@ pub struct GoogleWorkspaceAllowedOperation {
 /// being registered.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "google-workspace"]
+#[prefix = "google_workspace"]
 #[integration(
     category = "ToolsAutomation",
     display_name = "Google Workspace",
@@ -6929,7 +6929,7 @@ impl Default for ImageProviderFluxConfig {
 /// to the workspace `images/` directory.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "image-gen"]
+#[prefix = "image_gen"]
 pub struct ImageGenConfig {
     /// Enable the standalone image generation tool. Default: false.
     #[serde(default)]
@@ -6975,7 +6975,7 @@ impl Default for ImageGenConfig {
 /// When `url` is `None` or empty, the tool is not registered.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "file-upload"]
+#[prefix = "file_upload"]
 pub struct FileUploadConfig {
     /// Upload endpoint URL. Tool is disabled when this is `None` or empty.
     #[serde(default)]
@@ -7042,7 +7042,7 @@ impl Default for FileUploadConfig {
 /// needed unless `env_passthrough` includes `ANTHROPIC_API_KEY`.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "claude-code"]
+#[prefix = "claude_code"]
 pub struct ClaudeCodeConfig {
     /// Enable the `claude_code` tool
     #[serde(default)]
@@ -7098,7 +7098,7 @@ impl Default for ClaudeCodeConfig {
 /// in-place with progress plus an SSH handoff link.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "claude-code-runner"]
+#[prefix = "claude_code_runner"]
 pub struct ClaudeCodeRunnerConfig {
     /// Enable the `claude_code_runner` tool
     #[serde(default)]
@@ -7142,7 +7142,7 @@ impl Default for ClaudeCodeRunnerConfig {
 /// `env_passthrough` includes `OPENAI_API_KEY`.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "codex-cli"]
+#[prefix = "codex_cli"]
 pub struct CodexCliConfig {
     /// Enable the `codex_cli` tool
     #[serde(default)]
@@ -7186,7 +7186,7 @@ impl Default for CodexCliConfig {
 /// `env_passthrough` includes `GOOGLE_API_KEY`.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "gemini-cli"]
+#[prefix = "gemini_cli"]
 pub struct GeminiCliConfig {
     /// Enable the `gemini_cli` tool
     #[serde(default)]
@@ -7230,7 +7230,7 @@ impl Default for GeminiCliConfig {
 /// `env_passthrough` includes provider-specific keys.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "opencode-cli"]
+#[prefix = "opencode_cli"]
 pub struct OpenCodeCliConfig {
     /// Enable the `opencode_cli` tool
     #[serde(default)]
@@ -8334,7 +8334,7 @@ pub struct StorageConfig {
 /// SQLite storage backend (`[storage.sqlite.<alias>]`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "storage-sqlite"]
+#[prefix = "storage_sqlite"]
 #[serde(default)]
 pub struct SqliteStorageConfig {
     /// Optional override for the SQLite database path.
@@ -8351,7 +8351,7 @@ pub struct SqliteStorageConfig {
 /// entry; previously these lived in two separate sections.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "storage-postgres"]
+#[prefix = "storage_postgres"]
 #[serde(default)]
 pub struct PostgresStorageConfig {
     /// Connection URL (e.g. `"postgres://user:pass@host/db"`).
@@ -8391,7 +8391,7 @@ impl Default for PostgresStorageConfig {
 /// (`QDRANT_URL`, `QDRANT_COLLECTION`, `QDRANT_API_KEY`) when unset.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "storage-qdrant"]
+#[prefix = "storage_qdrant"]
 #[serde(default)]
 pub struct QdrantStorageConfig {
     /// Qdrant server URL (e.g. `"http://localhost:6333"`).
@@ -8420,7 +8420,7 @@ impl Default for QdrantStorageConfig {
 /// Markdown directory storage (`[storage.markdown.<alias>]`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "storage-markdown"]
+#[prefix = "storage_markdown"]
 #[serde(default)]
 pub struct MarkdownStorageConfig {
     /// Optional override for the markdown root directory.
@@ -8431,7 +8431,7 @@ pub struct MarkdownStorageConfig {
 /// Lucid CLI sync backend (`[storage.lucid.<alias>]`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "storage-lucid"]
+#[prefix = "storage_lucid"]
 #[serde(default)]
 pub struct LucidStorageConfig {
     /// Optional path to the lucid-memory binary.
@@ -8875,7 +8875,7 @@ pub struct BuiltinHooksConfig {
 /// centralised audit logging, SIEM ingestion, or compliance pipelines.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "hooks.builtin.webhook-audit"]
+#[prefix = "hooks.builtin.webhook_audit"]
 pub struct WebhookAuditConfig {
     /// Enable the webhook-audit hook. Default: `false`.
     #[serde(default)]
@@ -9011,7 +9011,7 @@ fn is_valid_env_var_name(name: &str) -> bool {
 /// behaves the same as a config from before the per-profile split.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "risk-profile"]
+#[prefix = "risk_profile"]
 #[serde(default)]
 pub struct RiskProfileConfig {
     /// Autonomy level applied to this profile. Default: `supervised`.
@@ -9085,7 +9085,7 @@ impl Default for RiskProfileConfig {
 /// `[providers.models.<type>.<alias>]`.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "runtime-profile"]
+#[prefix = "runtime_profile"]
 #[serde(default)]
 pub struct RuntimeProfileConfig {
     /// Enable agentic (multi-turn tool-call loop) mode.
@@ -9190,7 +9190,7 @@ impl Default for RuntimeProfileConfig {
 /// by alias, controlling which skills are loaded and from where.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "skill-bundle"]
+#[prefix = "skill_bundle"]
 #[serde(default)]
 pub struct SkillBundleConfig {
     /// Directory path (relative to workspace root) to load skills from.
@@ -9207,7 +9207,7 @@ pub struct SkillBundleConfig {
 /// that can be attached to an agent by alias.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "knowledge-bundle"]
+#[prefix = "knowledge_bundle"]
 #[serde(default)]
 pub struct KnowledgeBundleConfig {
     /// Paths or URLs to include in this knowledge bundle.
@@ -9221,7 +9221,7 @@ pub struct KnowledgeBundleConfig {
 /// A reusable group of MCP servers that can be activated together by alias.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "mcp-bundle"]
+#[prefix = "mcp_bundle"]
 #[serde(default)]
 pub struct McpBundleConfig {
     /// MCP server IDs to include in this bundle.
@@ -9531,7 +9531,7 @@ pub struct EmbeddingRouteConfig {
 /// and routes to the appropriate model hint. Disabled by default.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "query-classification"]
+#[prefix = "query_classification"]
 pub struct QueryClassificationConfig {
     /// Enable automatic query classification. Default: `false`.
     #[serde(default)]
@@ -9786,7 +9786,7 @@ impl Default for CronScheduleDecl {
 /// Delivery configuration for declarative cron jobs.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "cron-delivery"]
+#[prefix = "cron_delivery"]
 pub struct DeliveryConfigDecl {
     /// Delivery mode: `"none"` or `"announce"`.
     #[serde(default = "default_delivery_mode")]
@@ -11429,7 +11429,7 @@ impl ChannelConfig for WatiConfig {
 /// Nextcloud Talk bot configuration (webhook receive + OCS send API).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "channels.nextcloud-talk"]
+#[prefix = "channels.nextcloud_talk"]
 pub struct NextcloudTalkConfig {
     /// Whether this channel is active. The runtime only loads channels whose
     /// `enabled = true`. Default: `false` so an operator who pastes a partial
@@ -12827,7 +12827,7 @@ pub struct VoiceDuplexConfig {
 /// existing transcription API.
 #[derive(Debug, Clone, Serialize, Deserialize, zeroclaw_macros::Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "voice-wake"]
+#[prefix = "voice_wake"]
 pub struct VoiceWakeConfig {
     /// Whether this channel is active. The runtime only loads channels whose
     /// `enabled = true`. Default: `false` so an operator who pastes a partial
@@ -13094,7 +13094,7 @@ impl Default for JiraConfig {
 /// IaC review, migration assessment, cost analysis, and architecture review.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "cloud-ops"]
+#[prefix = "cloud_ops"]
 pub struct CloudOpsConfig {
     /// Enable cloud operations tools. Default: false.
     #[serde(default)]
@@ -13220,7 +13220,7 @@ fn default_conversational_ai_timeout_secs() -> u64 {
 /// consumed by the runtime. Setting `enabled = true` will produce a startup warning.
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "conversational-ai"]
+#[prefix = "conversational_ai"]
 pub struct ConversationalAiConfig {
     /// Enable conversational AI features. Default: false.
     #[serde(default)]
@@ -13283,7 +13283,7 @@ impl Default for ConversationalAiConfig {
 /// Managed Cybersecurity Service (MCSS) dashboard agent configuration (`[security_ops]`).
 #[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
-#[prefix = "security-ops"]
+#[prefix = "security_ops"]
 pub struct SecurityOpsConfig {
     /// Enable security operations tools.
     #[serde(default)]
@@ -14443,7 +14443,7 @@ impl Config {
                 }
             }
             if let Err(e) = crate::skill_bundles::validate_uniqueness(self, &install_root) {
-                validation_bail!(InvalidFormat, "skill-bundles", "{e}");
+                validation_bail!(InvalidFormat, "skill_bundles", "{e}");
             }
         }
 
@@ -15185,16 +15185,12 @@ impl Config {
                 let trimmed = ch.trim();
                 match trimmed.split_once('.') {
                     Some((ty, inner)) if !ty.is_empty() && !inner.is_empty() => {
-                        // `get_map_keys` stores section names in kebab form
-                        // (the schema macro converts snake idents via
-                        // `snake_to_kebab`). Operator-written refs use the
-                        // dotted alias they see in TOML, which is the raw
-                        // field ident — snake for `gmail_push`, `voice_call`,
-                        // `nextcloud_talk`, etc. Convert before the lookup so
-                        // underscored channel types resolve correctly.
-                        let ty_kebab = ty.replace('_', "-");
+                        // `get_map_keys` stores section names using the raw
+                        // field ident (snake), the same dotted form the
+                        // operator sees in TOML (`gmail_push`, `voice_call`,
+                        // `nextcloud_talk`). Look up verbatim.
                         let exists = self
-                            .get_map_keys(&format!("channels.{ty_kebab}"))
+                            .get_map_keys(&format!("channels.{ty}"))
                             .is_some_and(|keys| keys.iter().any(|k| k == inner));
                         if !exists {
                             validation_bail!(
@@ -15260,13 +15256,13 @@ impl Config {
             // what `prop_fields()` emits, so DanglingReference paths bind
             // directly to the right inline error in the dashboard form.
             let bare_multi: &[(&str, &str, &[String])] = &[
-                ("skill-bundles", "skill_bundles", &agent.skill_bundles),
+                ("skill_bundles", "skill_bundles", &agent.skill_bundles),
                 (
-                    "knowledge-bundles",
+                    "knowledge_bundles",
                     "knowledge_bundles",
                     &agent.knowledge_bundles,
                 ),
-                ("mcp-bundles", "mcp_bundles", &agent.mcp_bundles),
+                ("mcp_bundles", "mcp_bundles", &agent.mcp_bundles),
             ];
             for (section, field, values) in bare_multi {
                 for (i, key) in values.iter().enumerate() {
@@ -15287,10 +15283,10 @@ impl Config {
                 }
             }
             let bare_single: &[(&str, &str, &str)] = &[
-                ("risk-profiles", "risk-profile", agent.risk_profile.as_str()),
+                ("risk_profiles", "risk_profile", agent.risk_profile.as_str()),
                 (
-                    "runtime-profiles",
-                    "runtime-profile",
+                    "runtime_profiles",
+                    "runtime_profile",
                     agent.runtime_profile.as_str(),
                 ),
             ];
@@ -15318,7 +15314,7 @@ impl Config {
             if agent.enabled && agent.risk_profile.trim().is_empty() {
                 validation_bail!(
                     RequiredFieldEmpty,
-                    format!("agents.{alias}.risk-profile"),
+                    format!("agents.{alias}.risk_profile"),
                     "agents.{alias}.risk_profile must reference a configured [risk_profiles.<alias>] entry",
                 );
             }
@@ -15394,17 +15390,13 @@ impl Config {
                     "peer_groups.{group_name}.channel must name a channel type (e.g. \"discord\") or dotted alias (e.g. \"discord.work\")",
                 );
             }
-            // `get_map_keys` stores section names in kebab form (the schema
-            // macro converts snake idents via `snake_to_kebab`); convert
-            // before the lookup so underscored channel types like
-            // `nextcloud_talk` resolve correctly.
+            // `get_map_keys` stores section names using the raw field ident
+            // (snake); look up the channel type verbatim.
             let (group_channel_type, group_channel_alias) = match group_channel.split_once('.') {
                 Some((ty, al)) => (ty, Some(al)),
                 None => (group_channel, None),
             };
-            let group_channel_type_kebab = group_channel_type.replace('_', "-");
-            let channel_aliases =
-                self.get_map_keys(&format!("channels.{group_channel_type_kebab}"));
+            let channel_aliases = self.get_map_keys(&format!("channels.{group_channel_type}"));
             if channel_aliases.is_none() {
                 validation_bail!(
                     DanglingReference,
@@ -21316,10 +21308,10 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
         };
         let fields = mx.secret_fields();
         assert_eq!(fields.len(), 3);
-        assert_eq!(fields[0].name, "channels.matrix.access-token");
+        assert_eq!(fields[0].name, "channels.matrix.access_token");
         assert_eq!(fields[0].category, "Channels");
         assert!(fields[0].is_set);
-        assert_eq!(fields[1].name, "channels.matrix.recovery-key");
+        assert_eq!(fields[1].name, "channels.matrix.recovery_key");
         assert!(!fields[1].is_set);
         assert_eq!(fields[2].name, "channels.matrix.password");
         assert!(!fields[2].is_set);
@@ -21371,7 +21363,7 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
             ack_reactions: Some(true),
             excluded_tools: vec![],
         };
-        mx.set_secret("channels.matrix.access-token", "new-token".into())
+        mx.set_secret("channels.matrix.access_token", "new-token".into())
             .unwrap();
         assert_eq!(mx.access_token.as_deref(), Some("new-token"));
     }
@@ -21438,8 +21430,8 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
 
         let fields = config.secret_fields();
         let names: Vec<&str> = fields.iter().map(|f| f.name).collect();
-        assert!(names.contains(&"channels.matrix.access-token"));
-        assert!(names.contains(&"channels.matrix.recovery-key"));
+        assert!(names.contains(&"channels.matrix.access_token"));
+        assert!(names.contains(&"channels.matrix.recovery_key"));
     }
 
     #[test]
@@ -21469,7 +21461,7 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
         );
 
         config
-            .set_secret("channels.matrix.access-token", "new".into())
+            .set_secret("channels.matrix.access_token", "new".into())
             .unwrap();
         assert_eq!(
             config
@@ -21509,7 +21501,7 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
             },
         );
         config
-            .set_secret("channels.matrix.access-token", "sk-test".into())
+            .set_secret("channels.matrix.access_token", "sk-test".into())
             .unwrap();
         assert_eq!(
             config
@@ -21670,26 +21662,26 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
         assert_eq!(homeserver.display_value, "https://m.org");
 
         // Option<String> — set
-        let user_id = by_name["channels.matrix.user-id"];
+        let user_id = by_name["channels.matrix.user_id"];
         assert_eq!(user_id.type_hint, "Option<String>");
         assert_eq!(user_id.display_value, "@bot:m.org");
 
         // Option<String> — unset
-        let device_id = by_name["channels.matrix.device-id"];
+        let device_id = by_name["channels.matrix.device_id"];
         assert_eq!(device_id.display_value, "<unset>");
 
         // u64 field
-        let interval = by_name["channels.matrix.draft-update-interval-ms"];
+        let interval = by_name["channels.matrix.draft_update_interval_ms"];
         assert_eq!(interval.type_hint, "u64");
         assert_eq!(interval.display_value, "1500");
 
         // Enum field
-        let stream = by_name["channels.matrix.stream-mode"];
+        let stream = by_name["channels.matrix.stream_mode"];
         assert!(stream.is_enum());
         assert!(stream.enum_variants.is_some());
 
         // Secret field — masked
-        let token = by_name["channels.matrix.access-token"];
+        let token = by_name["channels.matrix.access_token"];
         assert!(token.is_secret);
         assert_eq!(token.display_value, "****");
 
@@ -21708,18 +21700,18 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
             "https://m.org"
         );
         assert_eq!(
-            mx.get_prop("channels.matrix.draft-update-interval-ms")
+            mx.get_prop("channels.matrix.draft_update_interval_ms")
                 .unwrap(),
             "1500"
         );
         assert_eq!(
-            mx.get_prop("channels.matrix.user-id").unwrap(),
+            mx.get_prop("channels.matrix.user_id").unwrap(),
             "@bot:m.org"
         );
-        assert_eq!(mx.get_prop("channels.matrix.device-id").unwrap(), "<unset>");
+        assert_eq!(mx.get_prop("channels.matrix.device_id").unwrap(), "<unset>");
         // Secrets return masked value
         assert_eq!(
-            mx.get_prop("channels.matrix.access-token").unwrap(),
+            mx.get_prop("channels.matrix.access_token").unwrap(),
             "**** (encrypted)"
         );
     }
@@ -21741,7 +21733,7 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
     #[test]
     async fn set_prop_bool() {
         let mut mx = test_matrix_config();
-        mx.set_prop("channels.matrix.interrupt-on-new-message", "true")
+        mx.set_prop("channels.matrix.interrupt_on_new_message", "true")
             .unwrap();
         assert!(mx.interrupt_on_new_message);
     }
@@ -21750,7 +21742,7 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
     async fn set_prop_bool_rejects_invalid() {
         let mut mx = test_matrix_config();
         let err = mx
-            .set_prop("channels.matrix.interrupt-on-new-message", "yes")
+            .set_prop("channels.matrix.interrupt_on_new_message", "yes")
             .unwrap_err();
         assert!(err.to_string().contains("bool"));
     }
@@ -21758,7 +21750,7 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
     #[test]
     async fn set_prop_u64() {
         let mut mx = test_matrix_config();
-        mx.set_prop("channels.matrix.draft-update-interval-ms", "3000")
+        mx.set_prop("channels.matrix.draft_update_interval_ms", "3000")
             .unwrap();
         assert_eq!(mx.draft_update_interval_ms, 3000);
     }
@@ -21767,7 +21759,7 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
     async fn set_prop_u64_rejects_invalid() {
         let mut mx = test_matrix_config();
         assert!(
-            mx.set_prop("channels.matrix.draft-update-interval-ms", "abc")
+            mx.set_prop("channels.matrix.draft_update_interval_ms", "abc")
                 .is_err()
         );
     }
@@ -21775,23 +21767,23 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
     #[test]
     async fn set_prop_option_string_set_and_clear() {
         let mut mx = test_matrix_config();
-        mx.set_prop("channels.matrix.user-id", "@new:m.org")
+        mx.set_prop("channels.matrix.user_id", "@new:m.org")
             .unwrap();
         assert_eq!(mx.user_id.as_deref(), Some("@new:m.org"));
 
         // Empty string clears Option
-        mx.set_prop("channels.matrix.user-id", "").unwrap();
+        mx.set_prop("channels.matrix.user_id", "").unwrap();
         assert!(mx.user_id.is_none());
     }
 
     #[test]
     async fn set_prop_enum() {
         let mut mx = test_matrix_config();
-        mx.set_prop("channels.matrix.stream-mode", "partial")
+        mx.set_prop("channels.matrix.stream_mode", "partial")
             .unwrap();
         assert_eq!(mx.stream_mode, StreamMode::Partial);
 
-        mx.set_prop("channels.matrix.stream-mode", "multi_message")
+        mx.set_prop("channels.matrix.stream_mode", "multi_message")
             .unwrap();
         assert_eq!(mx.stream_mode, StreamMode::MultiMessage);
     }
@@ -21800,7 +21792,7 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
     async fn set_prop_enum_rejects_invalid() {
         let mut mx = test_matrix_config();
         let err = mx
-            .set_prop("channels.matrix.stream-mode", "invalid")
+            .set_prop("channels.matrix.stream_mode", "invalid")
             .unwrap_err();
         assert!(err.to_string().contains("expected one of"));
     }
@@ -21813,11 +21805,11 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
 
     #[test]
     async fn prop_is_secret_static_check() {
-        assert!(MatrixConfig::prop_is_secret("channels.matrix.access-token"));
-        assert!(MatrixConfig::prop_is_secret("channels.matrix.recovery-key"));
+        assert!(MatrixConfig::prop_is_secret("channels.matrix.access_token"));
+        assert!(MatrixConfig::prop_is_secret("channels.matrix.recovery_key"));
         assert!(!MatrixConfig::prop_is_secret("channels.matrix.homeserver"));
         assert!(!MatrixConfig::prop_is_secret(
-            "channels.matrix.interrupt-on-new-message"
+            "channels.matrix.interrupt_on_new_message"
         ));
     }
 
@@ -21849,19 +21841,19 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
         // Empty by default — no env applied.
         let mut cfg = Config::default();
         assert!(!cfg.prop_is_env_overridden("channels.matrix.homeserver"));
-        assert!(!cfg.prop_is_env_overridden("gateway.request-timeout-secs"));
+        assert!(!cfg.prop_is_env_overridden("gateway.request_timeout_secs"));
 
         // Populate the field directly (the same set that
         // `apply_env_overrides` returns from `load_or_init`).
         cfg.env_overridden_paths = std::collections::HashSet::from([
             "channels.matrix.homeserver".to_string(),
-            "gateway.request-timeout-secs".to_string(),
+            "gateway.request_timeout_secs".to_string(),
         ]);
 
         // True for paths in the list, false for anything else.
         assert!(cfg.prop_is_env_overridden("channels.matrix.homeserver"));
-        assert!(cfg.prop_is_env_overridden("gateway.request-timeout-secs"));
-        assert!(!cfg.prop_is_env_overridden("channels.matrix.access-token"));
+        assert!(cfg.prop_is_env_overridden("gateway.request_timeout_secs"));
+        assert!(!cfg.prop_is_env_overridden("channels.matrix.access_token"));
         assert!(!cfg.prop_is_env_overridden("gateway.host"));
         // Empty path / non-schema path → false.
         assert!(!cfg.prop_is_env_overridden(""));
@@ -21878,10 +21870,10 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
         // non-secret branch and emitted `{value}` instead of `{populated}` for
         // any secret on a map-keyed nested type.
         assert!(Config::prop_is_secret(
-            "providers.models.openrouter.default.api-key"
+            "providers.models.openrouter.default.api_key"
         ));
         assert!(Config::prop_is_secret(
-            "providers.models.anthropic.default.api-key"
+            "providers.models.anthropic.default.api_key"
         ));
         assert!(!Config::prop_is_secret(
             "providers.models.openrouter.default.endpoint"
@@ -21911,7 +21903,7 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
             .expect("custom typed slot");
 
         let prefix = format!("providers.models.custom.{alias}");
-        let api_key_path = format!("{prefix}.api-key");
+        let api_key_path = format!("{prefix}.api_key");
         let uri_path = format!("{prefix}.uri");
         let model_path = format!("{prefix}.model");
         let temperature_path = format!("{prefix}.temperature");
@@ -22004,7 +21996,7 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
             ..Default::default()
         };
         let original_secret = "sk-ant-real-on-disk-credential";
-        let api_key_path = "providers.models.anthropic.default.api-key";
+        let api_key_path = "providers.models.anthropic.default.api_key";
         config
             .providers
             .models
@@ -22090,7 +22082,7 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
         let fields = mx.prop_fields();
         let stream_field = fields
             .iter()
-            .find(|f| f.name == "channels.matrix.stream-mode")
+            .find(|f| f.name == "channels.matrix.stream_mode")
             .unwrap();
         let variants = (stream_field.enum_variants.unwrap())();
         assert!(variants.contains(&"off".to_string()));
@@ -22238,7 +22230,7 @@ allowed_users = []
 
         config
             .set_prop(
-                "channels.matrix.default.allowed-rooms",
+                "channels.matrix.default.allowed_rooms",
                 r#"["alice","bob"]"#,
             )
             .expect("set_prop should succeed against deserialized matrix");
@@ -22252,7 +22244,7 @@ allowed_users = []
     async fn init_defaults_then_set_prop_round_trips_vec_string() {
         // Regression for #6175 Channels picker → form → save:
         // 1. create_map_key inserts channels.matrix["default"] = MatrixConfig::default()
-        // 2. set_prop on channels.matrix.default.allowed-rooms must accept a JSON-array
+        // 2. set_prop on channels.matrix.default.allowed_rooms must accept a JSON-array
         //    string (the shape coerce_for_set_prop emits for Vec<String>).
         // 3. get_prop reads it back.
         let mut config = Config::default();
@@ -22265,16 +22257,16 @@ allowed_users = []
         let has_field = config
             .prop_fields()
             .iter()
-            .any(|f| f.name == "channels.matrix.default.allowed-rooms");
+            .any(|f| f.name == "channels.matrix.default.allowed_rooms");
         assert!(
             has_field,
-            "channels.matrix.default.allowed-rooms must appear in prop_fields after init"
+            "channels.matrix.default.allowed_rooms must appear in prop_fields after init"
         );
 
         // set_prop with the JSON-array string the gateway PATCH path produces.
         config
             .set_prop(
-                "channels.matrix.default.allowed-rooms",
+                "channels.matrix.default.allowed_rooms",
                 r#"["alice","bob"]"#,
             )
             .expect("set_prop should accept JSON-array string for Vec<String>");
@@ -22510,17 +22502,17 @@ allowed_users = []
         let mut config = Config::default();
 
         config
-            .set_prop("onboard-state.completed-sections", "agents")
+            .set_prop("onboard_state.completed_sections", "agents")
             .expect("onboard state marker path should be writable");
         assert_eq!(
             config
-                .get_prop("onboard-state.completed-sections")
+                .get_prop("onboard_state.completed_sections")
                 .expect("onboard state marker path should be readable"),
             "[\"agents\"]"
         );
     }
 
-    /// `onboard-state.quickstart-completed` is the flag the Quickstart
+    /// `onboard_state.quickstart_completed` is the flag the Quickstart
     /// flips when it lands a `BuilderSubmission`. Defaults to `false`
     /// so first launches auto-open the Quickstart; round-trips through
     /// `set_prop` / `get_prop` like any other top-level config field.
@@ -22530,7 +22522,7 @@ allowed_users = []
 
         assert_eq!(
             config
-                .get_prop("onboard-state.quickstart-completed")
+                .get_prop("onboard_state.quickstart_completed")
                 .expect("default quickstart-completed should be readable"),
             "false",
             "fresh configs default to quickstart-completed=false so the \
@@ -22538,11 +22530,11 @@ allowed_users = []
         );
 
         config
-            .set_prop("onboard-state.quickstart-completed", "true")
+            .set_prop("onboard_state.quickstart_completed", "true")
             .expect("quickstart-completed should be writable via prop path");
         assert_eq!(
             config
-                .get_prop("onboard-state.quickstart-completed")
+                .get_prop("onboard_state.quickstart_completed")
                 .expect("quickstart-completed should be readable after set"),
             "true"
         );
@@ -22563,22 +22555,22 @@ allowed_users = []
         assert!(
             fields
                 .iter()
-                .any(|field| field.name == "runtime-profiles.fast.history-pruning.enabled"),
+                .any(|field| field.name == "runtime_profiles.fast.history_pruning.enabled"),
             "history-pruning is a runtime-profile field, emitted under the profile alias"
         );
         assert!(
             !fields
                 .iter()
-                .any(|field| field.name.starts_with("agents.bob.history-pruning")),
+                .any(|field| field.name.starts_with("agents.bob.history_pruning")),
             "history-pruning must no longer be settable on the agent"
         );
 
         config
-            .set_prop("runtime-profiles.fast.history-pruning.enabled", "true")
+            .set_prop("runtime_profiles.fast.history_pruning.enabled", "true")
             .expect("set_prop should accept the runtime-profile nested path");
         assert_eq!(
             config
-                .get_prop("runtime-profiles.fast.history-pruning.enabled")
+                .get_prop("runtime_profiles.fast.history_pruning.enabled")
                 .expect("get_prop should accept the runtime-profile nested path"),
             "true"
         );
