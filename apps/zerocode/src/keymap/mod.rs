@@ -7,7 +7,7 @@
 //! On darwin, `Chord::matches` translates the `CTRL` modifier to
 //! `SUPER` so Linux's `Ctrl+K` and macOS's `⌘K` resolve identically.
 
-mod actions;
+pub mod actions;
 mod chord;
 pub mod overrides;
 
@@ -15,6 +15,18 @@ pub use actions::*;
 pub use chord::Chord;
 
 use crossterm::event::KeyEvent;
+
+/// Uniform interface over every `keyactions!`-generated enum so generic
+/// code (the keybind surface) can walk variants, names, labels, and
+/// resolved chords without knowing the concrete enum.
+pub trait RebindableActions: Sized + Copy + 'static {
+    fn tag() -> &'static str;
+    fn all() -> &'static [Self];
+    fn key(&self) -> String;
+    fn human_label(&self) -> &'static str;
+    fn defaults(&self) -> Vec<Chord>;
+    fn resolved(&self) -> Vec<Chord>;
+}
 
 /// Bare chords reserved from user rebinding so structural controls
 /// (cancel/back, confirm, selection toggle) can't be stolen and
@@ -120,5 +132,35 @@ mod tests {
         check("search_box", SearchBoxAction::bindings());
         check("config_editor", ConfigEditorAction::bindings());
         check("quickstart_modal", QuickstartModalAction::bindings());
+    }
+
+    /// Every rebindable enum's TAG and serialized variant names must be
+    /// snake_case — the action-key wire form (`"<tag>.<variant>"`) is
+    /// only valid snake_case, and kebab-case is banned project-wide.
+    #[test]
+    fn tags_and_variant_names_are_snake_case() {
+        fn ok(s: &str) -> bool {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                && !s.starts_with('_')
+                && !s.ends_with('_')
+        }
+        fn check<A: RebindableActions>() {
+            assert!(ok(A::tag()), "tag '{}' is not snake_case", A::tag());
+            for v in A::all() {
+                let key = v.key();
+                let variant = key.split_once('.').map(|(_, v)| v).unwrap_or(&key);
+                assert!(ok(variant), "variant '{variant}' is not snake_case");
+            }
+        }
+        check::<GlobalAction>();
+        check::<ChatTabAction>();
+        check::<LogsTabAction>();
+        check::<DashboardTabAction>();
+        check::<ConfigTabAction>();
+        check::<QuickstartTabAction>();
+        check::<InputBarAction>();
+        check::<FileExplorerAction>();
     }
 }

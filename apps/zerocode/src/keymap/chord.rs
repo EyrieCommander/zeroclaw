@@ -155,10 +155,10 @@ fn parse_keycode(token: &str) -> Result<KeyCode, ChordParseError> {
     if let Some((_, kc)) = KEY_TOKENS.iter().find(|(t, _)| *t == token) {
         return Ok(*kc);
     }
-    if let Some(rest) = token.strip_prefix('f') {
-        if let Ok(n) = rest.parse::<u8>() {
-            return Ok(KeyCode::F(n));
-        }
+    if let Some(rest) = token.strip_prefix('f')
+        && let Ok(n) = rest.parse::<u8>()
+    {
+        return Ok(KeyCode::F(n));
     }
     let mut chars = token.chars();
     match (chars.next(), chars.next()) {

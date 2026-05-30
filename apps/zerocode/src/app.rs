@@ -92,6 +92,7 @@ pub async fn run(
     term: &mut config_manager::Term,
     connect_label: &str,
     reconnect_state: SharedReconnectState,
+    config_dir: &std::path::Path,
 ) -> Result<bool> {
     let mut mode = Mode::Dashboard;
     let mut show_help = false;
@@ -104,7 +105,7 @@ pub async fn run(
 
     let mut dashboard_pane = dashboard::Dashboard::new(&rpc, connect_label);
     dashboard_pane.init().await?;
-    let mut config_app = config_manager::App::new(&rpc);
+    let mut config_app = config_manager::App::new(&rpc, config_dir);
     config_app.init().await?;
     let rpc_arc = rpc.clone();
     let mut acp_pane = acp::Acp::new(Arc::clone(&rpc_arc));

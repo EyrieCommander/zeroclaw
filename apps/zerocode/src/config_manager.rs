@@ -1,4 +1,5 @@
 use std::io::{self, Stdout};
+use std::path::Path;
 
 use crate::wire::{ConfigFieldEntry, ConfigTab, PropKind, SectionShape};
 use anyhow::Result;
@@ -99,10 +100,34 @@ enum FilterEditAction {
     CursorDown,
 }
 
+// ── Config section sub-tabs ──────────────────────────────────────
+
+/// Top-level Config sub-tab: the daemon RPC editor (`zeroclaw`) first,
+/// the local client config (`zerocode`) second.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConfigSection {
+    Zeroclaw,
+    Zerocode,
+}
+
+const CONFIG_SECTIONS: [ConfigSection; 2] = [ConfigSection::Zeroclaw, ConfigSection::Zerocode];
+
+impl ConfigSection {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Zeroclaw => "zeroclaw",
+            Self::Zerocode => "zerocode",
+        }
+    }
+}
+
 // ── App state ────────────────────────────────────────────────────
 
 pub(crate) struct App<'a> {
     rpc: &'a RpcClient,
+    section: ConfigSection,
+    zerocode: crate::zerocode_pane::ZerocodePane,
+    section_tab_area: Option<Rect>,
     screen: Screen,
     sections: Vec<ConfigSectionEntry>,
     templates: Vec<ConfigTemplateEntry>,
@@ -155,9 +180,12 @@ pub(crate) struct App<'a> {
 }
 
 impl<'a> App<'a> {
-    pub(crate) fn new(rpc: &'a RpcClient) -> Self {
+    pub(crate) fn new(rpc: &'a RpcClient, config_dir: &Path) -> Self {
         Self {
             rpc,
+            section: ConfigSection::Zeroclaw,
+            zerocode: crate::zerocode_pane::ZerocodePane::new(config_dir),
+            section_tab_area: None,
             screen: Screen::SectionList,
             sections: Vec::new(),
             templates: Vec::new(),
@@ -207,14 +235,29 @@ impl<'a> App<'a> {
         Ok(())
     }
 
-    /// Draw the current screen into the given area.
+    /// Draw the current screen into the given area, beneath the Config
+    /// section sub-tab bar (`zeroclaw` / `zerocode`).
     pub(crate) fn draw_into(&mut self, frame: &mut Frame, area: Rect) {
+        use ratatui::layout::{Constraint, Direction, Layout};
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(area);
+        self.draw_section_tab_bar(frame, chunks[0]);
+        self.section_tab_area = Some(chunks[0]);
+        let body = chunks[1];
+
+        if self.section == ConfigSection::Zerocode {
+            self.zerocode.draw(frame, body);
+            return;
+        }
+
         // Clone values out of `screen` so draw methods can take `&mut self`.
         match &self.screen {
-            Screen::SectionList => self.draw_section_list(frame, area),
+            Screen::SectionList => self.draw_section_list(frame, body),
             Screen::TypeList { section_idx } => {
                 let si = *section_idx;
-                self.draw_type_list(frame, area, si);
+                self.draw_type_list(frame, body, si);
             }
             Screen::AliasList {
                 section_idx,
@@ -223,11 +266,11 @@ impl<'a> App<'a> {
             } => {
                 let si = *section_idx;
                 let bc = breadcrumb.clone();
-                self.draw_alias_list(frame, area, si, &bc);
+                self.draw_alias_list(frame, body, si, &bc);
             }
             Screen::AliasCreate { breadcrumb, .. } => {
                 let bc = breadcrumb.clone();
-                self.draw_alias_create(frame, area, &bc);
+                self.draw_alias_create(frame, body, &bc);
             }
             Screen::FieldList {
                 section_idx,
@@ -236,7 +279,7 @@ impl<'a> App<'a> {
             } => {
                 let si = *section_idx;
                 let bc = breadcrumb.clone();
-                self.draw_field_list(frame, area, si, &bc);
+                self.draw_field_list(frame, body, si, &bc);
             }
             Screen::FieldEdit {
                 breadcrumb,
@@ -245,15 +288,55 @@ impl<'a> App<'a> {
             } => {
                 let bc = breadcrumb.clone();
                 let fi = *field_idx;
-                self.draw_field_edit(frame, area, &bc, fi);
+                self.draw_field_edit(frame, body, &bc, fi);
             }
         }
+    }
+
+    fn draw_section_tab_bar(&self, frame: &mut Frame, area: Rect) {
+        let mut spans = Vec::new();
+        for (i, sec) in CONFIG_SECTIONS.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::styled(" │ ", theme::dim_style()));
+            }
+            let style = if *sec == self.section {
+                theme::accent_style().add_modifier(Modifier::BOLD)
+            } else {
+                theme::dim_style()
+            };
+            spans.push(Span::styled(sec.label(), style));
+        }
+        // Surface the zerocode pane's last status inline on the bar.
+        if self.section == ConfigSection::Zerocode
+            && let Some(msg) = self.zerocode.status()
+        {
+            spans.push(Span::styled("   ", theme::dim_style()));
+            spans.push(Span::styled(msg.to_string(), theme::warn_style()));
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
     /// Handle a key event. Returns `Ok(true)` when the user wants to
     /// quit the entire TUI (never triggered from Config; use Ctrl+C at the app level).
     pub(crate) async fn handle_key(&mut self, key: KeyEvent, term: &mut Term) -> Result<bool> {
         self.status_msg = None;
+
+        // Tab / Shift+Tab cycle the outer Config section (zeroclaw ↔
+        // zerocode) from anywhere — neither is bound inside the daemon
+        // editor or the zerocode pane, so there is no shadowing.
+        if key.code == KeyCode::Tab && key.modifiers == KeyModifiers::NONE {
+            self.cycle_section(1);
+            return Ok(false);
+        }
+        if key.code == KeyCode::BackTab {
+            self.cycle_section(-1);
+            return Ok(false);
+        }
+
+        if self.section == ConfigSection::Zerocode {
+            self.zerocode.handle_key(key);
+            return Ok(false);
+        }
 
         match &self.screen {
             Screen::SectionList => {
@@ -268,6 +351,15 @@ impl<'a> App<'a> {
         Ok(false)
     }
 
+    fn cycle_section(&mut self, delta: isize) {
+        let i = CONFIG_SECTIONS
+            .iter()
+            .position(|s| *s == self.section)
+            .unwrap_or(0) as isize;
+        let n = CONFIG_SECTIONS.len() as isize;
+        self.section = CONFIG_SECTIONS[(((i + delta) % n + n) % n) as usize];
+    }
+
     /// Handle a mouse event forwarded from the app event loop.
     pub(crate) async fn handle_mouse(
         &mut self,
@@ -276,6 +368,11 @@ impl<'a> App<'a> {
         term: &mut Term,
     ) -> Result<()> {
         use crate::mouse;
+
+        // The zerocode pane is keyboard-driven; ignore mouse there for now.
+        if self.section == ConfigSection::Zerocode {
+            return Ok(());
+        }
 
         match mouse.kind {
             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
@@ -2990,6 +3087,9 @@ impl<'a> App<'a> {
 
     /// Whether the pane is in a text-input mode (filter, edit buf, alias create, editors).
     pub(crate) fn wants_text_input(&self) -> bool {
+        if self.section == ConfigSection::Zerocode {
+            return self.zerocode.wants_text_input();
+        }
         if self.filter.is_some() {
             return true;
         }

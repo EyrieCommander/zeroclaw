@@ -143,9 +143,11 @@ pub fn build_override_table(rows: HashMap<String, Vec<Chord>>) -> Result<Overrid
     let mut seen: HashMap<String, HashMap<Chord, String>> = HashMap::new();
 
     for (action_key, chords) in rows {
-        let (tag, variant) = action_key
-            .split_once('.')
-            .ok_or_else(|| anyhow::anyhow!("keybinding key '{action_key}' missing '.<variant>'"))?;
+        let (tag, variant) = action_key.split_once('.').ok_or_else(|| {
+            anyhow::Error::msg(format!(
+                "keybinding key '{action_key}' missing '.<variant>'"
+            ))
+        })?;
 
         for c in &chords {
             if let Some(reason) = reserved_reason(c) {

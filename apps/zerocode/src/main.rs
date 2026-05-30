@@ -38,6 +38,7 @@ mod theme;
 mod turn_status;
 mod widgets;
 mod wire;
+mod zerocode_pane;
 
 const DAEMON_CONNECT_INTERVAL: Duration = Duration::from_millis(50);
 const DAEMON_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -194,7 +195,7 @@ async fn run() -> anyhow::Result<()> {
     let mut term = config_manager::init_terminal()?;
     TERMINAL_ACTIVE.store(true, Ordering::Relaxed);
 
-    let result = run_until_exit(Arc::new(rpc), &mut term, &target).await;
+    let result = run_until_exit(Arc::new(rpc), &mut term, &target, &local_config_dir).await;
 
     TERMINAL_ACTIVE.store(false, Ordering::Relaxed);
     config_manager::restore_terminal(&mut term)?;
@@ -207,6 +208,7 @@ async fn run_until_exit(
     rpc: Arc<client::RpcClient>,
     term: &mut config_manager::Term,
     target: &ConnectTarget,
+    config_dir: &std::path::Path,
 ) -> anyhow::Result<()> {
     // Shared state that survives the reconnect cycle. Quickstart's
     // Stage 2 writes the new agent's alias here so the next
@@ -220,13 +222,20 @@ async fn run_until_exit(
         let mut sigterm =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         tokio::select! {
-            r = run_with_reconnect(Arc::clone(&rpc), term, target, Arc::clone(&reconnect_state)) => r,
+            r = run_with_reconnect(Arc::clone(&rpc), term, target, Arc::clone(&reconnect_state), config_dir) => r,
             _ = sigterm.recv() => Ok(()),
         }
     }
     #[cfg(not(unix))]
     {
-        run_with_reconnect(Arc::clone(&rpc), term, target, Arc::clone(&reconnect_state)).await
+        run_with_reconnect(
+            Arc::clone(&rpc),
+            term,
+            target,
+            Arc::clone(&reconnect_state),
+            config_dir,
+        )
+        .await
     }
 }
 
@@ -235,20 +244,28 @@ async fn run_with_reconnect(
     term: &mut config_manager::Term,
     target: &ConnectTarget,
     reconnect_state: app::SharedReconnectState,
+    config_dir: &std::path::Path,
 ) -> anyhow::Result<()> {
     loop {
         let label = target.label();
-        let should_reconnect =
-            match app::run(Arc::clone(&rpc), term, &label, Arc::clone(&reconnect_state)).await {
-                Ok(reconnect) => reconnect,
-                Err(_) if rpc.is_disconnected() => {
-                    // RPC error caused by a dead connection — treat as
-                    // disconnect and enter the reconnect loop instead of
-                    // propagating a fatal error.
-                    true
-                }
-                Err(e) => return Err(e),
-            };
+        let should_reconnect = match app::run(
+            Arc::clone(&rpc),
+            term,
+            &label,
+            Arc::clone(&reconnect_state),
+            config_dir,
+        )
+        .await
+        {
+            Ok(reconnect) => reconnect,
+            Err(_) if rpc.is_disconnected() => {
+                // RPC error caused by a dead connection — treat as
+                // disconnect and enter the reconnect loop instead of
+                // propagating a fatal error.
+                true
+            }
+            Err(e) => return Err(e),
+        };
         if !should_reconnect {
             return Ok(());
         }

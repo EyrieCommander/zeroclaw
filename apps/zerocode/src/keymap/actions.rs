@@ -90,6 +90,31 @@ macro_rules! keyactions {
                 out
             }
         }
+
+        impl super::RebindableActions for $name {
+            fn tag() -> &'static str {
+                Self::TAG
+            }
+            fn all() -> &'static [Self] {
+                Self::variants()
+            }
+            fn key(&self) -> String {
+                self.action_key()
+            }
+            fn human_label(&self) -> &'static str {
+                self.label()
+            }
+            fn defaults(&self) -> Vec<Chord> {
+                self.default_chords()
+            }
+            fn resolved(&self) -> Vec<Chord> {
+                Self::resolved_bindings()
+                    .into_iter()
+                    .filter(|(_, a)| a == self)
+                    .map(|(c, _)| c)
+                    .collect()
+            }
+        }
     };
 }
 

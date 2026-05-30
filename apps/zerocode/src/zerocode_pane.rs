@@ -1,0 +1,524 @@
+//! The local `zerocode` config pane: theme selector, keybinding list,
+//! and preset picker, plus the chord-capture modal for per-action
+//! rebinding. All surfaces walk the canonical registries (`THEMES`,
+//! `KEY_PRESETS`, each action enum's `variants()`) — nothing is
+//! hardcoded here.
+
+use std::path::{Path, PathBuf};
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::{
+    Frame,
+    layout::Rect,
+    text::{Line, Span},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+};
+
+use crate::config;
+use crate::keymap::{Chord, overrides, reserved_reason};
+use crate::theme;
+
+/// Which sub-pane of the zerocode tab is focused.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Focus {
+    Theme,
+    Presets,
+    Bindings,
+}
+
+const FOCI: [Focus; 3] = [Focus::Theme, Focus::Presets, Focus::Bindings];
+
+impl Focus {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Theme => "Theme",
+            Self::Presets => "Presets",
+            Self::Bindings => "Keybindings",
+        }
+    }
+}
+
+/// One rebindable action row, materialised from the registries so the
+/// surface never hardcodes a variant list.
+#[derive(Clone)]
+struct BindingRow {
+    action_key: String,
+    label: String,
+    chords: Vec<Chord>,
+}
+
+/// Capture-modal state: armed for a given row, holding any rejection
+/// reason to show inline.
+struct Capture {
+    row: usize,
+    error: Option<String>,
+}
+
+pub(crate) struct ZerocodePane {
+    config_dir: PathBuf,
+    focus: Focus,
+    // Theme
+    themes: Vec<String>,
+    theme_cursor: usize,
+    // Presets
+    presets: Vec<String>,
+    preset_cursor: usize,
+    // Bindings
+    rows: Vec<BindingRow>,
+    binding_cursor: usize,
+    capture: Option<Capture>,
+    status: Option<String>,
+    last_area: Rect,
+}
+
+impl ZerocodePane {
+    pub(crate) fn new(config_dir: &Path) -> Self {
+        let themes: Vec<String> = theme::theme_names().map(str::to_string).collect();
+        let presets: Vec<String> = config::keybindings::preset_names()
+            .map(str::to_string)
+            .collect();
+        let active = theme::active();
+        let theme_cursor = themes
+            .iter()
+            .position(|n| theme::theme_by_name(n).map(|t| t.title) == Some(active.title))
+            .unwrap_or(0);
+        let mut pane = Self {
+            config_dir: config_dir.to_path_buf(),
+            focus: Focus::Theme,
+            themes,
+            theme_cursor,
+            presets,
+            preset_cursor: 0,
+            rows: Vec::new(),
+            binding_cursor: 0,
+            capture: None,
+            status: None,
+            last_area: Rect::default(),
+        };
+        pane.rebuild_rows();
+        pane
+    }
+
+    /// Materialise the binding rows from every rebindable action enum's
+    /// resolved bindings — defaults merged with any active override.
+    fn rebuild_rows(&mut self) {
+        self.rows = collect_binding_rows();
+        if self.binding_cursor >= self.rows.len() {
+            self.binding_cursor = self.rows.len().saturating_sub(1);
+        }
+    }
+
+    pub(crate) fn wants_text_input(&self) -> bool {
+        // Capture grabs raw keys, but it is not text entry — the app
+        // still routes keys to handle_key. Returning false keeps global
+        // chords (Ctrl+C) working while armed.
+        false
+    }
+
+    // ── Draw ─────────────────────────────────────────────────────
+
+    pub(crate) fn draw(&mut self, frame: &mut Frame, area: Rect) {
+        use ratatui::layout::{Constraint, Direction, Layout};
+        self.last_area = area;
+
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(22), Constraint::Min(0)])
+            .split(area);
+
+        self.draw_focus_list(frame, cols[0]);
+
+        match self.focus {
+            Focus::Theme => self.draw_theme(frame, cols[1]),
+            Focus::Presets => self.draw_presets(frame, cols[1]),
+            Focus::Bindings => self.draw_bindings(frame, cols[1]),
+        }
+
+        if self.capture.is_some() {
+            self.draw_capture_modal(frame, area);
+        }
+    }
+
+    fn draw_focus_list(&self, frame: &mut Frame, area: Rect) {
+        let items: Vec<ListItem> = FOCI
+            .iter()
+            .map(|f| ListItem::new(Line::from(Span::styled(f.label(), theme::body_style()))))
+            .collect();
+        let mut state = ListState::default();
+        state.select(FOCI.iter().position(|f| *f == self.focus));
+        frame.render_stateful_widget(
+            List::new(items)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(Span::styled(" zerocode ", theme::title_style())),
+                )
+                .highlight_style(theme::selected_style())
+                .highlight_symbol("› "),
+            area,
+            &mut state,
+        );
+    }
+
+    fn draw_theme(&self, frame: &mut Frame, area: Rect) {
+        let items: Vec<ListItem> = self
+            .themes
+            .iter()
+            .map(|n| ListItem::new(Line::from(Span::styled(n.clone(), theme::body_style()))))
+            .collect();
+        let mut state = ListState::default();
+        if !items.is_empty() {
+            state.select(Some(self.theme_cursor.min(items.len() - 1)));
+        }
+        frame.render_stateful_widget(
+            List::new(items)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(Span::styled(" Theme ", theme::title_style())),
+                )
+                .highlight_style(theme::selected_style())
+                .highlight_symbol("› "),
+            area,
+            &mut state,
+        );
+    }
+
+    fn draw_presets(&self, frame: &mut Frame, area: Rect) {
+        let items: Vec<ListItem> = self
+            .presets
+            .iter()
+            .map(|n| ListItem::new(Line::from(Span::styled(n.clone(), theme::body_style()))))
+            .collect();
+        let mut state = ListState::default();
+        if !items.is_empty() {
+            state.select(Some(self.preset_cursor.min(items.len() - 1)));
+        }
+        frame.render_stateful_widget(
+            List::new(items)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(Span::styled(" Keybinding Presets ", theme::title_style())),
+                )
+                .highlight_style(theme::selected_style())
+                .highlight_symbol("› "),
+            area,
+            &mut state,
+        );
+    }
+
+    fn draw_bindings(&self, frame: &mut Frame, area: Rect) {
+        let items: Vec<ListItem> = self
+            .rows
+            .iter()
+            .map(|r| {
+                let chords = if r.chords.is_empty() {
+                    "(unbound)".to_string()
+                } else {
+                    r.chords
+                        .iter()
+                        .map(Chord::display)
+                        .collect::<Vec<_>>()
+                        .join("  ")
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!("{:<28}", r.action_key), theme::dim_style()),
+                    Span::styled(format!("{:<22}", r.label), theme::body_style()),
+                    Span::styled(chords, theme::accent_style()),
+                ]))
+            })
+            .collect();
+        let mut state = ListState::default();
+        if !items.is_empty() {
+            state.select(Some(self.binding_cursor.min(items.len() - 1)));
+        }
+        frame.render_stateful_widget(
+            List::new(items)
+                .block(Block::default().borders(Borders::ALL).title(Span::styled(
+                    " Keybindings (Enter to rebind) ",
+                    theme::title_style(),
+                )))
+                .highlight_style(theme::selected_style())
+                .highlight_symbol("› "),
+            area,
+            &mut state,
+        );
+    }
+
+    fn draw_capture_modal(&self, frame: &mut Frame, area: Rect) {
+        use ratatui::layout::{Constraint, Direction, Layout};
+        let Some(cap) = &self.capture else { return };
+        let row = &self.rows[cap.row];
+
+        let v = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(40),
+                Constraint::Length(7),
+                Constraint::Percentage(40),
+            ])
+            .split(area);
+        let h = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(20),
+                Constraint::Percentage(60),
+                Constraint::Percentage(20),
+            ])
+            .split(v[1]);
+        let modal = h[1];
+
+        let mut lines = vec![
+            Line::from(Span::styled(
+                format!("Rebind: {}", row.action_key),
+                theme::heading_style(),
+            )),
+            Line::from(Span::styled(
+                "Press a key combination…",
+                theme::body_style(),
+            )),
+        ];
+        if let Some(err) = &cap.error {
+            lines.push(Line::from(Span::styled(err.clone(), theme::warn_style())));
+        }
+        lines.push(Line::from(Span::styled(
+            "Esc to cancel",
+            theme::dim_style(),
+        )));
+
+        frame.render_widget(ratatui::widgets::Clear, modal);
+        frame.render_widget(
+            Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::approval_border_style())
+                    .title(Span::styled(" Assign Key ", theme::title_style())),
+            ),
+            modal,
+        );
+    }
+
+    // ── Key handling ─────────────────────────────────────────────
+
+    pub(crate) fn handle_key(&mut self, key: KeyEvent) {
+        self.status = None;
+        if self.capture.is_some() {
+            self.handle_capture_key(key);
+            return;
+        }
+        use crate::keymap::ConfigTabAction;
+        match ConfigTabAction::from_chord(&key) {
+            Some(ConfigTabAction::Up) => self.move_cursor(-1),
+            Some(ConfigTabAction::Down) => self.move_cursor(1),
+            Some(ConfigTabAction::TabLeft) => self.cycle_focus(-1),
+            Some(ConfigTabAction::TabRight) => self.cycle_focus(1),
+            Some(ConfigTabAction::Enter) => self.activate(),
+            Some(ConfigTabAction::DeleteRow) if self.focus == Focus::Bindings => {
+                self.reset_row();
+            }
+            _ => {}
+        }
+    }
+
+    fn cycle_focus(&mut self, delta: isize) {
+        let i = FOCI.iter().position(|f| *f == self.focus).unwrap_or(0) as isize;
+        let n = FOCI.len() as isize;
+        self.focus = FOCI[(((i + delta) % n + n) % n) as usize];
+    }
+
+    fn move_cursor(&mut self, delta: isize) {
+        let (cursor, len) = match self.focus {
+            Focus::Theme => (&mut self.theme_cursor, self.themes.len()),
+            Focus::Presets => (&mut self.preset_cursor, self.presets.len()),
+            Focus::Bindings => (&mut self.binding_cursor, self.rows.len()),
+        };
+        if len == 0 {
+            return;
+        }
+        let next = (*cursor as isize + delta).clamp(0, len as isize - 1);
+        *cursor = next as usize;
+    }
+
+    fn activate(&mut self) {
+        match self.focus {
+            Focus::Theme => self.apply_theme(),
+            Focus::Presets => self.apply_preset(),
+            Focus::Bindings => {
+                if !self.rows.is_empty() {
+                    self.capture = Some(Capture {
+                        row: self.binding_cursor,
+                        error: None,
+                    });
+                }
+            }
+        }
+    }
+
+    fn apply_theme(&mut self) {
+        let Some(name) = self.themes.get(self.theme_cursor) else {
+            return;
+        };
+        let Some(t) = theme::theme_by_name(name) else {
+            return;
+        };
+        theme::set_active(t);
+        match config::persist_theme(&self.config_dir, name) {
+            Ok(()) => self.status = Some(format!("Theme set to {name}")),
+            Err(e) => self.status = Some(format!("Theme set (save failed: {e})")),
+        }
+    }
+
+    fn apply_preset(&mut self) {
+        let Some(name) = self.presets.get(self.preset_cursor).cloned() else {
+            return;
+        };
+        let Some(preset) = config::keybindings::preset_by_name(&name) else {
+            return;
+        };
+        match preset.resolve() {
+            Ok(table) => {
+                if table.is_empty() {
+                    // The default preset reverts to compile-time bindings.
+                    overrides::clear();
+                } else {
+                    overrides::set_active(table.clone());
+                }
+                match config::persist_keybindings(&self.config_dir, &table) {
+                    Ok(()) => self.status = Some(format!("Preset '{name}' applied")),
+                    Err(e) => self.status = Some(format!("Applied (save failed: {e})")),
+                }
+                self.rebuild_rows();
+            }
+            Err(e) => self.status = Some(format!("Preset invalid: {e}")),
+        }
+    }
+
+    fn reset_row(&mut self) {
+        let Some(row) = self.rows.get(self.binding_cursor) else {
+            return;
+        };
+        let action_key = row.action_key.clone();
+        // Reset = restore compile-time default for this single action by
+        // persisting its default chords, then re-resolving.
+        let defaults = default_chords_for(&action_key);
+        if let Err(e) = config::persist_keybind_row(&self.config_dir, &action_key, defaults.clone())
+        {
+            self.status = Some(format!("Reset failed: {e}"));
+            return;
+        }
+        if let Some((tag, variant)) = action_key.split_once('.') {
+            overrides::set_row(tag, variant, defaults);
+        }
+        self.rebuild_rows();
+        self.status = Some(format!("Reset {action_key}"));
+    }
+
+    fn handle_capture_key(&mut self, key: KeyEvent) {
+        // Esc with no modifiers cancels the capture itself.
+        if key.code == KeyCode::Esc && key.modifiers == KeyModifiers::NONE {
+            self.capture = None;
+            return;
+        }
+        let chord = Chord {
+            code: key.code,
+            modifiers: key.modifiers,
+        };
+        if let Some(reason) = reserved_reason(&chord) {
+            if let Some(cap) = &mut self.capture {
+                cap.error = Some(format!("'{}' is {reason}", chord.display()));
+            }
+            return;
+        }
+        let Some(cap) = self.capture.take() else {
+            return;
+        };
+        let action_key = self.rows[cap.row].action_key.clone();
+        if let Err(e) =
+            config::persist_keybind_row(&self.config_dir, &action_key, vec![chord.clone()])
+        {
+            self.status = Some(format!("Save failed: {e}"));
+            return;
+        }
+        if let Some((tag, variant)) = action_key.split_once('.') {
+            overrides::set_row(tag, variant, vec![chord.clone()]);
+        }
+        self.rebuild_rows();
+        self.status = Some(format!("{action_key} -> {}", chord.display()));
+    }
+
+    pub(crate) fn status(&self) -> Option<&str> {
+        self.status.as_deref()
+    }
+}
+
+/// Build the binding rows by walking every rebindable action enum's
+/// resolved bindings (defaults merged with active overrides). One row
+/// per `(tag, variant)`, chords grouped.
+fn collect_binding_rows() -> Vec<BindingRow> {
+    use crate::keymap::{
+        ChatTabAction, ConfigTabAction, DashboardTabAction, FileExplorerAction, GlobalAction,
+        InputBarAction, LogsTabAction, QuickstartTabAction,
+    };
+
+    let mut rows = Vec::new();
+    rows_from::<GlobalAction>(&mut rows);
+    rows_from::<ChatTabAction>(&mut rows);
+    rows_from::<LogsTabAction>(&mut rows);
+    rows_from::<DashboardTabAction>(&mut rows);
+    rows_from::<ConfigTabAction>(&mut rows);
+    rows_from::<QuickstartTabAction>(&mut rows);
+    rows_from::<InputBarAction>(&mut rows);
+    rows_from::<FileExplorerAction>(&mut rows);
+    rows
+}
+
+/// Append a row for every variant of one action enum, resolved through
+/// the override layer.
+fn rows_from<A: crate::keymap::RebindableActions>(out: &mut Vec<BindingRow>) {
+    for v in A::all() {
+        out.push(BindingRow {
+            action_key: v.key(),
+            label: v.human_label().to_string(),
+            chords: v.resolved(),
+        });
+    }
+}
+
+/// Resolve the compile-time default chords for a single `"tag.variant"`
+/// by walking the enums for a matching action key.
+fn default_chords_for(action_key: &str) -> Vec<Chord> {
+    use crate::keymap::{
+        ChatTabAction, ConfigTabAction, DashboardTabAction, FileExplorerAction, GlobalAction,
+        InputBarAction, LogsTabAction, QuickstartTabAction,
+    };
+    let mut found = None;
+    defaults_in::<GlobalAction>(action_key, &mut found);
+    defaults_in::<ChatTabAction>(action_key, &mut found);
+    defaults_in::<LogsTabAction>(action_key, &mut found);
+    defaults_in::<DashboardTabAction>(action_key, &mut found);
+    defaults_in::<ConfigTabAction>(action_key, &mut found);
+    defaults_in::<QuickstartTabAction>(action_key, &mut found);
+    defaults_in::<InputBarAction>(action_key, &mut found);
+    defaults_in::<FileExplorerAction>(action_key, &mut found);
+    found.unwrap_or_default()
+}
+
+fn defaults_in<A: crate::keymap::RebindableActions>(
+    action_key: &str,
+    found: &mut Option<Vec<Chord>>,
+) {
+    if found.is_some() {
+        return;
+    }
+    // Skip enums whose tag can't prefix this action key.
+    if !action_key.starts_with(A::tag()) {
+        return;
+    }
+    for v in A::all() {
+        if v.key() == action_key {
+            *found = Some(v.defaults());
+            return;
+        }
+    }
+}

@@ -54,11 +54,6 @@ pub fn set_row(tag: &str, variant: &str, chords: Vec<Chord>) {
     }
 }
 
-/// Snapshot the active table (for persistence after an edit).
-pub fn snapshot() -> Option<OverrideTable> {
-    ACTIVE.read().ok().and_then(|g| g.clone())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

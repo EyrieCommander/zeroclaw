@@ -289,4 +289,19 @@ mod tests {
         set_active(theme_by_name("icy_blue").unwrap());
         assert_eq!(active().title, Color::Rgb(100, 200, 255));
     }
+
+    #[test]
+    fn theme_names_are_snake_case() {
+        let ok = |s: &str| {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                && !s.starts_with('_')
+                && !s.ends_with('_')
+        };
+        for name in theme_names() {
+            assert!(ok(name), "theme name '{name}' is not snake_case");
+        }
+        assert!(ok(DEFAULT_THEME_NAME), "default theme name not snake_case");
+    }
 }
