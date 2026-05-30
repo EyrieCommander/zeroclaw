@@ -1229,18 +1229,29 @@ impl AcpServer {
             // notification builder so the helper match can stay exhaustive
             // on the four UI-relevant variants.
             if let TurnEvent::Usage { input_tokens, .. } = &event {
+                // Token-count persistence is best-effort UI bookkeeping (it
+                // restores the TUI ctx bar on resume). It must never gate the
+                // draining of `event_rx`: this loop is the sole consumer of the
+                // turn's bounded `event_tx` (capacity 100). The session store
+                // wraps a single SQLite connection behind one process-wide
+                // mutex, so a concurrent session mid-`append_turn` transaction
+                // can stall this write. Awaiting it here would stop draining,
+                // fill `event_tx`, and block the agent's unguarded
+                // `event_tx.send(...).await` — wedging the turn on "working"
+                // with no cancel path. Fire-and-forget keeps the consumer live.
                 if let (Some(store), Some(it)) = (&self.store, input_tokens) {
                     let store = store.clone();
                     let sid = session_id.clone();
                     let it = *it;
-                    let persisted =
-                        tokio::task::spawn_blocking(move || store.set_token_count(&sid, it)).await;
-                    let error = match persisted {
-                        Ok(Ok(())) => None,
-                        Ok(Err(e)) => Some(e.to_string()),
-                        Err(join) => Some(join.to_string()),
-                    };
-                    if let Some(detail) = error {
+                    zeroclaw_spawn::spawn!(async move {
+                        let persisted =
+                            tokio::task::spawn_blocking(move || store.set_token_count(&sid, it))
+                                .await;
+                        let error = match persisted {
+                            Ok(Ok(())) => return,
+                            Ok(Err(e)) => e.to_string(),
+                            Err(join) => join.to_string(),
+                        };
                         ::zeroclaw_log::record!(
                             WARN,
                             ::zeroclaw_log::Event::new(
@@ -1249,13 +1260,12 @@ impl AcpServer {
                             )
                             .with_outcome(::zeroclaw_log::EventOutcome::Failure)
                             .with_attrs(::serde_json::json!({
-                                "session_id": session_id,
                                 "input_tokens": it,
-                                "error": detail,
+                                "error": error,
                             })),
                             "Failed to persist ACP session token_count"
                         );
-                    }
+                    });
                 }
                 continue;
             }

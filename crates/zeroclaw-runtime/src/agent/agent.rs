@@ -680,6 +680,36 @@ impl Agent {
         }
     }
 
+    /// Forward a turn event to the consumer without ever blocking the turn on a
+    /// stalled receiver. The streamed `event_tx` is bounded; if the consumer
+    /// stops draining (e.g. it is itself blocked on a contended write) a bare
+    /// `send().await` would park here forever, and because these sends sit
+    /// outside the turn's `select!` arms a fired cancel token could never
+    /// interrupt them — the turn would wedge on "working" with no cancel path.
+    /// Racing the send against the cancel token guarantees the producer yields
+    /// the moment cancellation fires. Returns `false` when cancellation won the
+    /// race (the event was not delivered); the send error itself is intentionally
+    /// ignored — a gone consumer is not a turn failure.
+    async fn send_turn_event(
+        event_tx: &tokio::sync::mpsc::Sender<TurnEvent>,
+        cancel_token: Option<&tokio_util::sync::CancellationToken>,
+        event: TurnEvent,
+    ) -> bool {
+        match cancel_token {
+            Some(token) => {
+                tokio::select! {
+                    biased;
+                    () = token.cancelled() => false,
+                    _ = event_tx.send(event) => true,
+                }
+            }
+            None => {
+                let _ = event_tx.send(event).await;
+                true
+            }
+        }
+    }
+
     fn append_streamed_assistant_message_to_history(
         &mut self,
         content: String,
@@ -2202,15 +2232,22 @@ impl Agent {
                                 // providers that carry signatures in this
                                 // field (Anthropic native-thinking fallback).
                                 streamed_reasoning.push_str(&reasoning);
-                                let _ = event_tx
-                                    .send(TurnEvent::Thinking { delta: reasoning })
-                                    .await;
+                                Self::send_turn_event(
+                                    &event_tx,
+                                    cancel_token.as_ref(),
+                                    TurnEvent::Thinking { delta: reasoning },
+                                )
+                                .await;
                             }
                             if !chunk.delta.is_empty() {
                                 got_stream = true;
                                 streamed_text.push_str(&chunk.delta);
-                                let _ =
-                                    event_tx.send(TurnEvent::Chunk { delta: chunk.delta }).await;
+                                Self::send_turn_event(
+                                    &event_tx,
+                                    cancel_token.as_ref(),
+                                    TurnEvent::Chunk { delta: chunk.delta },
+                                )
+                                .await;
                             }
                         }
                         zeroclaw_providers::traits::StreamEvent::ToolCall(tc) => {
@@ -2228,13 +2265,16 @@ impl Agent {
                                 .entry(name.clone())
                                 .or_default()
                                 .push_back(call_id.clone());
-                            let _ = event_tx
-                                .send(TurnEvent::ToolCall {
+                            Self::send_turn_event(
+                                &event_tx,
+                                cancel_token.as_ref(),
+                                TurnEvent::ToolCall {
                                     id: call_id,
                                     name,
                                     args: serde_json::from_str(&args).unwrap_or_default(),
-                                })
-                                .await;
+                                },
+                            )
+                            .await;
                             // NOT pushed to streamed_tool_calls — already executed by proxy
                         }
                         zeroclaw_providers::traits::StreamEvent::PreExecutedToolResult {
@@ -2245,13 +2285,16 @@ impl Agent {
                                 .get_mut(&name)
                                 .and_then(|ids| ids.pop_front())
                                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                            let _ = event_tx
-                                .send(TurnEvent::ToolResult {
+                            Self::send_turn_event(
+                                &event_tx,
+                                cancel_token.as_ref(),
+                                TurnEvent::ToolResult {
                                     id: result_id,
                                     name,
                                     output,
-                                })
-                                .await;
+                                },
+                            )
+                            .await;
                         }
                         zeroclaw_providers::traits::StreamEvent::Usage(usage) => {
                             streamed_usage = Some(usage);
@@ -2372,14 +2415,17 @@ impl Agent {
             // and write costs.jsonl. Absent when the provider does not surface
             // usage in streaming responses.
             if let Some(ref usage) = response.usage {
-                let _ = event_tx
-                    .send(TurnEvent::Usage {
+                Self::send_turn_event(
+                    &event_tx,
+                    cancel_token.as_ref(),
+                    TurnEvent::Usage {
                         input_tokens: usage.input_tokens,
                         cached_input_tokens: usage.cached_input_tokens,
                         output_tokens: usage.output_tokens,
                         cost_usd: None,
-                    })
-                    .await;
+                    },
+                )
+                .await;
             }
 
             let (text, mut calls) = self.parse_response_for_effective_tools(&response);
@@ -2424,11 +2470,14 @@ impl Agent {
 
                 // If we didn't stream, send the full response as a single chunk
                 if !got_stream && !final_text.is_empty() {
-                    let _ = event_tx
-                        .send(TurnEvent::Chunk {
+                    Self::send_turn_event(
+                        &event_tx,
+                        cancel_token.as_ref(),
+                        TurnEvent::Chunk {
                             delta: final_text.clone(),
-                        })
-                        .await;
+                        },
+                    )
+                    .await;
                 }
 
                 new_msgs.push(ConversationMessage::Chat(ChatMessage::assistant(
@@ -2473,13 +2522,16 @@ impl Agent {
             // Notify about each tool call
             for call in &calls {
                 let call_id = call.tool_call_id.as_ref().unwrap().clone();
-                let _ = event_tx
-                    .send(TurnEvent::ToolCall {
+                Self::send_turn_event(
+                    &event_tx,
+                    cancel_token.as_ref(),
+                    TurnEvent::ToolCall {
                         id: call_id,
                         name: call.name.clone(),
                         args: call.arguments.clone(),
-                    })
-                    .await;
+                    },
+                )
+                .await;
             }
 
             let results = if let Some(ref token) = cancel_token {
@@ -2507,13 +2559,16 @@ impl Agent {
             // Notify about each tool result
             for result in &results {
                 let result_id = result.tool_call_id.as_ref().unwrap().clone();
-                let _ = event_tx
-                    .send(TurnEvent::ToolResult {
+                Self::send_turn_event(
+                    &event_tx,
+                    cancel_token.as_ref(),
+                    TurnEvent::ToolResult {
                         id: result_id,
                         name: result.name.clone(),
                         output: result.output.clone(),
-                    })
-                    .await;
+                    },
+                )
+                .await;
             }
 
             let formatted = self.tool_dispatcher.format_results(&results);
