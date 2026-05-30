@@ -96,6 +96,12 @@ pub(crate) fn config_path(config_dir: &Path) -> PathBuf {
 }
 
 /// Ensure the config dir and file exist, then load + apply env overrides.
+///
+/// Theme and keybindings are loaded independently: a bad `[keybindings]`
+/// table must not blank the user's theme (or vice versa). The whole
+/// document is first parsed as a raw `toml::Table`; each typed section
+/// is then deserialised on its own and falls back to its default on
+/// failure with a stderr warning.
 pub(crate) fn ensure_and_load(config_dir: &Path) -> Result<ZerocodeConfig> {
     std::fs::create_dir_all(config_dir)
         .with_context(|| format!("creating config dir {}", config_dir.display()))?;
@@ -108,10 +114,26 @@ pub(crate) fn ensure_and_load(config_dir: &Path) -> Result<ZerocodeConfig> {
             .with_context(|| format!("writing default {}", path.display()))?;
     }
 
-    let raw =
-        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    let mut config: ZerocodeConfig =
-        toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+    let doc = load_document(&path)?;
+    let mut config = ZerocodeConfig::default();
+    if let Some(v) = doc.get("theme") {
+        match v.clone().try_into::<ThemeSection>() {
+            Ok(section) => config.theme = section,
+            Err(e) => eprintln!(
+                "zerocode: ignoring [theme] in {} ({e}); using default",
+                path.display()
+            ),
+        }
+    }
+    if let Some(v) = doc.get("keybindings") {
+        match v.clone().try_into::<HashMap<String, ChordSpec>>() {
+            Ok(rows) => config.keybindings = rows,
+            Err(e) => eprintln!(
+                "zerocode: ignoring [keybindings] in {} ({e}); using defaults",
+                path.display()
+            ),
+        }
+    }
 
     apply_env_overrides(&mut config)?;
     Ok(config)
@@ -368,6 +390,35 @@ mod tests {
         let kb = doc["keybindings"].as_table().unwrap();
         assert!(kb.contains_key("dashboard.up"));
         assert!(!kb.contains_key("old"), "preset pick replaces the section");
+    }
+
+    #[test]
+    fn bad_keybindings_do_not_blank_theme() {
+        let dir = tempfile::tempdir().unwrap();
+        // `"+"` was historically unparseable; even if a future bug
+        // re-introduces that, the theme must still load.
+        seed(
+            dir.path(),
+            "[theme]\nname = \"dracula\"\n\n[keybindings]\n\"logs.increase_level\" = [\"completely::bogus::token\"]\n",
+        );
+        let cfg = ensure_and_load(dir.path()).unwrap();
+        assert_eq!(cfg.theme.name, "dracula");
+        assert!(
+            cfg.keybindings.is_empty(),
+            "bad keybindings drop to default"
+        );
+    }
+
+    #[test]
+    fn bad_theme_does_not_blank_keybindings() {
+        let dir = tempfile::tempdir().unwrap();
+        seed(
+            dir.path(),
+            "[theme]\nname = 42\n\n[keybindings]\n\"dashboard.up\" = [\"k\"]\n",
+        );
+        let cfg = ensure_and_load(dir.path()).unwrap();
+        assert_eq!(cfg.theme.name, theme::DEFAULT_THEME_NAME);
+        assert!(cfg.keybindings.contains_key("dashboard.up"));
     }
 
     #[test]

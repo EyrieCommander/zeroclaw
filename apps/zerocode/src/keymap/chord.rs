@@ -188,6 +188,16 @@ impl FromStr for Chord {
         if trimmed.is_empty() {
             return Err(ChordParseError(s.to_string()));
         }
+        // Single-char tokens bypass modifier splitting so `+` and `=`
+        // round-trip cleanly. Without this, `trimmed.split('+')` on
+        // `"+"` yields two empty segments and the parse fails.
+        if trimmed.chars().count() == 1 {
+            let code = parse_keycode(trimmed)?;
+            return Ok(Chord {
+                code,
+                modifiers: KeyModifiers::NONE,
+            });
+        }
         let mut segments: Vec<&str> = trimmed.split('+').collect();
         // Last segment is the key (case preserved so 'G' stays distinct
         // from 'g'); everything before is a modifier (case-insensitive).
