@@ -108,15 +108,15 @@ const NORD: Theme = Theme {
     tool: Color::Rgb(180, 142, 173),
 };
 
-pub(crate) const DEFAULT_THEME_NAME: &str = "icy-blue";
+pub(crate) const DEFAULT_THEME_NAME: &str = "icy_blue";
 
 pub(crate) const THEMES: &[(&str, Theme)] = &[
-    ("icy-blue", ICY_BLUE),
-    ("solarized-dark", SOLARIZED_DARK),
-    ("solarized-light", SOLARIZED_LIGHT),
-    ("high-contrast-white", HIGH_CONTRAST_WHITE),
-    ("high-contrast-dark", HIGH_CONTRAST_DARK),
-    ("gruvbox-dark", GRUVBOX_DARK),
+    ("icy_blue", ICY_BLUE),
+    ("solarized_dark", SOLARIZED_DARK),
+    ("solarized_light", SOLARIZED_LIGHT),
+    ("high_contrast_white", HIGH_CONTRAST_WHITE),
+    ("high_contrast_dark", HIGH_CONTRAST_DARK),
+    ("gruvbox_dark", GRUVBOX_DARK),
     ("dracula", DRACULA),
     ("nord", NORD),
 ];
@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn icy_blue_rgb_unchanged() {
-        let t = theme_by_name("icy-blue").expect("icy-blue registered");
+        let t = theme_by_name("icy_blue").expect("icy_blue registered");
         assert_eq!(t.title, Color::Rgb(100, 200, 255));
         assert_eq!(t.heading, Color::Rgb(140, 230, 255));
         assert_eq!(t.body, Color::Rgb(220, 240, 255));
@@ -288,7 +288,7 @@ mod tests {
     fn set_active_swaps_palette() {
         set_active(theme_by_name("nord").unwrap());
         assert_eq!(active().title, Color::Rgb(136, 192, 208));
-        set_active(theme_by_name("icy-blue").unwrap());
+        set_active(theme_by_name("icy_blue").unwrap());
         assert_eq!(active().title, Color::Rgb(100, 200, 255));
     }
 }

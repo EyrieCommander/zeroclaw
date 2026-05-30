@@ -11,7 +11,7 @@ use super::chord::Chord;
 
 macro_rules! keyactions {
     (
-        $vis:vis enum $name:ident {
+        $vis:vis enum $name:ident ( $tag:literal ) {
             $( $variant:ident [ $($chord:expr),* $(,)? ] => $label:expr ),* $(,)?
         }
     ) => {
@@ -23,9 +23,40 @@ macro_rules! keyactions {
 
         #[allow(dead_code)]
         impl $name {
+            /// Stable per-enum tag namespacing serialized keys
+            /// (`"<tag>.<variant>"`).
+            pub const TAG: &'static str = $tag;
+
+            /// Every variant in declaration order — walked by the
+            /// keybind surface and override loader.
+            pub fn variants() -> &'static [$name] {
+                &[ $( $name::$variant ),* ]
+            }
+
             pub fn label(&self) -> &'static str {
                 match self {
                     $( $name::$variant => $label ),*
+                }
+            }
+
+            /// This variant's serialized (snake_case) name, via serde so
+            /// it can't drift from the wire form.
+            pub fn variant_name(&self) -> String {
+                serde_json::to_string(self)
+                    .ok()
+                    .map(|s| s.trim_matches('"').to_string())
+                    .unwrap_or_default()
+            }
+
+            /// Fully-qualified action key: `"<tag>.<variant>"`.
+            pub fn action_key(&self) -> String {
+                format!("{}.{}", Self::TAG, self.variant_name())
+            }
+
+            /// Compile-time default chords for this variant.
+            pub fn default_chords(&self) -> Vec<Chord> {
+                match self {
+                    $( $name::$variant => vec![ $( $chord ),* ] ),*
                 }
             }
 
@@ -36,7 +67,27 @@ macro_rules! keyactions {
             }
 
             pub fn from_chord(event: &crossterm::event::KeyEvent) -> Option<$name> {
-                super::match_chord(&Self::bindings(), event)
+                super::match_chord(&Self::resolved_bindings(), event)
+            }
+
+            /// Bindings after applying any runtime override for `TAG`;
+            /// falls back to the compile-time table when none is active.
+            /// Sparse: an un-overridden variant keeps its default chords.
+            pub fn resolved_bindings() -> Vec<(Chord, $name)> {
+                let Some(over) = super::overrides::lookup(Self::TAG) else {
+                    return Self::bindings();
+                };
+                let mut out: Vec<(Chord, $name)> = Vec::new();
+                for v in Self::variants() {
+                    let chords = match over.get(&v.variant_name()) {
+                        Some(cs) => cs.clone(),
+                        None => v.default_chords(),
+                    };
+                    for c in chords {
+                        out.push((c, *v));
+                    }
+                }
+                out
             }
         }
     };
@@ -45,7 +96,7 @@ macro_rules! keyactions {
 use crossterm::event::{KeyCode, KeyModifiers};
 
 keyactions! {
-    pub enum GlobalAction {
+    pub enum GlobalAction ("global") {
         Quit         [Chord::ctrl('c')]                                 => "quit",
         Help         [Chord::char('?')]                                 => "help",
         PaneNavLeft  [Chord::with(KeyCode::Left, KeyModifiers::CONTROL)]  => "prev pane",
@@ -57,7 +108,7 @@ keyactions! {
 }
 
 keyactions! {
-    pub enum ChatTabAction {
+    pub enum ChatTabAction ("chat") {
         ScrollUp                [] => "scroll up",
         ScrollDown              [] => "scroll down",
         PageUp                  [Chord::key(KeyCode::PageUp)] => "page up",
@@ -92,7 +143,7 @@ keyactions! {
 }
 
 keyactions! {
-    pub enum LogsTabAction {
+    pub enum LogsTabAction ("logs") {
         Up               [Chord::char('k'), Chord::key(KeyCode::Up)] => "prev event",
         Down             [Chord::char('j'), Chord::key(KeyCode::Down)] => "next event",
         PageUp           [Chord::key(KeyCode::PageUp)] => "page up",
@@ -117,7 +168,7 @@ keyactions! {
 }
 
 keyactions! {
-    pub enum DashboardTabAction {
+    pub enum DashboardTabAction ("dashboard") {
         Up               [Chord::char('k'), Chord::key(KeyCode::Up)] => "prev",
         Down             [Chord::char('j'), Chord::key(KeyCode::Down)] => "next",
         NextTab          [Chord::key(KeyCode::Tab), Chord::char('l'), Chord::key(KeyCode::Right)] => "next tab",
@@ -146,7 +197,7 @@ keyactions! {
 }
 
 keyactions! {
-    pub enum ConfigTabAction {
+    pub enum ConfigTabAction ("config_tab") {
         Up            [Chord::char('k'), Chord::key(KeyCode::Up)] => "prev",
         Down          [Chord::char('j'), Chord::key(KeyCode::Down)] => "next",
         Enter         [Chord::key(KeyCode::Enter)] => "open",
@@ -160,7 +211,7 @@ keyactions! {
 }
 
 keyactions! {
-    pub enum QuickstartTabAction {
+    pub enum QuickstartTabAction ("quickstart") {
         Up     [Chord::key(KeyCode::Up)] => "prev",
         Down   [Chord::key(KeyCode::Down)] => "next",
         Enter  [Chord::key(KeyCode::Enter)] => "open",
@@ -169,7 +220,7 @@ keyactions! {
 }
 
 keyactions! {
-    pub enum InputBarAction {
+    pub enum InputBarAction ("input_bar") {
         Submit             [Chord::key(KeyCode::Enter)] => "send",
         NewLine            [Chord::shift(KeyCode::Enter)] => "new line",
         CursorLeft         [Chord::key(KeyCode::Left)] => "cursor left",
@@ -190,14 +241,14 @@ keyactions! {
 }
 
 keyactions! {
-    pub enum ModalAction {
+    pub enum ModalAction ("modal") {
         Confirm [Chord::key(KeyCode::Enter), Chord::char('y'), Chord::char('Y')] => "confirm",
         Cancel  [Chord::key(KeyCode::Esc), Chord::char('n'), Chord::char('N')] => "cancel",
     }
 }
 
 keyactions! {
-    pub enum FileExplorerAction {
+    pub enum FileExplorerAction ("file_explorer") {
         Up           [Chord::char('k'), Chord::key(KeyCode::Up)] => "prev",
         Down         [Chord::char('j'), Chord::key(KeyCode::Down)] => "next",
         JumpStart    [Chord::char('g'), Chord::key(KeyCode::Home)] => "jump to start",
@@ -214,7 +265,7 @@ keyactions! {
 }
 
 keyactions! {
-    pub enum FileExplorerSearchAction {
+    pub enum FileExplorerSearchAction ("file_explorer_search") {
         Accept    [Chord::key(KeyCode::Enter)] => "accept",
         Cancel    [Chord::key(KeyCode::Esc)] => "cancel",
         Backspace [Chord::key(KeyCode::Backspace)] => "backspace",
@@ -222,7 +273,7 @@ keyactions! {
 }
 
 keyactions! {
-    pub enum SearchBoxAction {
+    pub enum SearchBoxAction ("search_box") {
         Accept    [Chord::key(KeyCode::Enter)] => "accept",
         Cancel    [Chord::key(KeyCode::Esc)] => "cancel",
         Backspace [Chord::key(KeyCode::Backspace)] => "backspace",
@@ -230,7 +281,7 @@ keyactions! {
 }
 
 keyactions! {
-    pub enum ConfigEditorAction {
+    pub enum ConfigEditorAction ("config_editor") {
         Confirm   [Chord::key(KeyCode::Enter)] => "confirm",
         Cancel    [Chord::key(KeyCode::Esc)] => "cancel",
         Save      [Chord::ctrl('s')] => "save",
@@ -241,7 +292,7 @@ keyactions! {
 }
 
 keyactions! {
-    pub enum QuickstartModalAction {
+    pub enum QuickstartModalAction ("quickstart_modal") {
         Confirm        [Chord::key(KeyCode::Enter)] => "confirm",
         Cancel         [Chord::key(KeyCode::Esc)] => "cancel",
         Up             [Chord::key(KeyCode::Up)] => "prev",

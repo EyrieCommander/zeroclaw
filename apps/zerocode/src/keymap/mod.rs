@@ -9,11 +9,37 @@
 
 mod actions;
 mod chord;
+pub mod overrides;
 
 pub use actions::*;
 pub use chord::Chord;
 
 use crossterm::event::KeyEvent;
+
+/// Bare chords reserved from user rebinding so structural controls
+/// (cancel/back, confirm, selection toggle) can't be stolen and
+/// soft-lock the TUI. The capture widget rejects these with the reason;
+/// presets validate against the same set.
+pub fn reserved_chords() -> &'static [(Chord, &'static str)] {
+    use crossterm::event::KeyCode;
+    use std::sync::OnceLock;
+    static CELL: OnceLock<Vec<(Chord, &'static str)>> = OnceLock::new();
+    CELL.get_or_init(|| {
+        vec![
+            (Chord::key(KeyCode::Esc), "reserved for cancel / back"),
+            (Chord::key(KeyCode::Enter), "reserved for confirm"),
+            (Chord::char(' '), "reserved for selection toggle"),
+        ]
+    })
+}
+
+/// Whether `chord` is a reserved bare control chord; returns the reason
+/// when it is, so the capture widget can explain the rejection.
+pub fn reserved_reason(chord: &Chord) -> Option<&'static str> {
+    reserved_chords()
+        .iter()
+        .find_map(|(c, reason)| (c == chord).then_some(*reason))
+}
 
 pub fn match_chord<A: Copy>(table: &[(Chord, A)], event: &KeyEvent) -> Option<A> {
     table

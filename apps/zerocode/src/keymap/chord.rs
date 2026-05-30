@@ -1,7 +1,11 @@
 //! Key chord type — a `KeyCode` + modifier mask that knows how to
 //! match incoming events and render itself per-OS.
 
+use std::fmt;
+use std::str::FromStr;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 /// A single keystroke pattern.
 ///
@@ -71,6 +75,144 @@ impl Chord {
         } else {
             format!("{}+{}", parts.join("+"), key)
         }
+    }
+
+    /// OS-independent canonical wire form used for persistence:
+    /// lowercase, `+`-joined modifiers then key, e.g. `ctrl+k`,
+    /// `shift+up`, `ctrl+shift+down`, `f5`, `pageup`. Never uses the
+    /// darwin glyphs — a config written on macOS loads identically on
+    /// Linux. Round-trips with [`Chord::from_str`].
+    pub fn wire(&self) -> String {
+        let mut out = String::new();
+        // Modifier tokens walk the canonical registry so render and
+        // parse share one source of truth — no string-literal arms.
+        for (token, flag) in MOD_TOKENS {
+            if self.modifiers.contains(*flag) {
+                out.push_str(token);
+                out.push('+');
+            }
+        }
+        out.push_str(&keycode_wire(&self.code));
+        out
+    }
+}
+
+/// Canonical modifier token registry. Walked by both `wire()` (render)
+/// and `from_str` (parse), so the two directions can never drift.
+/// `super` is accepted on parse but never emitted on non-darwin; the
+/// Ctrl→Super normalisation stays purely at match time.
+const MOD_TOKENS: &[(&str, KeyModifiers)] = &[
+    ("ctrl", KeyModifiers::CONTROL),
+    ("alt", KeyModifiers::ALT),
+    ("shift", KeyModifiers::SHIFT),
+    ("super", KeyModifiers::SUPER),
+];
+
+/// Named (non-char, non-`F<n>`) key token registry. Walked by both
+/// `keycode_wire` and the key-token parse so they stay reversible.
+const KEY_TOKENS: &[(&str, KeyCode)] = &[
+    ("enter", KeyCode::Enter),
+    ("esc", KeyCode::Esc),
+    ("tab", KeyCode::Tab),
+    ("backtab", KeyCode::BackTab),
+    ("backspace", KeyCode::Backspace),
+    ("space", KeyCode::Char(' ')),
+    ("left", KeyCode::Left),
+    ("right", KeyCode::Right),
+    ("up", KeyCode::Up),
+    ("down", KeyCode::Down),
+    ("home", KeyCode::Home),
+    ("end", KeyCode::End),
+    ("pageup", KeyCode::PageUp),
+    ("pagedown", KeyCode::PageDown),
+    ("delete", KeyCode::Delete),
+    ("insert", KeyCode::Insert),
+];
+
+/// Render a `KeyCode` to its canonical wire token. Matching on the
+/// `KeyCode` enum (not on strings) is the legitimate direction; the
+/// reverse (`&str` -> `KeyCode`) walks `KEY_TOKENS`.
+fn keycode_wire(code: &KeyCode) -> String {
+    if let KeyCode::Char(c) = code {
+        if *c == ' ' {
+            return "space".to_string();
+        }
+        return c.to_lowercase().to_string();
+    }
+    if let KeyCode::F(n) = code {
+        return format!("f{n}");
+    }
+    KEY_TOKENS
+        .iter()
+        .find_map(|(tok, kc)| (kc == code).then(|| (*tok).to_string()))
+        .unwrap_or_else(|| format!("{code:?}").to_lowercase())
+}
+
+/// Parse a single key token (no modifiers) into a `KeyCode`. Resolves
+/// named keys through `KEY_TOKENS`, single chars to `Char`, and `f<N>`
+/// to a function key — structurally, never via string-literal arms.
+fn parse_keycode(token: &str) -> Result<KeyCode, ChordParseError> {
+    if let Some((_, kc)) = KEY_TOKENS.iter().find(|(t, _)| *t == token) {
+        return Ok(*kc);
+    }
+    if let Some(rest) = token.strip_prefix('f') {
+        if let Ok(n) = rest.parse::<u8>() {
+            return Ok(KeyCode::F(n));
+        }
+    }
+    let mut chars = token.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => Ok(KeyCode::Char(c)),
+        _ => Err(ChordParseError(token.to_string())),
+    }
+}
+
+/// Error for an unparseable chord wire-string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChordParseError(String);
+
+impl fmt::Display for ChordParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid chord '{}'", self.0)
+    }
+}
+
+impl std::error::Error for ChordParseError {}
+
+impl FromStr for Chord {
+    type Err = ChordParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let lower = s.trim().to_lowercase();
+        if lower.is_empty() {
+            return Err(ChordParseError(s.to_string()));
+        }
+        let mut segments: Vec<&str> = lower.split('+').collect();
+        // Last segment is the key; everything before is a modifier.
+        let key_token = segments.pop().ok_or_else(|| ChordParseError(s.to_string()))?;
+        let mut modifiers = KeyModifiers::NONE;
+        for seg in segments {
+            let flag = MOD_TOKENS
+                .iter()
+                .find_map(|(t, f)| (*t == seg).then_some(*f))
+                .ok_or_else(|| ChordParseError(s.to_string()))?;
+            modifiers.insert(flag);
+        }
+        let code = parse_keycode(key_token)?;
+        Ok(Chord { code, modifiers })
+    }
+}
+
+impl Serialize for Chord {
+    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.serialize_str(&self.wire())
+    }
+}
+
+impl<'de> Deserialize<'de> for Chord {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(de)?;
+        Chord::from_str(&s).map_err(de::Error::custom)
     }
 }
 
@@ -167,5 +309,64 @@ mod tests {
     fn display_arrow_keys() {
         assert_eq!(Chord::key(KeyCode::Up).display(), "↑");
         assert_eq!(Chord::key(KeyCode::Left).display(), "←");
+    }
+
+    #[test]
+    fn wire_round_trips_bare_letter() {
+        let c = Chord::char('k');
+        assert_eq!(c.wire(), "k");
+        assert_eq!(Chord::from_str("k").unwrap(), c);
+    }
+
+    #[test]
+    fn wire_round_trips_modifiers() {
+        for c in [
+            Chord::ctrl('k'),
+            Chord::shift(KeyCode::Up),
+            Chord::with(KeyCode::Down, KeyModifiers::CONTROL.union(KeyModifiers::SHIFT)),
+            Chord::with(KeyCode::Enter, KeyModifiers::ALT),
+        ] {
+            let wire = c.wire();
+            assert_eq!(Chord::from_str(&wire).unwrap(), c, "round-trip {wire}");
+        }
+    }
+
+    #[test]
+    fn wire_round_trips_named_and_function_keys() {
+        for c in [
+            Chord::key(KeyCode::PageUp),
+            Chord::key(KeyCode::Home),
+            Chord::key(KeyCode::F(5)),
+            Chord::key(KeyCode::Esc),
+            Chord::key(KeyCode::Enter),
+            Chord::char(' '),
+        ] {
+            let wire = c.wire();
+            assert_eq!(Chord::from_str(&wire).unwrap(), c, "round-trip {wire}");
+        }
+    }
+
+    #[test]
+    fn wire_is_os_independent_lowercase() {
+        // Never emits the darwin glyphs — same on every platform.
+        assert_eq!(Chord::ctrl('k').wire(), "ctrl+k");
+        assert_eq!(Chord::key(KeyCode::PageUp).wire(), "pageup");
+        assert_eq!(Chord::char(' ').wire(), "space");
+    }
+
+    #[test]
+    fn parse_rejects_unknown_modifier_and_key() {
+        assert!(Chord::from_str("hyper+k").is_err());
+        assert!(Chord::from_str("ctrl+nope").is_err());
+        assert!(Chord::from_str("").is_err());
+    }
+
+    #[test]
+    fn serde_round_trips_through_json() {
+        let c = Chord::ctrl('s');
+        let json = serde_json::to_string(&c).unwrap();
+        assert_eq!(json, "\"ctrl+s\"");
+        let back: Chord = serde_json::from_str(&json).unwrap();
+        assert_eq!(c, back);
     }
 }

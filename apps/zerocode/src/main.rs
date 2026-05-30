@@ -138,17 +138,30 @@ async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     let local_config_dir = client::resolve_config_dir(cli.config_dir.as_deref())?;
-    let active_theme = match config::ensure_and_load(&local_config_dir) {
-        Ok(cfg) => cfg.resolve_theme().unwrap_or_else(|e| {
-            eprintln!("zerocode: {e:#}");
-            std::process::exit(1);
-        }),
+    let loaded_config = match config::ensure_and_load(&local_config_dir) {
+        Ok(cfg) => cfg,
         Err(e) => {
-            eprintln!("zerocode: config load failed ({e:#}); starting with default theme");
-            theme::default_theme()
+            eprintln!("zerocode: config load failed ({e:#}); starting with defaults");
+            config::ZerocodeConfig::default()
         }
     };
+    let active_theme = loaded_config.resolve_theme().unwrap_or_else(|e| {
+        eprintln!("zerocode: {e:#}");
+        std::process::exit(1);
+    });
     theme::set_active(active_theme);
+
+    // Apply persisted keybinding overrides into the keymap. A bad table
+    // fails loud (same posture as an unknown theme) rather than silently
+    // running stale bindings.
+    match loaded_config.resolve_keybindings() {
+        Ok(table) if !table.is_empty() => keymap::overrides::set_active(table),
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("zerocode: invalid keybindings: {e:#}");
+            std::process::exit(1);
+        }
+    }
 
     let target = if let Some(url) = cli.connect {
         ConnectTarget::Wss {
