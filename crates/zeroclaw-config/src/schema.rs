@@ -8861,7 +8861,7 @@ fn default_log_tool_io() -> String {
 }
 
 fn default_log_tool_io_truncate_bytes() -> usize {
-    8192
+    40960
 }
 
 // ── Hooks ────────────────────────────────────────────────────────
@@ -16388,7 +16388,7 @@ enabled = true
         assert_eq!(o.log_persistence_path, "state/runtime-trace.jsonl");
         assert_eq!(o.log_persistence_max_entries, 200);
         assert_eq!(o.log_tool_io, "redacted");
-        assert_eq!(o.log_tool_io_truncate_bytes, 8192);
+        assert_eq!(o.log_tool_io_truncate_bytes, 40960);
         assert!(o.log_tool_io_denylist.is_empty());
     }
 
