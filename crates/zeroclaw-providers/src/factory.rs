@@ -193,6 +193,13 @@ pub fn dispatch_family_factory(
     macro_rules! emit_dispatch {
         ($(($field:ident, $type_str:literal, $cfg_ty:ty)),+ $(,)?) => {
             match family {
+                "openai-compatible" | "openai_compatible" => {
+                    let default_cfg = zeroclaw_config::schema::ModelProviderConfig::default();
+                    let cfg = config
+                        .and_then(|c| c.providers.models.find("openai", alias))
+                        .unwrap_or(&default_cfg);
+                    cfg.create_provider(alias, key, api_url, opts)
+                }
                 $(
                     $type_str => {
                         let default_cfg: $cfg_ty;
@@ -1174,9 +1181,68 @@ impl FamilyProviderFactory for CustomModelProviderConfig {
     }
 }
 
+impl FamilyProviderFactory for zeroclaw_config::schema::ModelProviderConfig {
+    fn create_provider(
+        &self,
+        alias: &str,
+        key: Option<&str>,
+        api_url: Option<&str>,
+        opts: &ModelProviderRuntimeOptions,
+    ) -> Result<Box<dyn ModelProvider>> {
+        let base_url = api_url.ok_or_else(|| {
+            anyhow::Error::msg(
+                "OpenAI-compatible model_provider requires `uri`: set \
+                 `[model_providers.<family>.<alias>] uri = \"https://your-api.com\"` in config.toml.",
+            )
+        })?;
+        let mut p = OpenAiCompatibleModelProvider::new_with_vision(
+            alias,
+            "OpenAI Compatible",
+            base_url,
+            key,
+            AuthStyle::Bearer,
+            true,
+        );
+        if opts.merge_system_into_user {
+            p = p.with_merge_system_into_user();
+        }
+        Ok(apply_compat_options(p, opts))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeroclaw_config::schema::ModelProviderConfig;
+
+    #[test]
+    fn openai_factory_routes_to_codex_when_requires_openai_auth_true() {
+        let cfg = OpenAIModelProviderConfig {
+            base: ModelProviderConfig {
+                requires_openai_auth: true,
+                ..Default::default()
+            },
+        };
+        let provider = cfg
+            .create_provider("test", None, None, &ModelProviderRuntimeOptions::default())
+            .unwrap();
+        // OpenAiCodexModelProvider reports native_tool_calling; standard OpenAiModelProvider does not
+        assert!(provider.capabilities().native_tool_calling);
+    }
+
+    #[test]
+    fn openai_factory_routes_to_standard_when_requires_openai_auth_false() {
+        let cfg = OpenAIModelProviderConfig {
+            base: ModelProviderConfig {
+                requires_openai_auth: false,
+                ..Default::default()
+            },
+        };
+        let provider = cfg
+            .create_provider("test", None, None, &ModelProviderRuntimeOptions::default())
+            .unwrap();
+        assert!(!provider.capabilities().native_tool_calling);
+    }
 
     #[test]
     fn ollama_factory_uses_no_credential_when_key_absent() {
