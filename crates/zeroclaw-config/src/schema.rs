@@ -3101,6 +3101,18 @@ impl Config {
         self.runtime_profiles.get(profile_alias)
     }
 
+    /// Resolve an aliased-agent config with its selected runtime profile
+    /// applied. This preserves `agent()` as the raw config lookup while
+    /// runtime call sites can consume one effective set of loop tunables.
+    #[must_use]
+    pub fn effective_agent_config(&self, agent_alias: &str) -> Option<AliasedAgentConfig> {
+        let mut agent = self.agents.get(agent_alias)?.clone();
+        if let Some(runtime_profile) = self.runtime_profiles.get(agent.runtime_profile.trim()) {
+            runtime_profile.apply_to_agent_config(&mut agent);
+        }
+        Some(agent)
+    }
+
     /// Resolve an agent's `model_provider` reference (`"<type>.<alias>"`) to
     /// its concrete `ModelProviderConfig` entry. Returns `None` when the
     /// agent doesn't exist, the reference is unparseable, or the
@@ -9010,6 +9022,8 @@ pub struct RuntimeProfileConfig {
     pub parallel_tools: Option<bool>,
     /// Tool dispatch strategy (e.g. `"auto"`). `None` inherits.
     pub tool_dispatcher: Option<String>,
+    /// When true, only native provider tool calls are executable. `None` inherits.
+    pub strict_tool_parsing: Option<bool>,
     /// Tools exempt from within-turn dedup check.
     pub tool_call_dedup_exempt: Vec<String>,
     /// Maximum characters for the assembled system prompt. `None` inherits.
@@ -9038,11 +9052,61 @@ impl Default for RuntimeProfileConfig {
             compact_context: None,
             parallel_tools: None,
             tool_dispatcher: None,
+            strict_tool_parsing: None,
             tool_call_dedup_exempt: Vec::new(),
             max_system_prompt_chars: None,
             context_aware_tools: None,
             max_tool_result_chars: None,
             keep_tool_context_turns: None,
+        }
+    }
+}
+
+impl RuntimeProfileConfig {
+    /// Apply runtime-profile tunables to an agent config clone.
+    ///
+    /// `max_tool_iterations = 0` and `None` option values inherit the agent
+    /// config. Explicit `Some(0)` values keep the corresponding agent-field
+    /// meaning. Dedup exemptions are additive because an empty profile list is
+    /// also the serde default, so it cannot mean "replace with empty."
+    pub fn apply_to_agent_config(&self, agent: &mut AliasedAgentConfig) {
+        if self.max_tool_iterations > 0 {
+            agent.max_tool_iterations = self.max_tool_iterations;
+        }
+        if let Some(max_history_messages) = self.max_history_messages {
+            agent.max_history_messages = max_history_messages;
+        }
+        if let Some(max_context_tokens) = self.max_context_tokens {
+            agent.max_context_tokens = max_context_tokens;
+        }
+        if let Some(compact_context) = self.compact_context {
+            agent.compact_context = compact_context;
+        }
+        if let Some(parallel_tools) = self.parallel_tools {
+            agent.parallel_tools = parallel_tools;
+        }
+        if let Some(tool_dispatcher) = &self.tool_dispatcher {
+            agent.tool_dispatcher = tool_dispatcher.clone();
+        }
+        if let Some(strict_tool_parsing) = self.strict_tool_parsing {
+            agent.strict_tool_parsing = strict_tool_parsing;
+        }
+        for tool in &self.tool_call_dedup_exempt {
+            if !agent.tool_call_dedup_exempt.contains(tool) {
+                agent.tool_call_dedup_exempt.push(tool.clone());
+            }
+        }
+        if let Some(max_system_prompt_chars) = self.max_system_prompt_chars {
+            agent.max_system_prompt_chars = max_system_prompt_chars;
+        }
+        if let Some(context_aware_tools) = self.context_aware_tools {
+            agent.context_aware_tools = context_aware_tools;
+        }
+        if let Some(max_tool_result_chars) = self.max_tool_result_chars {
+            agent.max_tool_result_chars = max_tool_result_chars;
+        }
+        if let Some(keep_tool_context_turns) = self.keep_tool_context_turns {
+            agent.keep_tool_context_turns = keep_tool_context_turns;
         }
     }
 }
@@ -16821,6 +16885,101 @@ strict_tool_parsing = true
         assert!(agent.parallel_tools);
         assert_eq!(agent.tool_dispatcher, "xml");
         assert!(agent.strict_tool_parsing);
+    }
+
+    #[test]
+    async fn runtime_profile_config_deserializes_runtime_tunables() {
+        let raw = r#"
+default_temperature = 0.7
+
+[runtime_profiles.local]
+compact_context = true
+max_tool_iterations = 3
+max_history_messages = 12
+max_context_tokens = 4096
+parallel_tools = true
+tool_dispatcher = "native"
+strict_tool_parsing = true
+tool_call_dedup_exempt = ["model_routing_config"]
+max_system_prompt_chars = 8000
+context_aware_tools = true
+max_tool_result_chars = 1000
+keep_tool_context_turns = 1
+"#;
+        let parsed = parse_test_config(raw);
+        let profile = parsed
+            .runtime_profiles
+            .get("local")
+            .expect("[runtime_profiles.local] parses into runtime_profiles map");
+        assert_eq!(profile.compact_context, Some(true));
+        assert_eq!(profile.max_tool_iterations, 3);
+        assert_eq!(profile.max_history_messages, Some(12));
+        assert_eq!(profile.max_context_tokens, Some(4096));
+        assert_eq!(profile.parallel_tools, Some(true));
+        assert_eq!(profile.tool_dispatcher.as_deref(), Some("native"));
+        assert_eq!(profile.strict_tool_parsing, Some(true));
+        assert_eq!(
+            profile.tool_call_dedup_exempt,
+            vec!["model_routing_config".to_string()]
+        );
+        assert_eq!(profile.max_system_prompt_chars, Some(8000));
+        assert_eq!(profile.context_aware_tools, Some(true));
+        assert_eq!(profile.max_tool_result_chars, Some(1000));
+        assert_eq!(profile.keep_tool_context_turns, Some(1));
+    }
+
+    #[test]
+    async fn effective_agent_config_applies_runtime_profile_tunables() {
+        let raw = r#"
+default_temperature = 0.7
+
+[agents.default]
+runtime_profile = "local"
+compact_context = false
+max_tool_iterations = 20
+max_history_messages = 80
+tool_call_dedup_exempt = ["agent_only"]
+
+[runtime_profiles.local]
+compact_context = true
+max_tool_iterations = 3
+max_history_messages = 12
+max_context_tokens = 4096
+parallel_tools = true
+tool_dispatcher = "native"
+strict_tool_parsing = true
+tool_call_dedup_exempt = ["profile_only", "agent_only"]
+max_system_prompt_chars = 8000
+context_aware_tools = true
+max_tool_result_chars = 1000
+keep_tool_context_turns = 1
+"#;
+        let parsed = parse_test_config(raw);
+        let raw_agent = parsed
+            .agent("default")
+            .expect("[agents.default] parses into agents map");
+        assert!(!raw_agent.compact_context);
+        assert_eq!(raw_agent.max_tool_iterations, 20);
+        assert!(!raw_agent.strict_tool_parsing);
+
+        let effective = parsed
+            .effective_agent_config("default")
+            .expect("effective agent config resolves");
+        assert!(effective.compact_context);
+        assert_eq!(effective.max_tool_iterations, 3);
+        assert_eq!(effective.max_history_messages, 12);
+        assert_eq!(effective.max_context_tokens, 4096);
+        assert!(effective.parallel_tools);
+        assert_eq!(effective.tool_dispatcher, "native");
+        assert!(effective.strict_tool_parsing);
+        assert_eq!(effective.max_system_prompt_chars, 8000);
+        assert!(effective.context_aware_tools);
+        assert_eq!(effective.max_tool_result_chars, 1000);
+        assert_eq!(effective.keep_tool_context_turns, 1);
+        assert_eq!(
+            effective.tool_call_dedup_exempt,
+            vec!["agent_only".to_string(), "profile_only".to_string()]
+        );
     }
 
     #[test]

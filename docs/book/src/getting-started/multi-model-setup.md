@@ -82,6 +82,13 @@ max_tool_iterations  = 50
 max_actions_per_hour = 200
 ```
 
+Runtime profiles apply to the agent runtime after an agent selects them with
+`runtime_profile = "<alias>"`. Use them for reusable loop and context tuning
+such as `max_tool_iterations`, `max_history_messages`,
+`max_context_tokens`, `compact_context`, `strict_tool_parsing`, and
+`max_tool_result_chars`. Keep model identity on `model_provider` and
+authorization or sandbox choices on `risk_profile`.
+
 Each channel binds to one agent at a time. To move a channel to a different agent, edit the `channels = [...]` list on the agent that should pick it up — `Config::validate()` makes sure references resolve at startup.
 
 ## Cross-vendor reliability — use OpenRouter

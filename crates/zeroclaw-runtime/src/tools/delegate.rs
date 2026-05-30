@@ -235,6 +235,18 @@ impl DelegateTool {
             .map(|cfg| cfg.agent_workspace_dir(agent_alias))
     }
 
+    fn effective_agent_config(&self, agent_alias: &str) -> Option<AliasedAgentConfig> {
+        if let Some(config) = self.root_config.as_ref() {
+            return config.effective_agent_config(agent_alias);
+        }
+
+        let mut agent = self.agents.get(agent_alias)?.clone();
+        if let Some(profile) = self.runtime_profiles.get(agent.runtime_profile.trim()) {
+            profile.apply_to_agent_config(&mut agent);
+        }
+        Some(agent)
+    }
+
     /// Attach a cancellation token for cascade control of background tasks.
     /// When the token is cancelled, all background sub-agents are aborted.
     pub fn with_cancellation_token(mut self, token: CancellationToken) -> Self {
@@ -686,7 +698,7 @@ impl DelegateTool {
             .unwrap_or("");
 
         // Look up agent config
-        let agent_config = match self.agents.get(agent_name) {
+        let agent_config = match self.effective_agent_config(agent_name) {
             Some(cfg) => cfg,
             None => {
                 let available: Vec<&str> =
@@ -776,7 +788,7 @@ impl DelegateTool {
             return self
                 .execute_agentic(
                     agent_name,
-                    agent_config,
+                    &agent_config,
                     &provider_type,
                     &model,
                     &*model_provider,
@@ -789,7 +801,7 @@ impl DelegateTool {
         // Build enriched system prompt for non-agentic sub-agent.
         let enriched_system_prompt = self.build_enriched_system_prompt(
             agent_name,
-            agent_config,
+            &agent_config,
             &model,
             &[],
             &self.workspace_dir,
@@ -854,8 +866,8 @@ impl DelegateTool {
         args: &serde_json::Value,
     ) -> anyhow::Result<ToolResult> {
         // Validate agent exists and check depth/security before spawning
-        let agent_config = match self.agents.get(agent_name) {
-            Some(cfg) => cfg.clone(),
+        let agent_config = match self.effective_agent_config(agent_name) {
+            Some(cfg) => cfg,
             None => {
                 let available: Vec<&str> =
                     self.agents.keys().map(|s: &String| s.as_str()).collect();
@@ -1592,7 +1604,11 @@ impl DelegateTool {
             });
         }
 
-        let max_iterations = self.resolve_max_iterations(&agent_config.runtime_profile);
+        let max_iterations = if agent_config.max_tool_iterations > 0 {
+            agent_config.max_tool_iterations
+        } else {
+            self.resolve_max_iterations(&agent_config.runtime_profile)
+        };
 
         // Build enriched system prompt with tools, skills, workspace, datetime context.
         let enriched_system_prompt = self.build_enriched_system_prompt(
@@ -1646,13 +1662,13 @@ impl DelegateTool {
                 None,
                 None,
                 &[],
-                &[],
+                &agent_config.tool_call_dedup_exempt,
                 None,
                 None,
                 &zeroclaw_config::schema::PacingConfig::default(),
                 agent_config.strict_tool_parsing,
-                0,    // max_tool_result_chars: inherit from parent config in future
-                0,    // context_token_budget: 0 = disabled for subagents
+                agent_config.max_tool_result_chars,
+                agent_config.max_context_tokens,
                 None, // shared_budget: TODO thread from parent in future
                 None, // channel: delegate subagents don't support approval
                 receipt_generator,
@@ -1756,7 +1772,7 @@ mod tests {
     use zeroclaw_config::schema::{
         DEFAULT_DELEGATE_AGENTIC_TIMEOUT_SECS, DEFAULT_DELEGATE_TIMEOUT_SECS,
     };
-    use zeroclaw_providers::{ChatRequest, ChatResponse, ToolCall};
+    use zeroclaw_providers::{ChatMessage, ChatRequest, ChatResponse, ToolCall};
 
     zeroclaw_api::mock_tool_attribution!(EchoTool, FakeMcpTool);
 
@@ -1902,6 +1918,71 @@ mod tests {
         }
         fn alias(&self) -> &str {
             "OneToolThenFinalModelProvider"
+        }
+    }
+
+    struct RecordingToolResultModelProvider {
+        requests: Arc<std::sync::Mutex<Vec<Vec<ChatMessage>>>>,
+        value: String,
+    }
+
+    #[async_trait]
+    impl ModelProvider for RecordingToolResultModelProvider {
+        async fn chat_with_system(
+            &self,
+            _system_prompt: Option<&str>,
+            _message: &str,
+            _model: &str,
+            _temperature: Option<f64>,
+        ) -> anyhow::Result<String> {
+            Ok("unused".to_string())
+        }
+
+        async fn chat(
+            &self,
+            request: ChatRequest<'_>,
+            _model: &str,
+            _temperature: Option<f64>,
+        ) -> anyhow::Result<ChatResponse> {
+            self.requests
+                .lock()
+                .expect("requests lock should be valid")
+                .push(request.messages.to_vec());
+            let has_tool_result = request.messages.iter().any(|message| {
+                message.role == "tool" || message.content.starts_with("[Tool results]")
+            });
+            if has_tool_result {
+                Ok(ChatResponse {
+                    text: Some("done".to_string()),
+                    tool_calls: Vec::new(),
+                    usage: None,
+                    reasoning_content: None,
+                })
+            } else {
+                Ok(ChatResponse {
+                    text: None,
+                    tool_calls: vec![ToolCall {
+                        id: "call_1".to_string(),
+                        name: "echo_tool".to_string(),
+                        arguments: format!(r#"{{"value":"{}"}}"#, self.value),
+                        extra_content: None,
+                    }],
+                    usage: None,
+                    reasoning_content: None,
+                })
+            }
+        }
+    }
+    impl ::zeroclaw_api::attribution::Attributable for RecordingToolResultModelProvider {
+        fn role(&self) -> ::zeroclaw_api::attribution::Role {
+            ::zeroclaw_api::attribution::Role::Provider(
+                ::zeroclaw_api::attribution::ProviderKind::Model(
+                    ::zeroclaw_api::attribution::ModelProviderKind::Custom,
+                ),
+            )
+        }
+        fn alias(&self) -> &str {
+            "RecordingToolResultModelProvider"
         }
     }
 
@@ -2077,6 +2158,40 @@ mod tests {
             },
         );
         profiles
+    }
+
+    #[test]
+    fn effective_agent_config_applies_attached_runtime_profile_without_root_config() {
+        let mut agents = HashMap::new();
+        agents.insert(
+            "agentic".to_string(),
+            AliasedAgentConfig {
+                runtime_profile: "agentic_test".to_string(),
+                max_tool_iterations: 20,
+                strict_tool_parsing: false,
+                ..agentic_agent_config()
+            },
+        );
+        let mut profiles = HashMap::new();
+        profiles.insert(
+            "agentic_test".to_string(),
+            RuntimeProfileConfig {
+                agentic: true,
+                max_tool_iterations: 2,
+                strict_tool_parsing: Some(true),
+                max_tool_result_chars: Some(1234),
+                ..Default::default()
+            },
+        );
+
+        let tool = DelegateTool::new(agents, None, test_security()).with_runtime_profiles(profiles);
+        let effective = tool
+            .effective_agent_config("agentic")
+            .expect("attached runtime profile resolves");
+
+        assert_eq!(effective.max_tool_iterations, 2);
+        assert!(effective.strict_tool_parsing);
+        assert_eq!(effective.max_tool_result_chars, 1234);
     }
 
     #[test]
@@ -2532,17 +2647,21 @@ mod tests {
 
     #[tokio::test]
     async fn execute_agentic_respects_max_iterations() {
-        let config = agentic_agent_config();
-        let tool = DelegateTool::new(HashMap::new(), None, test_security())
+        let mut agents = HashMap::new();
+        agents.insert("agentic".to_string(), agentic_agent_config());
+        let tool = DelegateTool::new(agents, None, test_security())
             .with_runtime_profiles(agentic_runtime_profiles(2))
             .with_risk_profiles(agentic_risk_profiles(vec!["echo_tool".to_string()]))
             .with_parent_tools(Arc::new(RwLock::new(vec![Arc::new(EchoTool)])));
+        let agent_config = tool
+            .effective_agent_config("agentic")
+            .expect("runtime profile applies to delegate agent");
 
         let model_provider = InfiniteToolCallModelProvider;
         let result = tool
             .execute_agentic(
                 "agentic",
-                &config,
+                &agent_config,
                 "openrouter",
                 "model-test",
                 &model_provider,
@@ -2559,6 +2678,70 @@ mod tests {
                 .as_deref()
                 .unwrap_or("")
                 .contains("maximum tool iterations (2)")
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_agentic_forwards_profile_applied_tool_result_limit() {
+        let mut agents = HashMap::new();
+        agents.insert("agentic".to_string(), agentic_agent_config());
+        let mut runtime_profiles = HashMap::new();
+        runtime_profiles.insert(
+            "agentic_test".to_string(),
+            RuntimeProfileConfig {
+                agentic: true,
+                max_tool_iterations: 4,
+                max_tool_result_chars: Some(80),
+                ..Default::default()
+            },
+        );
+        let tool = DelegateTool::new(agents, None, test_security())
+            .with_runtime_profiles(runtime_profiles)
+            .with_risk_profiles(agentic_risk_profiles(vec!["echo_tool".to_string()]))
+            .with_parent_tools(Arc::new(RwLock::new(vec![Arc::new(EchoTool)])));
+        let agent_config = tool
+            .effective_agent_config("agentic")
+            .expect("runtime profile applies to delegate agent");
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let model_provider = RecordingToolResultModelProvider {
+            requests: Arc::clone(&requests),
+            value: "x".repeat(200),
+        };
+
+        let result = tool
+            .execute_agentic(
+                "agentic",
+                &agent_config,
+                "openrouter",
+                "model-test",
+                &model_provider,
+                "run",
+                Some(0.2),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            result.success,
+            "delegate sub-loop should complete: {result:?}"
+        );
+        let requests = requests.lock().expect("requests lock should be valid");
+        let replay = requests
+            .iter()
+            .find(|messages| {
+                messages.iter().any(|message| {
+                    message.role == "tool" || message.content.starts_with("[Tool results]")
+                })
+            })
+            .expect("second request should include the tool result");
+        let tool_result = replay
+            .iter()
+            .find(|message| message.role == "tool" || message.content.starts_with("[Tool results]"))
+            .expect("tool result message should be present");
+        assert!(
+            tool_result.content.contains("[... "),
+            "delegate tool result should honor profile-applied max_tool_result_chars, got: {}",
+            tool_result.content
         );
     }
 

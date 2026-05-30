@@ -4048,9 +4048,7 @@ async fn process_channel_message_body(
                         ctx.activated_tools.as_ref(),
                         Some(model_switch_callback.clone()),
                         &ctx.pacing,
-                        ctx.prompt_config
-                            .agent(ctx.agent_alias.as_str())
-                            .is_some_and(|agent| agent.strict_tool_parsing),
+                        ctx.agent_cfg.strict_tool_parsing,
                         ctx.max_tool_result_chars,
                         ctx.context_token_budget,
                         None, // shared_budget
@@ -7468,9 +7466,8 @@ pub async fn start_channels(
 
     for agent_alias in &enabled_agents {
         let agent = config
-            .agent(agent_alias)
-            .with_context(|| format!("agents.{agent_alias} is not configured"))?
-            .clone();
+            .effective_agent_config(agent_alias)
+            .with_context(|| format!("agents.{agent_alias} is not configured"))?;
         let risk_profile = config
             .risk_profile_for_agent(agent_alias)
             .with_context(|| {

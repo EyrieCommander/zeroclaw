@@ -1133,6 +1133,8 @@ pub async fn agent_turn(
     activated_tools: Option<&std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     model_switch_callback: Option<ModelSwitchCallback>,
     strict_tool_parsing: bool,
+    max_tool_result_chars: usize,
+    context_token_budget: usize,
     channel: Option<&dyn Channel>,
 ) -> Result<String> {
     run_tool_call_loop(
@@ -1158,8 +1160,8 @@ pub async fn agent_turn(
         model_switch_callback,
         &zeroclaw_config::schema::PacingConfig::default(),
         strict_tool_parsing,
-        0,    // max_tool_result_chars: 0 = disabled (legacy callers)
-        0,    // context_token_budget: 0 = disabled (legacy callers)
+        max_tool_result_chars,
+        context_token_budget,
         None, // shared_budget: no shared budget for legacy callers
         channel,
         None, // receipt_generator
@@ -2905,9 +2907,8 @@ pub async fn run(
 ) -> Result<String> {
     use ::zeroclaw_log::Instrument;
     let agent = config
-        .agent(agent_alias)
-        .with_context(|| format!("agents.{agent_alias} is not configured"))?
-        .clone();
+        .effective_agent_config(agent_alias)
+        .with_context(|| format!("agents.{agent_alias} is not configured"))?;
     crate::agent::thinking::validate_thinking_config(&agent.thinking);
     let risk_profile = config
         .risk_profile_for_agent(agent_alias)
@@ -4271,9 +4272,8 @@ pub async fn process_message(
 ) -> Result<String> {
     use ::zeroclaw_log::Instrument;
     let agent = config
-        .agent(agent_alias)
-        .with_context(|| format!("agents.{agent_alias} is not configured"))?
-        .clone();
+        .effective_agent_config(agent_alias)
+        .with_context(|| format!("agents.{agent_alias} is not configured"))?;
     crate::agent::thinking::validate_thinking_config(&agent.thinking);
     let risk_profile = config
         .risk_profile_for_agent(agent_alias)
@@ -4776,6 +4776,8 @@ pub async fn process_message(
                     activated_handle_pm.as_ref(),
                     None,
                     agent.strict_tool_parsing,
+                    agent.max_tool_result_chars,
+                    agent.max_context_tokens,
                     None, // channel: process_message path has no channel ref
                 ),
             )
@@ -9806,6 +9808,8 @@ This is an example, not an invocation."#;
                 Some(&activated),
                 None,
                 false,
+                0,
+                0,
                 None, // channel
             )
             .await
@@ -9871,6 +9875,8 @@ This is an example, not an invocation."#;
                 Some(&activated),
                 None,
                 true,
+                0,
+                0,
                 None, // channel
             )
             .await
@@ -9884,6 +9890,89 @@ This is an example, not an invocation."#;
             assert!(
                 !result.contains("private reasoning"),
                 "strict parser should still strip think tags from final text, got: {result}"
+            );
+        });
+    }
+
+    #[test]
+    fn agent_turn_forwards_max_tool_result_chars_to_tool_loop() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should initialize");
+
+        runtime.block_on(async {
+            let long_value = "x".repeat(200);
+            let first_response = format!(
+                r#"<tool_call>
+{{"name":"pixel__get_api_health","arguments":{{"value":"{long_value}"}}}}
+</tool_call>"#
+            );
+            let model_provider = ScriptedModelProvider {
+                responses: Arc::new(Mutex::new(VecDeque::from([
+                    ChatResponse {
+                        text: Some(first_response),
+                        tool_calls: Vec::new(),
+                        usage: None,
+                        reasoning_content: None,
+                    },
+                    ChatResponse {
+                        text: Some("done".to_string()),
+                        tool_calls: Vec::new(),
+                        usage: None,
+                        reasoning_content: None,
+                    },
+                ]))),
+                capabilities: ProviderCapabilities::default(),
+            };
+
+            let invocations = Arc::new(AtomicUsize::new(0));
+            let tools_registry: Vec<Box<dyn Tool>> = vec![Box::new(CountingTool::new(
+                "pixel__get_api_health",
+                Arc::clone(&invocations),
+            ))];
+            let mut history = vec![
+                ChatMessage::system("test-system"),
+                ChatMessage::user("produce a long tool result"),
+            ];
+            let observer = NoopObserver;
+
+            let result = agent_turn(
+                &model_provider,
+                &mut history,
+                &tools_registry,
+                &observer,
+                "mock-provider",
+                "mock-model",
+                Some(0.0),
+                true,
+                "daemon",
+                None,
+                &zeroclaw_config::schema::MultimodalConfig::default(),
+                4,
+                None,
+                &[],
+                &[],
+                None,
+                None,
+                false,
+                80,
+                0,
+                None, // channel
+            )
+            .await
+            .expect("wrapper path should complete");
+
+            assert!(result.ends_with("done"), "unexpected result: {result}");
+            assert_eq!(invocations.load(Ordering::SeqCst), 1);
+            let tool_results = history
+                .iter()
+                .find(|msg| msg.role == "user" && msg.content.starts_with("[Tool results]"))
+                .expect("tool result payload should be present");
+            assert!(
+                tool_results.content.contains("[... "),
+                "tool result should be truncated by forwarded max_tool_result_chars, got: {}",
+                tool_results.content
             );
         });
     }
