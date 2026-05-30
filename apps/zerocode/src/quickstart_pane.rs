@@ -7,7 +7,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap},
+    widgets::{Clear, List, ListItem, ListState, Padding, Paragraph, Wrap},
 };
 use std::sync::Arc;
 
@@ -15,6 +15,7 @@ use crate::client::{
     QuickstartApplyResult, QuickstartError, QuickstartFieldDescriptor, QuickstartFieldSection,
     QuickstartStateResult, QuickstartStep, QuickstartSurface, RpcClient,
 };
+use crate::theme;
 use crate::widgets::{HelpEntry, HelpNode};
 use crate::wire::{
     AgentIdentity, BuilderSubmission, ChannelQuickStart, MemoryBackendKind as MemoryKind,
@@ -101,14 +102,12 @@ fn synth_enter() -> KeyEvent {
 fn action_row_line(label: &str, is_cursor: bool) -> Line<'static> {
     let glyph = if is_cursor { " › " } else { "   " };
     let style = if is_cursor {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
+        theme::accent_style()
     } else {
-        Style::default().fg(Color::Cyan)
+        theme::body_style()
     };
     Line::from(vec![
-        Span::styled(glyph, Style::default().fg(Color::Yellow)),
+        Span::styled(glyph, theme::accent_style()),
         Span::styled(label.to_string(), style),
     ])
 }
@@ -1630,12 +1629,7 @@ impl QuickstartPane {
 
     fn draw_title(&self, frame: &mut Frame, area: Rect) {
         let title = Paragraph::new(Line::from(vec![
-            Span::styled(
-                "Quickstart",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled("Quickstart", theme::accent_style()),
             Span::raw("  — create one working agent end-to-end."),
         ]));
         frame.render_widget(title, area);
@@ -1651,13 +1645,11 @@ impl QuickstartPane {
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::DarkGray)
+                    theme::dim_style()
                 };
                 let glyph = if satisfied { "[✓]" } else { "[ ]" };
-                let title_style = Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD);
-                let summary_style = Style::default().fg(Color::Gray);
+                let title_style = theme::heading_style();
+                let summary_style = theme::dim_style();
                 ListItem::new(Line::from(vec![
                     Span::styled(format!(" {glyph}  "), glyph_style),
                     Span::styled(format!("{:18}", sel.title()), title_style),
@@ -1667,10 +1659,7 @@ impl QuickstartPane {
             })
             .collect();
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .padding(Padding::horizontal(1))
-            .title(" Selectors ");
+        let block = theme::panel_block(" Selectors ").padding(Padding::horizontal(1));
         let inner = block.inner(area);
         // Record per-row rects for mouse hit testing. Each ListItem is
         // one row; clipping at `inner.height` lines up with what the
@@ -1685,11 +1674,7 @@ impl QuickstartPane {
         let list = List::default()
             .items(items)
             .block(block)
-            .highlight_style(
-                Style::default()
-                    .bg(Color::Rgb(40, 60, 90))
-                    .add_modifier(Modifier::BOLD),
-            )
+            .highlight_style(theme::selected_style())
             .highlight_symbol(" › ");
         frame.render_stateful_widget(list, area, &mut self.list_state);
     }
@@ -1717,15 +1702,11 @@ impl QuickstartPane {
         } else if !self.last_errors.is_empty() {
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
         } else if can_create {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
+            theme::accent_style()
         } else {
-            Style::default().fg(Color::DarkGray)
+            theme::dim_style()
         };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .padding(Padding::horizontal(1));
+        let block = theme::panel_block("").padding(Padding::horizontal(1));
         let p = Paragraph::new(label)
             .style(style)
             .block(block)
@@ -1773,17 +1754,15 @@ fn draw_modal(
                     let is_cursor = i == p.cursor;
                     let glyph = if is_cursor { " › " } else { "   " };
                     let label_style = if is_cursor {
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD)
+                        theme::accent_style()
                     } else {
-                        Style::default().fg(Color::White)
+                        theme::body_style()
                     };
                     Line::from(vec![
-                        Span::styled(glyph, Style::default().fg(Color::Yellow)),
+                        Span::styled(glyph, theme::accent_style()),
                         Span::styled(opt.label.as_str(), label_style),
                         Span::raw("  "),
-                        Span::styled(opt.help.as_str(), Style::default().fg(Color::DarkGray)),
+                        Span::styled(opt.help.as_str(), theme::dim_style()),
                     ])
                 })
                 .collect();
@@ -1802,17 +1781,12 @@ fn draw_modal(
                 t.buf.clone()
             };
             let lines = vec![
-                Line::from(Span::styled(t.help, Style::default().fg(Color::DarkGray))),
+                Line::from(Span::styled(t.help, theme::dim_style())),
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled(
-                        format!("{}: ", t.label),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(display, Style::default().fg(Color::White)),
-                    Span::styled("█", Style::default().fg(Color::Yellow)),
+                    Span::styled(format!("{}: ", t.label), theme::accent_style()),
+                    Span::styled(display, theme::body_style()),
+                    Span::styled("█", theme::accent_style()),
                 ]),
             ];
             (
@@ -1827,15 +1801,10 @@ fn draw_modal(
             let mut lines: Vec<Line> = Vec::new();
             let mut cursor_lines = Vec::with_capacity(f.fields.len());
             lines.push(Line::from(vec![
-                Span::styled("Type: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    f.type_key.as_str(),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("    Alias: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(f.alias.as_str(), Style::default().fg(Color::White)),
+                Span::styled("Type: ", theme::dim_style()),
+                Span::styled(f.type_key.as_str(), theme::accent_style()),
+                Span::styled("    Alias: ", theme::dim_style()),
+                Span::styled(f.alias.as_str(), theme::body_style()),
             ]));
             lines.push(Line::from(""));
             for (i, row) in f.fields.iter().enumerate() {
@@ -1843,11 +1812,9 @@ fn draw_modal(
                 let is_cursor = i == f.cursor;
                 let glyph = if is_cursor { " › " } else { "   " };
                 let label_style = if is_cursor {
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD)
+                    theme::accent_style()
                 } else {
-                    Style::default().fg(Color::White)
+                    theme::body_style()
                 };
                 let raw_display = if row.descriptor.is_secret {
                     "•".repeat(row.buf.chars().count())
@@ -1861,28 +1828,20 @@ fn draw_modal(
                     raw_display
                 };
                 let value_style = if is_ghost {
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::ITALIC)
+                    theme::dim_style().add_modifier(Modifier::ITALIC)
                 } else {
-                    Style::default().fg(Color::Gray)
+                    theme::dim_style()
                 };
                 let is_enum = row.descriptor.enum_variants.is_some();
                 lines.push(Line::from(vec![
-                    Span::styled(glyph, Style::default().fg(Color::Yellow)),
+                    Span::styled(glyph, theme::accent_style()),
                     Span::styled(format!("{:14}", row.descriptor.label), label_style),
                     Span::styled("  ", Style::default()),
-                    Span::styled(
-                        if is_enum { "‹ " } else { "" },
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled(if is_enum { "‹ " } else { "" }, theme::accent_style()),
                     Span::styled(display, value_style),
-                    Span::styled(
-                        if is_enum { " ›" } else { "" },
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled(if is_enum { " ›" } else { "" }, theme::accent_style()),
                     if is_cursor {
-                        Span::styled("█", Style::default().fg(Color::Yellow))
+                        Span::styled("█", theme::accent_style())
                     } else {
                         Span::raw("")
                     },
@@ -1900,9 +1859,7 @@ fn draw_modal(
                     vec![
                         Line::from(Span::styled(
                             h.to_string(),
-                            Style::default()
-                                .fg(Color::DarkGray)
-                                .add_modifier(Modifier::ITALIC),
+                            theme::dim_style().add_modifier(Modifier::ITALIC),
                         )),
                         Line::from(""),
                     ]
@@ -1924,7 +1881,7 @@ fn draw_modal(
             if drafts == 0 {
                 lines.push(Line::from(Span::styled(
                     "No channels configured. An agent without channels still works via `zeroclaw agent <name>` from the CLI.",
-                    Style::default().fg(Color::DarkGray),
+                    theme::dim_style(),
                 )));
                 lines.push(Line::from(""));
             } else {
@@ -1933,14 +1890,12 @@ fn draw_modal(
                     let is_cursor = i == cl.cursor;
                     let glyph = if is_cursor { " › " } else { "   " };
                     let style = if is_cursor {
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD)
+                        theme::accent_style()
                     } else {
-                        Style::default().fg(Color::White)
+                        theme::body_style()
                     };
                     lines.push(Line::from(vec![
-                        Span::styled(glyph, Style::default().fg(Color::Yellow)),
+                        Span::styled(glyph, theme::accent_style()),
                         Span::styled(format!("{}.{}", c.channel_type, c.alias), style),
                         Span::styled(
                             if c.token.is_some() {
@@ -1948,7 +1903,7 @@ fn draw_modal(
                             } else {
                                 ""
                             },
-                            Style::default().fg(Color::DarkGray),
+                            theme::dim_style(),
                         ),
                     ]));
                 }
@@ -1977,7 +1932,7 @@ fn draw_modal(
             if drafts == 0 {
                 lines.push(Line::from(Span::styled(
                     "No peer groups configured. Optional — agents can still send messages to channels.",
-                    Style::default().fg(Color::DarkGray),
+                    theme::dim_style(),
                 )));
                 lines.push(Line::from(""));
             } else {
@@ -1986,11 +1941,9 @@ fn draw_modal(
                     let is_cursor = i == pl.cursor;
                     let glyph = if is_cursor { " › " } else { "   " };
                     let style = if is_cursor {
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD)
+                        theme::accent_style()
                     } else {
-                        Style::default().fg(Color::White)
+                        theme::body_style()
                     };
                     let peers = if pg.external_peers.is_empty() {
                         "no peers".to_string()
@@ -1998,9 +1951,9 @@ fn draw_modal(
                         format!("{} peers", pg.external_peers.len())
                     };
                     lines.push(Line::from(vec![
-                        Span::styled(glyph, Style::default().fg(Color::Yellow)),
+                        Span::styled(glyph, theme::accent_style()),
                         Span::styled(format!("{} → {}", pg.channel, pg.name), style),
-                        Span::styled(format!("  ({peers})"), Style::default().fg(Color::DarkGray)),
+                        Span::styled(format!("  ({peers})"), theme::dim_style()),
                     ]));
                 }
                 lines.push(Line::from(""));
@@ -2028,11 +1981,9 @@ fn draw_modal(
             cursor_lines.push(lines.len());
             let on_name = a.cursor == 0;
             let name_style = if on_name {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
+                theme::accent_style()
             } else {
-                Style::default().fg(Color::White)
+                theme::body_style()
             };
             let glyph = if on_name { " › " } else { "   " };
             let display = if a.name.is_empty() {
@@ -2041,12 +1992,12 @@ fn draw_modal(
                 a.name.clone()
             };
             lines.push(Line::from(vec![
-                Span::styled(glyph, Style::default().fg(Color::Yellow)),
+                Span::styled(glyph, theme::accent_style()),
                 Span::styled(format!("{:14}", "name"), name_style),
                 Span::styled("  ", Style::default()),
-                Span::styled(display, Style::default().fg(Color::Gray)),
+                Span::styled(display, theme::dim_style()),
                 if on_name {
-                    Span::styled("█", Style::default().fg(Color::Yellow))
+                    Span::styled("█", theme::accent_style())
                 } else {
                     Span::raw("")
                 },
@@ -2056,7 +2007,7 @@ fn draw_modal(
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     "Personality files (e=edit, t=use template, c=clear)",
-                    Style::default().fg(Color::DarkGray),
+                    theme::dim_style(),
                 )));
             }
 
@@ -2066,11 +2017,9 @@ fn draw_modal(
                 let is_cursor = a.cursor == row_cursor;
                 let glyph = if is_cursor { " › " } else { "   " };
                 let label_style = if is_cursor {
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD)
+                    theme::accent_style()
                 } else {
-                    Style::default().fg(Color::White)
+                    theme::body_style()
                 };
                 let content = a.files.get(filename).cloned().unwrap_or_default();
                 let status = if content.trim().is_empty() {
@@ -2079,10 +2028,10 @@ fn draw_modal(
                     format!("{} bytes", content.len())
                 };
                 lines.push(Line::from(vec![
-                    Span::styled(glyph, Style::default().fg(Color::Yellow)),
+                    Span::styled(glyph, theme::accent_style()),
                     Span::styled(format!("{filename:14}"), label_style),
                     Span::styled("  ", Style::default()),
-                    Span::styled(status, Style::default().fg(Color::Gray)),
+                    Span::styled(status, theme::dim_style()),
                 ]));
             }
 
@@ -2111,16 +2060,7 @@ fn draw_modal(
     let rect = Rect::new(x, y, box_w, box_h);
 
     frame.render_widget(Clear, rect);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
-        .padding(Padding::horizontal(1))
-        .title(Span::styled(
-            title,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ));
+    let block = theme::modal_block(&title).padding(Padding::horizontal(1));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
@@ -2162,12 +2102,15 @@ fn draw_modal(
 
     if effective_header_h > 0 {
         frame.render_widget(
-            Paragraph::new(header_lines).wrap(Wrap { trim: false }),
+            Paragraph::new(header_lines)
+                .style(theme::fill_style())
+                .wrap(Wrap { trim: false }),
             header_rect,
         );
     }
 
     let body = Paragraph::new(body_lines)
+        .style(theme::fill_style())
         .wrap(Wrap { trim: false })
         .scroll((scroll_offset, 0));
     frame.render_widget(body, body_rect);
@@ -2179,7 +2122,7 @@ fn draw_modal(
         1,
     );
     frame.render_widget(
-        Paragraph::new(Span::styled(footer, Style::default().fg(Color::DarkGray))),
+        Paragraph::new(Span::styled(footer, theme::dim_style())).style(theme::fill_style()),
         footer_rect,
     );
 

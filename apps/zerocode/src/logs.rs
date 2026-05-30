@@ -752,10 +752,7 @@ impl<'a> Logs<'a> {
             .map(|&idx| {
                 let e = &self.events[idx];
                 let line = Line::from(vec![
-                    Span::styled(
-                        format!("{} ", e.short_time()),
-                        Style::default().fg(Color::DarkGray),
-                    ),
+                    Span::styled(format!("{} ", e.short_time()), theme::dim_style()),
                     Span::styled(
                         format!("{} ", severity_label(e.severity_number)),
                         severity_style(e.severity_number).add_modifier(Modifier::BOLD),

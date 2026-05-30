@@ -688,12 +688,8 @@ impl<'a> Dashboard<'a> {
             lines.push(Line::from(""));
             for msg in &self.session_messages {
                 let role_style = match msg.role.as_str() {
-                    "user" => Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                    "assistant" => Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
+                    "user" => theme::user_label_style(),
+                    "assistant" => theme::agent_label_style(),
                     "system" => theme::dim_style().add_modifier(Modifier::BOLD),
                     _ => theme::body_style().add_modifier(Modifier::BOLD),
                 };

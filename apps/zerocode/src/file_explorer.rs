@@ -11,9 +11,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKi
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Clear, List, ListItem, ListState, Paragraph},
 };
 
 use crate::theme;
@@ -519,10 +519,7 @@ impl FileExplorerState {
             format!(" {cwd_display} ")
         };
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(title)
-            .style(Style::default().fg(Color::Cyan));
+        let block = theme::modal_block(&title);
 
         let inner = block.inner(overlay_area);
         f.render_widget(block, overlay_area);
@@ -548,34 +545,24 @@ impl FileExplorerState {
 
                 let prefix = if is_marked { "* " } else { "  " };
                 let (name, style) = if entry.is_dir {
-                    (
-                        format!("{prefix}{}/", entry.name),
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    )
+                    (format!("{prefix}{}/", entry.name), theme::heading_style())
                 } else {
                     let size = crate::attachment::format_size(entry.size);
-                    let fg = if is_marked {
-                        Color::Yellow
+                    let style = if is_marked {
+                        theme::accent_style()
                     } else {
-                        Color::White
+                        theme::body_style()
                     };
-                    (
-                        format!("{prefix}{}  {size}", entry.name),
-                        Style::default().fg(fg),
-                    )
+                    (format!("{prefix}{}  {size}", entry.name), style)
                 };
 
                 ListItem::new(Span::styled(name, style))
             })
             .collect();
 
-        let list = List::new(items).highlight_style(
-            Style::default()
-                .add_modifier(Modifier::REVERSED)
-                .fg(Color::Cyan),
-        );
+        let list = List::new(items)
+            .style(theme::fill_style())
+            .highlight_style(theme::selected_style());
         self.last_list_area = chunks[0];
         let mut ls = self.list_state;
         f.render_stateful_widget(list, chunks[0], &mut ls);
@@ -586,20 +573,15 @@ impl FileExplorerState {
         if !self.selected.is_empty() {
             footer_spans.push(Span::styled(
                 format!(" {} selected ", self.selected.len()),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
+                theme::accent_style(),
             ));
             footer_spans.push(Span::styled("| ", theme::dim_style()));
         }
 
         if self.searching {
-            footer_spans.push(Span::styled("/ ", Style::default().fg(Color::Yellow)));
-            footer_spans.push(Span::styled(
-                &self.search_query,
-                Style::default().fg(Color::White),
-            ));
-            footer_spans.push(Span::styled("\u{2588}", Style::default().fg(Color::White)));
+            footer_spans.push(Span::styled("/ ", theme::accent_style()));
+            footer_spans.push(Span::styled(&self.search_query, theme::body_style()));
+            footer_spans.push(Span::styled("\u{2588}", theme::body_style()));
         } else if self.dir_picker {
             footer_spans.push(Span::styled(
                 " c=choose dir  Enter=open  Backspace=up  /=search  .=hidden  Esc=cancel",
@@ -612,7 +594,7 @@ impl FileExplorerState {
             ));
         }
 
-        let footer = Paragraph::new(Line::from(footer_spans));
+        let footer = Paragraph::new(Line::from(footer_spans)).style(theme::fill_style());
         f.render_widget(footer, chunks[1]);
     }
 }

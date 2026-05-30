@@ -135,6 +135,16 @@ pub async fn run(
         // Draw
         let conn_state = rpc.connection_state();
         term.draw(|frame| {
+            // Theme backdrop: paint the whole screen with the active
+            // theme's background first so every pane inherits it. The
+            // `terminal` theme returns None and the user's own shell
+            // colours show through.
+            if let Some(style) = theme::backdrop_style() {
+                frame.render_widget(
+                    ratatui::widgets::Block::default().style(style),
+                    frame.area(),
+                );
+            }
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -582,6 +592,7 @@ fn draw_help_modal(frame: &mut ratatui::Frame, area: Rect, node: &HelpNode) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme::dim_style())
+        .style(theme::fill_style())
         .title(Span::styled(" Keybindings ", theme::heading_style()));
 
     let inner = block.inner(modal_rect);
@@ -631,41 +642,41 @@ fn draw_help_modal(frame: &mut ratatui::Frame, area: Rect, node: &HelpNode) {
         theme::dim_style(),
     )));
 
-    frame.render_widget(Paragraph::new(text_lines), inner);
+    frame.render_widget(Paragraph::new(text_lines).style(theme::fill_style()), inner);
 }
 
 fn draw_reload_confirm_modal(frame: &mut ratatui::Frame, area: Rect) {
     let body_lines: Vec<Line> = vec![
         Line::from(Span::styled(
             "The daemon process stays running (same PID), but every",
-            Style::default().fg(Color::White),
+            theme::body_style(),
         )),
         Line::from(Span::styled(
             "subsystem tears down and re-initializes from the on-disk",
-            Style::default().fg(Color::White),
+            theme::body_style(),
         )),
-        Line::from(Span::styled("config:", Style::default().fg(Color::White))),
+        Line::from(Span::styled("config:", theme::body_style())),
         Line::from(""),
         Line::from(Span::styled(
             "  • Gateway listener stops and rebinds",
-            Style::default().fg(Color::White),
+            theme::body_style(),
         )),
         Line::from(Span::styled(
             "  • Channel listeners (Matrix, Slack, etc.) respawn",
-            Style::default().fg(Color::White),
+            theme::body_style(),
         )),
         Line::from(Span::styled(
             "  • MCP servers, scheduler, heartbeat re-init",
-            Style::default().fg(Color::White),
+            theme::body_style(),
         )),
         Line::from(Span::styled(
             "  • Provider clients pick up new API keys / model defaults",
-            Style::default().fg(Color::White),
+            theme::body_style(),
         )),
         Line::from(""),
         Line::from(Span::styled(
             "The RPC socket will briefly drop. The TUI will reconnect.",
-            Style::default().fg(Color::DarkGray),
+            theme::dim_style(),
         )),
     ];
 
@@ -678,17 +689,18 @@ fn draw_reload_confirm_modal(frame: &mut ratatui::Frame, area: Rect) {
     frame.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow))
+        .border_style(theme::warn_style())
+        .style(theme::fill_style())
         .title(Span::styled(
             " Reload daemon? ",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            theme::warn_style().add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
-    let body = Paragraph::new(body_lines).wrap(ratatui::widgets::Wrap { trim: false });
+    let body = Paragraph::new(body_lines)
+        .style(theme::fill_style())
+        .wrap(ratatui::widgets::Wrap { trim: false });
     let body_rect = Rect::new(
         inner.x.saturating_add(1),
         inner.y,
@@ -706,24 +718,20 @@ fn draw_reload_confirm_modal(frame: &mut ratatui::Frame, area: Rect) {
     frame.render_widget(
         Paragraph::new(Span::styled(
             "Enter / y = reload   Esc / n = cancel",
-            Style::default().fg(Color::DarkGray),
-        )),
+            theme::dim_style(),
+        ))
+        .style(theme::fill_style()),
         footer_rect,
     );
 }
 
 fn draw_quit_confirm_modal(frame: &mut ratatui::Frame, area: Rect) {
     let body_lines: Vec<Line> = vec![
-        Line::from(Span::styled(
-            "Quit zerocode?",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )),
+        Line::from(Span::styled("Quit zerocode?", theme::heading_style())),
         Line::from(""),
         Line::from(Span::styled(
             "The TUI closes. The daemon keeps running; reconnect anytime.",
-            Style::default().fg(Color::DarkGray),
+            theme::dim_style(),
         )),
     ];
 
@@ -734,19 +742,13 @@ fn draw_quit_confirm_modal(frame: &mut ratatui::Frame, area: Rect) {
     let rect = Rect::new(x, y, box_w, box_h);
 
     frame.render_widget(Clear, rect);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow))
-        .title(Span::styled(
-            " Quit? ",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ));
+    let block = theme::modal_block(" Quit? ");
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
-    let body = Paragraph::new(body_lines).wrap(ratatui::widgets::Wrap { trim: false });
+    let body = Paragraph::new(body_lines)
+        .style(theme::fill_style())
+        .wrap(ratatui::widgets::Wrap { trim: false });
     let body_rect = Rect::new(
         inner.x.saturating_add(1),
         inner.y,
@@ -771,7 +773,7 @@ fn draw_quit_confirm_modal(frame: &mut ratatui::Frame, area: Rect) {
         cancel = ModalAction::Cancel.label(),
     );
     frame.render_widget(
-        Paragraph::new(Span::styled(footer, Style::default().fg(Color::DarkGray))),
+        Paragraph::new(Span::styled(footer, theme::dim_style())).style(theme::fill_style()),
         footer_rect,
     );
 }
@@ -809,11 +811,12 @@ fn draw_reload_status_toast(frame: &mut ratatui::Frame, area: Rect, msg: &str) {
     frame.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow));
+        .border_style(theme::warn_style())
+        .style(theme::fill_style());
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     frame.render_widget(
-        Paragraph::new(Span::styled(text, Style::default().fg(Color::White))),
+        Paragraph::new(Span::styled(text, theme::body_style())).style(theme::fill_style()),
         inner,
     );
 }

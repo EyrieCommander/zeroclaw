@@ -18,7 +18,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::Modifier,
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{List, ListItem, ListState, Paragraph, Wrap},
 };
 
 use crate::client::{ConfigSectionEntry, ConfigTemplateEntry, RpcClient};
@@ -369,8 +369,21 @@ impl<'a> App<'a> {
     ) -> Result<()> {
         use crate::mouse;
 
-        // The zerocode pane is keyboard-driven; ignore mouse there for now.
+        // Section tab-bar click switches sub-tab in either section.
+        if let MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse.kind
+            && let Some(bar) = self.section_tab_area
+            && mouse::in_rect(mouse.column, mouse.row, bar)
+        {
+            let labels: Vec<&str> = CONFIG_SECTIONS.iter().map(|s| s.label()).collect();
+            if let Some(idx) = mouse::tab_click_index(mouse.column, mouse.row, bar, &labels, 3) {
+                self.section = CONFIG_SECTIONS[idx];
+                return Ok(());
+            }
+        }
+
+        // The zerocode pane owns its own mouse handling.
         if self.section == ConfigSection::Zerocode {
+            self.zerocode.handle_mouse(mouse);
             return Ok(());
         }
 
@@ -2336,7 +2349,7 @@ impl<'a> App<'a> {
 
         frame.render_stateful_widget(
             List::new(items)
-                .block(Block::default().borders(Borders::ALL).title(" Sections "))
+                .block(theme::panel_block(" Sections "))
                 .highlight_style(theme::selected_style())
                 .highlight_symbol("› "),
             r.main,
@@ -2406,11 +2419,7 @@ impl<'a> App<'a> {
 
         frame.render_stateful_widget(
             List::new(items)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(format!(" {} ", section.label)),
-                )
+                .block(theme::panel_block(&format!(" {} ", section.label)))
                 .highlight_style(theme::selected_style())
                 .highlight_symbol("› "),
             r.main,
@@ -2490,7 +2499,7 @@ impl<'a> App<'a> {
 
         frame.render_stateful_widget(
             List::new(items)
-                .block(Block::default().borders(Borders::ALL).title(" Aliases "))
+                .block(theme::panel_block(" Aliases "))
                 .highlight_style(theme::selected_style())
                 .highlight_symbol("› "),
             r.main,
@@ -2530,7 +2539,7 @@ impl<'a> App<'a> {
             input_display,
             theme::input_style(),
         )))
-        .block(Block::default().borders(Borders::ALL).title(" Alias name "));
+        .block(theme::panel_block(" Alias name "));
         frame.render_widget(input, r.main);
 
         self.draw_footer(frame, r, "Enter=create  Esc=cancel");
@@ -2664,7 +2673,7 @@ impl<'a> App<'a> {
 
         frame.render_stateful_widget(
             List::new(items)
-                .block(Block::default().borders(Borders::ALL).title(" Fields "))
+                .block(theme::panel_block(" Fields "))
                 .highlight_style(theme::selected_style())
                 .highlight_symbol("› "),
             r.main,
@@ -2715,11 +2724,7 @@ impl<'a> App<'a> {
             }
 
             frame.render_widget(
-                Paragraph::new(visible_lines).block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(format!(" {filename} ")),
-                ),
+                Paragraph::new(visible_lines).block(theme::panel_block(&format!(" {filename} "))),
                 r.main,
             );
 
@@ -2769,11 +2774,7 @@ impl<'a> App<'a> {
 
             frame.render_stateful_widget(
                 List::new(items)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .title(" Personality Files "),
-                    )
+                    .block(theme::panel_block(" Personality Files "))
                     .highlight_style(theme::selected_style())
                     .highlight_symbol("› "),
                 r.main,
@@ -2815,11 +2816,8 @@ impl<'a> App<'a> {
             }
 
             frame.render_widget(
-                Paragraph::new(visible_lines).block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(format!(" SKILL.md — {name} ")),
-                ),
+                Paragraph::new(visible_lines)
+                    .block(theme::panel_block(&format!(" SKILL.md — {name} "))),
                 r.main,
             );
 
@@ -2853,7 +2851,7 @@ impl<'a> App<'a> {
 
             frame.render_stateful_widget(
                 List::new(items)
-                    .block(Block::default().borders(Borders::ALL).title(" Skills "))
+                    .block(theme::panel_block(" Skills "))
                     .highlight_style(theme::selected_style())
                     .highlight_symbol("› "),
                 r.main,
@@ -2925,7 +2923,7 @@ impl<'a> App<'a> {
 
             frame.render_stateful_widget(
                 List::new(items)
-                    .block(Block::default().borders(Borders::ALL).title(title))
+                    .block(theme::panel_block(&title))
                     .highlight_style(theme::selected_style())
                     .highlight_symbol("› "),
                 r.main,
@@ -2976,11 +2974,9 @@ impl<'a> App<'a> {
                     lines.push(Line::from(Span::styled(text, theme::input_style())));
                 }
                 frame.render_widget(
-                    Paragraph::new(lines).block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .title(format!(" {short_name} (string_array) ")),
-                    ),
+                    Paragraph::new(lines).block(theme::panel_block(&format!(
+                        " {short_name} (string_array) "
+                    ))),
                     r.main,
                 );
                 self.draw_footer(frame, r, "Enter=new line  Ctrl+S=save  Esc=cancel");
@@ -2997,11 +2993,7 @@ impl<'a> App<'a> {
                 Line::from(Span::styled(&kind_hint, theme::dim_style())),
                 Line::from(Span::styled(input_display, theme::input_style())),
             ])
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!(" {short_name} ")),
-            );
+            .block(theme::panel_block(&format!(" {short_name} ")));
 
             frame.render_widget(input, r.main);
 
@@ -3106,6 +3098,22 @@ impl<'a> App<'a> {
 
 impl crate::widgets::HelpContext for App<'_> {
     fn help_context(&self) -> crate::widgets::HelpNode {
+        use crate::widgets::HelpEntry as E;
+        // Section switch is available in either sub-tab.
+        let section_nav = E::new(vec!["Tab", "Shift+Tab"], "Switch config section");
+        if self.section == ConfigSection::Zerocode {
+            let mut node = self.zerocode.help_context();
+            node.entries.insert(0, section_nav);
+            return node;
+        }
+        let mut node = self.zeroclaw_help_context();
+        node.entries.insert(0, section_nav);
+        node
+    }
+}
+
+impl App<'_> {
+    fn zeroclaw_help_context(&self) -> crate::widgets::HelpNode {
         use crate::widgets::{HelpEntry as E, HelpNode};
         match &self.screen {
             Screen::SectionList => {

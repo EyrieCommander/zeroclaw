@@ -13,7 +13,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
@@ -1139,9 +1139,7 @@ impl InputBarState {
             let text = format!(" Attachments: {}", labels.join(", "));
             let bar = Paragraph::new(Span::styled(
                 text,
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::ITALIC),
+                theme::accent_style().add_modifier(Modifier::ITALIC),
             ));
             f.render_widget(bar, att_rect);
         }
@@ -1156,8 +1154,9 @@ impl InputBarState {
         let label: &str = &label_owned;
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(label)
-            .title_bottom(Span::styled("?=help", Style::default().fg(Color::DarkGray)));
+            .border_style(theme::dim_style())
+            .title(Span::styled(label, theme::title_style()))
+            .title_bottom(Span::styled("?=help", theme::dim_style()));
 
         if self.input.is_empty() && !turn_in_flight {
             let placeholder = if self.file_explorer.is_some() {
@@ -1165,11 +1164,7 @@ impl InputBarState {
             } else {
                 "Type to chat"
             };
-            let p = Paragraph::new(Span::styled(
-                placeholder,
-                Style::default().fg(Color::DarkGray),
-            ))
-            .block(block);
+            let p = Paragraph::new(Span::styled(placeholder, theme::dim_style())).block(block);
             f.render_widget(p, input_area);
         } else {
             // Wrapped input content with optional selection highlighting.
@@ -1212,7 +1207,7 @@ impl InputBarState {
         // Scroll indicators on the right border when content overflows.
         if content_rows > MAX_INPUT_ROWS && input_area.width > 2 {
             let indicator_x = input_area.x + input_area.width - 1;
-            let indicator_style = Style::default().fg(Color::Yellow);
+            let indicator_style = theme::accent_style();
 
             if self.scroll_offset > 0 {
                 // Content above — show up arrow on top border.

@@ -147,7 +147,12 @@ async fn run() -> anyhow::Result<()> {
         }
     };
     let active_theme = loaded_config.resolve_theme().unwrap_or_else(|e| {
+        let path = config::config_path(&local_config_dir);
         eprintln!("zerocode: {e:#}");
+        eprintln!(
+            "  fix: remove the entire [theme] section from {} to restore the default theme",
+            path.display()
+        );
         std::process::exit(1);
     });
     theme::set_active(active_theme);
@@ -159,7 +164,12 @@ async fn run() -> anyhow::Result<()> {
         Ok(table) if !table.is_empty() => keymap::overrides::set_active(table),
         Ok(_) => {}
         Err(e) => {
+            let path = config::config_path(&local_config_dir);
             eprintln!("zerocode: invalid keybindings: {e:#}");
+            eprintln!(
+                "  fix: remove the entire [keybindings] section from {} to restore default keybindings",
+                path.display()
+            );
             std::process::exit(1);
         }
     }

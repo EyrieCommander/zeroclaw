@@ -16,6 +16,24 @@ const SEP_FG: Color = Color::Rgb(70, 70, 70);
 const DIFF_CONTEXT: usize = 3;
 const MAX_WRITE_LINES: usize = 60;
 
+/// Decimal digit count of the largest line number in a diff, used to size
+/// the gutter so the `|` separator aligns on every row.
+fn gutter_width(max_lineno: usize) -> usize {
+    max_lineno.max(1).to_string().len()
+}
+
+/// Format the gutter for a line that has a number: right-aligned to `width`
+/// followed by ` | `.
+fn gutter(lineno: usize, width: usize) -> String {
+    format!("{lineno:>width$} | ")
+}
+
+/// Format the gutter for a line with no number (a side absent on one half of
+/// the diff): blank columns to `width` followed by ` | `.
+fn gutter_blank(width: usize) -> String {
+    format!("{:>width$} | ", "")
+}
+
 // ── Syntax highlighting ──────────────────────────────────────────
 
 // Catppuccin Mocha palette constants.
@@ -253,6 +271,8 @@ pub fn diff_lines(old: &str, new: &str, lang: Option<&str>) -> Vec<Line<'static>
     let diff = TextDiff::from_lines(old, new);
     let mut out: Vec<Line<'static>> = Vec::new();
 
+    let width = gutter_width(old.lines().count().max(new.lines().count()));
+
     // Pre-highlight both sides in full so multi-line token state is correct.
     let (del_hl, add_hl) = match lang.and_then(ext_to_language) {
         Some(language) => (
@@ -283,8 +303,8 @@ pub fn diff_lines(old: &str, new: &str, lang: Option<&str>) -> Vec<Line<'static>
                             });
                         let lineno = change
                             .old_index()
-                            .map(|n| format!("{} | ", n + 1))
-                            .unwrap_or_else(|| "  | ".to_string());
+                            .map(|n| gutter(n + 1, width))
+                            .unwrap_or_else(|| gutter_blank(width));
                         let mut spans = vec![Span::styled(
                             lineno + "- ",
                             Style::default()
@@ -305,8 +325,8 @@ pub fn diff_lines(old: &str, new: &str, lang: Option<&str>) -> Vec<Line<'static>
                             });
                         let lineno = change
                             .new_index()
-                            .map(|n| format!("{} | ", n + 1))
-                            .unwrap_or_else(|| "  | ".to_string());
+                            .map(|n| gutter(n + 1, width))
+                            .unwrap_or_else(|| gutter_blank(width));
                         let mut spans = vec![Span::styled(
                             lineno + "+ ",
                             Style::default()
@@ -320,10 +340,10 @@ pub fn diff_lines(old: &str, new: &str, lang: Option<&str>) -> Vec<Line<'static>
                     ChangeTag::Equal => {
                         let lineno = change
                             .old_index()
-                            .map(|n| format!("{} | ", n + 1))
-                            .unwrap_or_else(|| "  | ".to_string());
+                            .map(|n| gutter(n + 1, width))
+                            .unwrap_or_else(|| gutter_blank(width));
                         Line::from(Span::styled(
-                            format!("{}  {}", lineno, text),
+                            format!("{lineno}  {text}"),
                             Style::default().fg(CTX_FG),
                         ))
                     }
@@ -351,6 +371,7 @@ pub fn diff_lines(old: &str, new: &str, lang: Option<&str>) -> Vec<Line<'static>
 pub fn write_lines(content: &str, lang: Option<&str>) -> Vec<Line<'static>> {
     let all: Vec<&str> = content.lines().collect();
     let show = all.len().min(MAX_WRITE_LINES);
+    let width = gutter_width(show);
 
     let hl = lang
         .and_then(ext_to_language)
@@ -369,7 +390,7 @@ pub fn write_lines(content: &str, lang: Option<&str>) -> Vec<Line<'static>> {
                 )]
             });
         let mut spans = vec![Span::styled(
-            format!("{} | + ", i + 1),
+            gutter(i + 1, width) + "+ ",
             Style::default()
                 .bg(ADD_BG)
                 .fg(ADD_FG)
@@ -508,6 +529,29 @@ mod tests {
 
         let write_lines = write_lines("first\nsecond\nthird", None);
         assert!(write_lines[0].spans[0].content.starts_with("1 | + "));
+    }
+
+    #[test]
+    fn gutter_width_uniform_across_digit_boundary() {
+        // A diff whose line numbers cross 9->10 must pad single-digit
+        // numbers so every `|` lands in the same column.
+        let old: String = (1..=12).map(|n| format!("line {n}\n")).collect();
+        let mut new = old.clone();
+        new.push_str("line 13 added\n");
+        let lines = diff_lines(&old, &new, None);
+
+        let bar_cols: Vec<usize> = lines
+            .iter()
+            .filter_map(|l| {
+                let s: String = l.spans.iter().map(|sp| sp.content.as_ref()).collect();
+                s.find('|')
+            })
+            .collect();
+        assert!(bar_cols.len() > 1, "expected several gutter rows");
+        assert!(
+            bar_cols.windows(2).all(|w| w[0] == w[1]),
+            "`|` separator not column-aligned: {bar_cols:?}"
+        );
     }
 
     #[test]

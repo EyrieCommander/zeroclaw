@@ -18,6 +18,7 @@ pub(crate) struct Theme {
     pub warn: Color,
     pub selection_bg: Color,
     pub tool: Color,
+    pub background: Color,
 }
 
 const ICY_BLUE: Theme = Theme {
@@ -29,6 +30,7 @@ const ICY_BLUE: Theme = Theme {
     warn: Color::Rgb(255, 220, 80),
     selection_bg: Color::Rgb(30, 60, 100),
     tool: Color::Rgb(180, 140, 255),
+    background: Color::Rgb(8, 14, 24),
 };
 
 const SOLARIZED_DARK: Theme = Theme {
@@ -40,6 +42,7 @@ const SOLARIZED_DARK: Theme = Theme {
     warn: Color::Rgb(181, 137, 0),
     selection_bg: Color::Rgb(7, 54, 66),
     tool: Color::Rgb(108, 113, 196),
+    background: Color::Rgb(0, 43, 54),
 };
 
 const SOLARIZED_LIGHT: Theme = Theme {
@@ -51,6 +54,7 @@ const SOLARIZED_LIGHT: Theme = Theme {
     warn: Color::Rgb(181, 137, 0),
     selection_bg: Color::Rgb(238, 232, 213),
     tool: Color::Rgb(108, 113, 196),
+    background: Color::Rgb(253, 246, 227),
 };
 
 const HIGH_CONTRAST_WHITE: Theme = Theme {
@@ -62,6 +66,7 @@ const HIGH_CONTRAST_WHITE: Theme = Theme {
     warn: Color::Rgb(128, 96, 0),
     selection_bg: Color::Rgb(200, 200, 200),
     tool: Color::Rgb(96, 0, 128),
+    background: Color::Rgb(255, 255, 255),
 };
 
 const HIGH_CONTRAST_DARK: Theme = Theme {
@@ -73,6 +78,7 @@ const HIGH_CONTRAST_DARK: Theme = Theme {
     warn: Color::Rgb(255, 255, 0),
     selection_bg: Color::Rgb(60, 60, 60),
     tool: Color::Rgb(255, 0, 255),
+    background: Color::Rgb(0, 0, 0),
 };
 
 const GRUVBOX_DARK: Theme = Theme {
@@ -84,6 +90,7 @@ const GRUVBOX_DARK: Theme = Theme {
     warn: Color::Rgb(250, 189, 47),
     selection_bg: Color::Rgb(60, 56, 54),
     tool: Color::Rgb(211, 134, 155),
+    background: Color::Rgb(40, 40, 40),
 };
 
 const DRACULA: Theme = Theme {
@@ -95,6 +102,7 @@ const DRACULA: Theme = Theme {
     warn: Color::Rgb(241, 250, 140),
     selection_bg: Color::Rgb(68, 71, 90),
     tool: Color::Rgb(189, 147, 249),
+    background: Color::Rgb(40, 42, 54),
 };
 
 const NORD: Theme = Theme {
@@ -106,6 +114,23 @@ const NORD: Theme = Theme {
     warn: Color::Rgb(235, 203, 139),
     selection_bg: Color::Rgb(59, 66, 82),
     tool: Color::Rgb(180, 142, 173),
+    background: Color::Rgb(46, 52, 64),
+};
+
+/// "Inherit shell" — uses the terminal's own default colours. Every
+/// role is `Color::Reset`, and the app-level backdrop skips painting
+/// when `background` is `Reset`, so a user's tuned terminal palette
+/// shows through untouched.
+const TERMINAL: Theme = Theme {
+    title: Color::Reset,
+    heading: Color::Reset,
+    body: Color::Reset,
+    dim: Color::Reset,
+    accent: Color::Reset,
+    warn: Color::Reset,
+    selection_bg: Color::Reset,
+    tool: Color::Reset,
+    background: Color::Reset,
 };
 
 pub(crate) const DEFAULT_THEME_NAME: &str = "icy_blue";
@@ -119,6 +144,7 @@ pub(crate) const THEMES: &[(&str, Theme)] = &[
     ("gruvbox_dark", GRUVBOX_DARK),
     ("dracula", DRACULA),
     ("nord", NORD),
+    ("terminal", TERMINAL),
 ];
 
 pub(crate) fn theme_by_name(name: &str) -> Option<Theme> {
@@ -151,6 +177,24 @@ pub(crate) fn fg_primary() -> Color {
 
 pub(crate) fn selection_bg() -> Color {
     active().selection_bg
+}
+
+/// The active theme's canvas colour. `Color::Reset` means "inherit the
+/// terminal" — the app-level backdrop skips painting in that case.
+pub(crate) fn background() -> Color {
+    active().background
+}
+
+/// Full-screen backdrop style painting the theme background. Returns
+/// `None` when the theme inherits the terminal (`background == Reset`),
+/// so the caller can skip the backdrop entirely.
+pub(crate) fn backdrop_style() -> Option<Style> {
+    let bg = active().background;
+    if bg == Color::Reset {
+        None
+    } else {
+        Some(Style::default().bg(bg))
+    }
 }
 
 pub(crate) fn title_style() -> Style {
@@ -253,6 +297,53 @@ pub(crate) fn list_highlight_style() -> Style {
     Style::default()
         .fg(active().heading)
         .add_modifier(Modifier::BOLD)
+}
+
+/// A bordered content panel with a themed border and an optional themed
+/// title. The single source of truth for pane chrome so borders never
+/// drift back to the terminal default.
+pub(crate) fn panel_block(title: &str) -> ratatui::widgets::Block<'static> {
+    let mut block = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(dim_style());
+    if !title.is_empty() {
+        block = block.title(ratatui::text::Span::styled(
+            title.to_string(),
+            title_style(),
+        ));
+    }
+    block
+}
+
+/// A modal/overlay panel: themed accent border, bold accent title, and a
+/// solid theme-background fill so the modal interior never shows through
+/// to the terminal default after a `Clear`.
+pub(crate) fn modal_block(title: &str) -> ratatui::widgets::Block<'static> {
+    let mut block = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(accent_style())
+        .style(fill_style());
+    if !title.is_empty() {
+        block = block.title(ratatui::text::Span::styled(
+            title.to_string(),
+            accent_style(),
+        ));
+    }
+    block
+}
+
+/// Solid panel fill: theme body foreground on the theme background. Used
+/// to back modals so their interior matches the active palette instead of
+/// the terminal default. Falls back to body-only when the theme inherits
+/// the terminal (`background == Reset`).
+pub(crate) fn fill_style() -> Style {
+    let t = active();
+    let s = Style::default().fg(t.body);
+    if t.background == Color::Reset {
+        s
+    } else {
+        s.bg(t.background)
+    }
 }
 
 #[cfg(test)]

@@ -1480,9 +1480,7 @@ fn render_conversation(f: &mut Frame, state: &mut ChatState, area: Rect) {
 
     let inner_height = area.height.saturating_sub(2);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" {} ", state.title()));
+    let block = theme::panel_block(&format!(" {} ", state.title()));
 
     let p = Paragraph::new(lines)
         .block(block)
@@ -1607,7 +1605,7 @@ fn render_approval_overlay(f: &mut Frame, state: &ChatState, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Approval Required ")
+                .title(Span::styled(" Approval Required ", theme::warn_style()))
                 .style(theme::approval_border_style()),
         )
         .wrap(Wrap { trim: true });
@@ -1666,7 +1664,10 @@ fn render_session_list_overlay(
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Sessions (Enter=switch, Esc=close) ")
+        .title(Span::styled(
+            " Sessions (Enter=switch, Esc=close) ",
+            theme::overlay_border_style(),
+        ))
         .style(theme::overlay_border_style());
 
     let inner = block.inner(overlay_area);
@@ -1713,7 +1714,10 @@ fn render_rename_overlay(f: &mut Frame, area: Rect, buf: &str) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Rename Session ")
+                .title(Span::styled(
+                    " Rename Session ",
+                    theme::overlay_border_style(),
+                ))
                 .style(theme::overlay_border_style()),
         )
         .wrap(Wrap { trim: true });

@@ -34,13 +34,6 @@ pub fn set_active(table: OverrideTable) {
     }
 }
 
-/// Clear all overrides — revert to compile-time defaults everywhere.
-pub fn clear() {
-    if let Ok(mut guard) = ACTIVE.write() {
-        *guard = None;
-    }
-}
-
 /// Insert or replace a single `tag.variant` row, leaving the rest of the
 /// active table intact (capture-modal save). Creates the table / tag
 /// bucket on demand.
@@ -51,6 +44,14 @@ pub fn set_row(tag: &str, variant: &str, chords: Vec<Chord>) {
             .entry(tag.to_string())
             .or_default()
             .insert(variant.to_string(), chords);
+    }
+}
+
+/// Reset to no overrides — test isolation only.
+#[cfg(test)]
+fn reset() {
+    if let Ok(mut guard) = ACTIVE.write() {
+        *guard = None;
     }
 }
 
@@ -73,16 +74,16 @@ mod tests {
             &vec![Chord::key(KeyCode::F(5))]
         );
         assert!(lookup("chat").is_none());
-        clear();
+        reset();
         assert!(lookup("dashboard").is_none());
     }
 
     #[test]
     fn set_row_creates_on_demand() {
-        clear();
+        reset();
         set_row("logs", "toggle_follow", vec![Chord::char('F')]);
         let got = lookup("logs").expect("tag created");
         assert_eq!(got.get("toggle_follow").unwrap(), &vec![Chord::char('F')]);
-        clear();
+        reset();
     }
 }

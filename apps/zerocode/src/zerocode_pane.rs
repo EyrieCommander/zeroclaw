@@ -69,6 +69,9 @@ pub(crate) struct ZerocodePane {
     capture: Option<Capture>,
     status: Option<String>,
     last_area: Rect,
+    focus_area: Rect,
+    content_area: Rect,
+    double_click: crate::mouse::DoubleClickTracker,
 }
 
 impl ZerocodePane {
@@ -94,6 +97,9 @@ impl ZerocodePane {
             capture: None,
             status: None,
             last_area: Rect::default(),
+            focus_area: Rect::default(),
+            content_area: Rect::default(),
+            double_click: crate::mouse::DoubleClickTracker::new(),
         };
         pane.rebuild_rows();
         pane
@@ -126,6 +132,8 @@ impl ZerocodePane {
             .constraints([Constraint::Length(22), Constraint::Min(0)])
             .split(area);
 
+        self.focus_area = cols[0];
+        self.content_area = cols[1];
         self.draw_focus_list(frame, cols[0]);
 
         match self.focus {
@@ -148,11 +156,7 @@ impl ZerocodePane {
         state.select(FOCI.iter().position(|f| *f == self.focus));
         frame.render_stateful_widget(
             List::new(items)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(Span::styled(" zerocode ", theme::title_style())),
-                )
+                .block(theme::panel_block(" zerocode "))
                 .highlight_style(theme::selected_style())
                 .highlight_symbol("› "),
             area,
@@ -172,11 +176,7 @@ impl ZerocodePane {
         }
         frame.render_stateful_widget(
             List::new(items)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(Span::styled(" Theme ", theme::title_style())),
-                )
+                .block(theme::panel_block(" Theme "))
                 .highlight_style(theme::selected_style())
                 .highlight_symbol("› "),
             area,
@@ -196,11 +196,7 @@ impl ZerocodePane {
         }
         frame.render_stateful_widget(
             List::new(items)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(Span::styled(" Keybinding Presets ", theme::title_style())),
-                )
+                .block(theme::panel_block(" Keybinding Presets "))
                 .highlight_style(theme::selected_style())
                 .highlight_symbol("› "),
             area,
@@ -235,10 +231,7 @@ impl ZerocodePane {
         }
         frame.render_stateful_widget(
             List::new(items)
-                .block(Block::default().borders(Borders::ALL).title(Span::styled(
-                    " Keybindings (Enter to rebind) ",
-                    theme::title_style(),
-                )))
+                .block(theme::panel_block(" Keybindings (Enter to rebind) "))
                 .highlight_style(theme::selected_style())
                 .highlight_symbol("› "),
             area,
@@ -378,12 +371,7 @@ impl ZerocodePane {
         };
         match preset.resolve() {
             Ok(table) => {
-                if table.is_empty() {
-                    // The default preset reverts to compile-time bindings.
-                    overrides::clear();
-                } else {
-                    overrides::set_active(table.clone());
-                }
+                overrides::set_active(table.clone());
                 match config::persist_keybindings(&self.config_dir, &table) {
                     Ok(()) => self.status = Some(format!("Preset '{name}' applied")),
                     Err(e) => self.status = Some(format!("Applied (save failed: {e})")),
@@ -449,6 +437,113 @@ impl ZerocodePane {
 
     pub(crate) fn status(&self) -> Option<&str> {
         self.status.as_deref()
+    }
+
+    // ── Contextual help ──────────────────────────────────────────
+
+    pub(crate) fn help_context(&self) -> crate::widgets::HelpNode {
+        use crate::widgets::{HelpEntry as E, HelpNode};
+        if self.capture.is_some() {
+            return HelpNode::entries(vec![
+                E::key("any key", "Assign as the new binding"),
+                E::key("Esc", "Cancel capture"),
+            ]);
+        }
+        let mut entries = vec![
+            E::new(
+                vec!["←", "→", "h", "l"],
+                "Switch pane (Theme/Presets/Keybindings)",
+            ),
+            E::new(vec!["↑", "↓", "j", "k"], "Navigate"),
+        ];
+        match self.focus {
+            Focus::Theme => {
+                entries.push(E::key("Enter", "Apply theme (live + saved)"));
+            }
+            Focus::Presets => {
+                entries.push(E::key("Enter", "Apply preset (overwrites keybindings)"));
+            }
+            Focus::Bindings => {
+                entries.push(E::key("Enter", "Rebind selected action"));
+                entries.push(E::key("d", "Reset action to default"));
+            }
+        }
+        entries.push(E::spacer());
+        entries.push(E::key(
+            "Mouse",
+            "Click pane / row, scroll, click section tab",
+        ));
+        HelpNode::entries(entries)
+    }
+
+    // ── Mouse ────────────────────────────────────────────────────
+
+    /// Handle a mouse event already known to fall within the pane body.
+    pub(crate) fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+        use crate::mouse;
+        use crossterm::event::{MouseButton, MouseEventKind};
+
+        // The capture modal swallows mouse input — keyboard only.
+        if self.capture.is_some() {
+            return;
+        }
+
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Focus column click selects the pane.
+                if mouse::in_rect(mouse.column, mouse.row, self.focus_area) {
+                    if let Some(idx) =
+                        mouse::list_click_index(mouse.row, self.focus_area, 0, FOCI.len())
+                    {
+                        self.focus = FOCI[idx.min(FOCI.len() - 1)];
+                    }
+                    return;
+                }
+                // Content list click selects (double-click activates).
+                if mouse::in_rect(mouse.column, mouse.row, self.content_area) {
+                    let len = self.current_len();
+                    if let Some(idx) = mouse::list_click_index(mouse.row, self.content_area, 0, len)
+                    {
+                        self.set_current_cursor(idx);
+                        if self.double_click.click(mouse.column, mouse.row) {
+                            self.activate();
+                        }
+                    }
+                }
+            }
+            MouseEventKind::ScrollDown
+                if mouse::in_rect(mouse.column, mouse.row, self.content_area) =>
+            {
+                self.move_cursor(1);
+            }
+            MouseEventKind::ScrollUp
+                if mouse::in_rect(mouse.column, mouse.row, self.content_area) =>
+            {
+                self.move_cursor(-1);
+            }
+            _ => {}
+        }
+    }
+
+    fn current_len(&self) -> usize {
+        match self.focus {
+            Focus::Theme => self.themes.len(),
+            Focus::Presets => self.presets.len(),
+            Focus::Bindings => self.rows.len(),
+        }
+    }
+
+    fn set_current_cursor(&mut self, idx: usize) {
+        let len = self.current_len();
+        if len == 0 {
+            return;
+        }
+        let idx = idx.min(len - 1);
+        match self.focus {
+            Focus::Theme => self.theme_cursor = idx,
+            Focus::Presets => self.preset_cursor = idx,
+            Focus::Bindings => self.binding_cursor = idx,
+        }
     }
 }
 

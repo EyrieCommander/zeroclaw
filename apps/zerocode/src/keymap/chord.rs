@@ -137,7 +137,7 @@ fn keycode_wire(code: &KeyCode) -> String {
         if *c == ' ' {
             return "space".to_string();
         }
-        return c.to_lowercase().to_string();
+        return c.to_string();
     }
     if let KeyCode::F(n) = code {
         return format!("f{n}");
@@ -152,10 +152,11 @@ fn keycode_wire(code: &KeyCode) -> String {
 /// named keys through `KEY_TOKENS`, single chars to `Char`, and `f<N>`
 /// to a function key — structurally, never via string-literal arms.
 fn parse_keycode(token: &str) -> Result<KeyCode, ChordParseError> {
-    if let Some((_, kc)) = KEY_TOKENS.iter().find(|(t, _)| *t == token) {
+    let lower = token.to_lowercase();
+    if let Some((_, kc)) = KEY_TOKENS.iter().find(|(t, _)| *t == lower) {
         return Ok(*kc);
     }
-    if let Some(rest) = token.strip_prefix('f')
+    if let Some(rest) = lower.strip_prefix('f')
         && let Ok(n) = rest.parse::<u8>()
     {
         return Ok(KeyCode::F(n));
@@ -183,20 +184,22 @@ impl FromStr for Chord {
     type Err = ChordParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let lower = s.trim().to_lowercase();
-        if lower.is_empty() {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
             return Err(ChordParseError(s.to_string()));
         }
-        let mut segments: Vec<&str> = lower.split('+').collect();
-        // Last segment is the key; everything before is a modifier.
+        let mut segments: Vec<&str> = trimmed.split('+').collect();
+        // Last segment is the key (case preserved so 'G' stays distinct
+        // from 'g'); everything before is a modifier (case-insensitive).
         let key_token = segments
             .pop()
             .ok_or_else(|| ChordParseError(s.to_string()))?;
         let mut modifiers = KeyModifiers::NONE;
         for seg in segments {
+            let lower = seg.to_lowercase();
             let flag = MOD_TOKENS
                 .iter()
-                .find_map(|(t, f)| (*t == seg).then_some(*f))
+                .find_map(|(t, f)| (*t == lower).then_some(*f))
                 .ok_or_else(|| ChordParseError(s.to_string()))?;
             modifiers.insert(flag);
         }
@@ -357,6 +360,34 @@ mod tests {
         assert_eq!(Chord::ctrl('k').wire(), "ctrl+k");
         assert_eq!(Chord::key(KeyCode::PageUp).wire(), "pageup");
         assert_eq!(Chord::char(' ').wire(), "space");
+    }
+
+    #[test]
+    fn wire_preserves_letter_case() {
+        // Regression: 'G' (vim jump-to-end) must not collapse to 'g' on
+        // the wire, or jump_start and jump_end collide on reload.
+        let upper = Chord::char('G');
+        let lower = Chord::char('g');
+        assert_eq!(upper.wire(), "G");
+        assert_eq!(lower.wire(), "g");
+        assert_ne!(upper.wire(), lower.wire());
+        assert_eq!(Chord::from_str("G").unwrap(), upper);
+        assert_eq!(Chord::from_str("g").unwrap(), lower);
+        assert_ne!(Chord::from_str("G").unwrap(), Chord::from_str("g").unwrap());
+    }
+
+    #[test]
+    fn parse_named_keys_are_case_insensitive() {
+        assert_eq!(Chord::from_str("UP").unwrap(), Chord::key(KeyCode::Up));
+        assert_eq!(
+            Chord::from_str("Enter").unwrap(),
+            Chord::key(KeyCode::Enter)
+        );
+        assert_eq!(Chord::from_str("CTRL+K").unwrap(), Chord::ctrl('k'));
+        assert_eq!(
+            Chord::from_str("Shift+Up").unwrap(),
+            Chord::shift(KeyCode::Up)
+        );
     }
 
     #[test]
