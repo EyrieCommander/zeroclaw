@@ -4533,6 +4533,16 @@ pub struct PacingConfig {
     #[serde(default)]
     pub step_timeout_secs: Option<u64>,
 
+    /// Maximum seconds to wait for the NEXT event from a streaming provider
+    /// before treating the stream as stalled. Guards the freeze where a
+    /// half-open socket yields no bytes, no error, and no EOF: without this
+    /// bound the consume loop waits forever with no cancel path. On expiry
+    /// the stream is dropped and the turn surfaces a normal recoverable error
+    /// the caller can retry, instead of wedging. `None` keeps the legacy
+    /// unbounded wait. Default: 120s.
+    #[serde(default = "default_stream_idle_timeout_secs")]
+    pub stream_idle_timeout_secs: Option<u64>,
+
     /// Minimum elapsed seconds before loop detection activates.
     /// Tasks completing under this threshold get aggressive loop protection;
     /// longer-running tasks receive a grace period before the detector starts
@@ -4570,6 +4580,16 @@ pub struct PacingConfig {
     pub loop_detection_max_repeats: usize,
 }
 
+fn default_stream_idle_timeout_secs() -> Option<u64> {
+    Some(120)
+}
+
+/// Public accessor for the streaming idle-timeout default so runtime crates
+/// can fall back to the canonical value without duplicating the literal.
+pub fn default_stream_idle_timeout_secs_value() -> Option<u64> {
+    default_stream_idle_timeout_secs()
+}
+
 fn default_loop_detection_enabled() -> bool {
     true
 }
@@ -4586,6 +4606,7 @@ impl Default for PacingConfig {
     fn default() -> Self {
         Self {
             step_timeout_secs: None,
+            stream_idle_timeout_secs: default_stream_idle_timeout_secs(),
             loop_detection_min_elapsed_secs: None,
             loop_ignore_tools: Vec::new(),
             message_timeout_scale_max: None,

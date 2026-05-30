@@ -72,6 +72,14 @@ pub struct Agent {
     hook_runner: Option<Arc<crate::hooks::HookRunner>>,
     /// Approval manager for direct Agent execution paths such as ACP.
     approval_manager: Option<Arc<ApprovalManager>>,
+    /// Max seconds to wait for the next streaming event before treating the
+    /// provider stream as stalled (freeze guard). Resolved from
+    /// `[pacing] stream_idle_timeout_secs`; `None` keeps the legacy unbounded
+    /// wait. Defaults to the schema default when the builder leaves it unset.
+    stream_idle_timeout_secs: Option<u64>,
+    /// Agent alias, retained for opening attribution spans at external turn
+    /// call sites (ACP, gateway WS) where the alias is otherwise unavailable.
+    agent_alias: String,
     /// Late-bound channel maps for the four channel-driven tools
     /// (`ask_user`, `reaction`, `escalate_to_human`, `poll`). Held so that
     /// per-session callers (e.g. the ACP server) can register a back-channel
@@ -200,6 +208,10 @@ pub struct AgentBuilder {
     activated_tools: Option<Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     hook_runner: Option<Arc<crate::hooks::HookRunner>>,
     approval_manager: Option<Arc<ApprovalManager>>,
+    /// Outer `Option`: builder-set vs unset. Inner `Option<u64>`: the resolved
+    /// idle timeout (`None` = unbounded). Unset falls back to schema default.
+    stream_idle_timeout_secs: Option<Option<u64>>,
+    agent_alias: Option<String>,
     exclude_memory: bool,
 }
 
@@ -241,6 +253,8 @@ impl AgentBuilder {
             activated_tools: None,
             hook_runner: None,
             approval_manager: None,
+            stream_idle_timeout_secs: None,
+            agent_alias: None,
             exclude_memory: false,
         }
     }
@@ -408,6 +422,20 @@ impl AgentBuilder {
         self
     }
 
+    /// Set the streaming idle timeout (freeze guard). Outer `Some` marks it
+    /// builder-provided; inner `None` means unbounded. Leave unset to inherit
+    /// the schema default.
+    pub fn stream_idle_timeout_secs(mut self, secs: Option<u64>) -> Self {
+        self.stream_idle_timeout_secs = Some(secs);
+        self
+    }
+
+    /// Set the agent alias used for turn-span attribution.
+    pub fn agent_alias(mut self, alias: String) -> Self {
+        self.agent_alias = Some(alias);
+        self
+    }
+
     /// Exclude persistent memory from this agent. When set, the memory
     /// backend is replaced with `NoneMemory`, auto-save is forced off, and
     /// all `memory_*` tools are stripped from the tool set. Used by ACP
@@ -548,6 +576,10 @@ impl AgentBuilder {
             activated_tools: self.activated_tools,
             hook_runner: self.hook_runner,
             approval_manager: self.approval_manager,
+            stream_idle_timeout_secs: self
+                .stream_idle_timeout_secs
+                .unwrap_or_else(zeroclaw_config::schema::default_stream_idle_timeout_secs_value),
+            agent_alias: self.agent_alias.unwrap_or_default(),
             channel_handles: AgentChannelHandles::default(),
             exclude_memory,
             image_cache: zeroclaw_providers::multimodal::LocalImageCache::new(),
@@ -571,6 +603,18 @@ impl Agent {
 
     pub fn history(&self) -> &[ConversationMessage] {
         &self.history
+    }
+
+    /// Attribution fields for opening a turn span at external call sites
+    /// (ACP, gateway WS) so every record inside a streamed turn carries the
+    /// same `agent_alias`/`model_provider`/`model` the RPC dispatch path sets.
+    /// Returns `(agent_alias, model_provider, model)`.
+    pub fn attribution_fields(&self) -> (String, String, String) {
+        (
+            self.agent_alias.clone(),
+            self.model_provider_name.clone(),
+            self.model_name.clone(),
+        )
     }
 
     pub fn clear_history(&mut self) {
@@ -1231,6 +1275,8 @@ impl Agent {
                     .unwrap_or_else(|| agent_cfg.clone()),
             )
             .multimodal_config(config.multimodal.clone())
+            .stream_idle_timeout_secs(config.pacing.stream_idle_timeout_secs)
+            .agent_alias(agent_alias.to_string())
             .model_name(model_name)
             .model_provider_name(provider_name.to_string())
             .temperature(agent_model_provider.and_then(|e| e.temperature))
@@ -2232,6 +2278,15 @@ impl Agent {
             let mut pre_executed_call_ids: HashMap<String, VecDeque<String>> = HashMap::new();
             let mut was_cancelled = false;
 
+            // Per-item stream-idle bound (freeze guard). A half-open provider
+            // socket can yield no event, no error, and no EOF; without a bound
+            // the wait below never resolves and there is no cancel path unless
+            // the user manually aborts. On expiry we drop the stream and
+            // surface a normal recoverable error rather than wedging the turn.
+            let stream_idle_timeout = self
+                .stream_idle_timeout_secs
+                .map(std::time::Duration::from_secs);
+
             // Consume the stream, checking for cancellation between chunks.
             // We use a manual loop with `tokio::select!` so that a cancel
             // signal interrupts even while waiting for the next SSE event
@@ -2239,29 +2294,112 @@ impl Agent {
             loop {
                 let next_item = stream.next();
 
+                // Apply the idle bound if configured. `timeout` wrapping a
+                // `None` future would never fire, so only wrap when set; the
+                // unset case keeps the legacy unbounded wait.
+                let mut stream_stalled = false;
                 let item = if let Some(ref token) = cancel_token {
-                    tokio::select! {
-                        biased;
-                        () = token.cancelled() => {
-                            was_cancelled = true;
-                            ::zeroclaw_log::record!(
-                                INFO,
-                                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Cancel)
-                                    .with_category(::zeroclaw_log::EventCategory::Agent)
-                                    .with_outcome(::zeroclaw_log::EventOutcome::Success)
-                                    .with_attrs(::serde_json::json!({
-                                        "streamed_text_len": streamed_text.len(),
-                                        "got_stream": got_stream,
-                                    })),
-                                "turn: cancel token fired mid-stream — breaking consume loop, dropping stream to abort parser"
-                            );
-                            break;
-                        }
-                        item = next_item => item,
+                    match stream_idle_timeout {
+                        Some(idle) => tokio::select! {
+                            biased;
+                            () = token.cancelled() => {
+                                was_cancelled = true;
+                                ::zeroclaw_log::record!(
+                                    INFO,
+                                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Cancel)
+                                        .with_category(::zeroclaw_log::EventCategory::Agent)
+                                        .with_outcome(::zeroclaw_log::EventOutcome::Success)
+                                        .with_attrs(::serde_json::json!({
+                                            "streamed_text_len": streamed_text.len(),
+                                            "got_stream": got_stream,
+                                        })),
+                                    "turn: cancel token fired mid-stream — breaking consume loop, dropping stream to abort parser"
+                                );
+                                break;
+                            }
+                            timed = tokio::time::timeout(idle, next_item) => match timed {
+                                Ok(item) => item,
+                                Err(_) => { stream_stalled = true; None }
+                            },
+                        },
+                        None => tokio::select! {
+                            biased;
+                            () = token.cancelled() => {
+                                was_cancelled = true;
+                                ::zeroclaw_log::record!(
+                                    INFO,
+                                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Cancel)
+                                        .with_category(::zeroclaw_log::EventCategory::Agent)
+                                        .with_outcome(::zeroclaw_log::EventOutcome::Success)
+                                        .with_attrs(::serde_json::json!({
+                                            "streamed_text_len": streamed_text.len(),
+                                            "got_stream": got_stream,
+                                        })),
+                                    "turn: cancel token fired mid-stream — breaking consume loop, dropping stream to abort parser"
+                                );
+                                break;
+                            }
+                            item = next_item => item,
+                        },
                     }
                 } else {
-                    next_item.await
+                    match stream_idle_timeout {
+                        Some(idle) => match tokio::time::timeout(idle, next_item).await {
+                            Ok(item) => item,
+                            Err(_) => {
+                                stream_stalled = true;
+                                None
+                            }
+                        },
+                        None => next_item.await,
+                    }
                 };
+
+                // A stalled stream is a recoverable failure, not a freeze.
+                // Surface it through the same partial-aware error path a real
+                // stream error takes so the caller can retry the turn.
+                if stream_stalled {
+                    let idle_secs = stream_idle_timeout.map(|d| d.as_secs()).unwrap_or(0);
+                    ::zeroclaw_log::record!(
+                        WARN,
+                        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Timeout)
+                            .with_category(::zeroclaw_log::EventCategory::Agent)
+                            .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                            .with_attrs(::serde_json::json!({
+                                "stream_idle_timeout_secs": idle_secs,
+                                "streamed_text_len": streamed_text.len(),
+                                "got_stream": got_stream,
+                            })),
+                        "turn: streaming provider stalled past idle timeout — dropping stream"
+                    );
+                    if !streamed_text.is_empty() {
+                        let partial =
+                            Self::marked_partial_response(&streamed_text, "[stream stalled]");
+                        self.append_streamed_assistant_message_to_history(
+                            partial,
+                            &mut new_msgs,
+                            &mut committed_response,
+                        );
+                    }
+                    self.observer.record_event(&ObserverEvent::LlmResponse {
+                        model_provider: self.model_provider_name.clone(),
+                        model: effective_model.clone(),
+                        duration: llm_started_at.elapsed(),
+                        success: false,
+                        error_message: Some(format!(
+                            "streaming provider stalled past {idle_secs}s idle timeout"
+                        )),
+                        input_tokens: None,
+                        output_tokens: None,
+                    });
+                    return Err(StreamedTurnError {
+                        error: anyhow::Error::msg(format!(
+                            "streaming provider stalled past {idle_secs}s idle timeout"
+                        )),
+                        committed_response,
+                        new_messages: new_msgs,
+                    });
+                }
 
                 let Some(item) = item else { break };
                 match item {
@@ -6141,6 +6279,117 @@ mod tests {
         assert_eq!(
             names,
             &["file_read", "web_fetch", "ops__deploy", "ops__rollback"]
+        );
+    }
+
+    /// Freeze guard: a streaming provider that yields no event, no error, and
+    /// no EOF must not hang the turn forever. With `stream_idle_timeout_secs`
+    /// set, the consume loop must surface a recoverable stall error instead.
+    struct StallingStreamProvider;
+
+    #[async_trait]
+    impl ModelProvider for StallingStreamProvider {
+        async fn chat_with_system(
+            &self,
+            _system_prompt: Option<&str>,
+            _message: &str,
+            _model: &str,
+            _temperature: Option<f64>,
+        ) -> Result<String> {
+            Ok(String::new())
+        }
+
+        async fn chat(
+            &self,
+            _request: ChatRequest<'_>,
+            _model: &str,
+            _temperature: Option<f64>,
+        ) -> Result<zeroclaw_providers::ChatResponse> {
+            Ok(zeroclaw_providers::ChatResponse {
+                text: Some(String::new()),
+                tool_calls: vec![],
+                usage: None,
+                reasoning_content: None,
+            })
+        }
+
+        fn supports_streaming(&self) -> bool {
+            true
+        }
+
+        fn stream_chat(
+            &self,
+            _request: ChatRequest<'_>,
+            _model: &str,
+            _temperature: Option<f64>,
+            _options: zeroclaw_providers::traits::StreamOptions,
+        ) -> futures_util::stream::BoxStream<
+            'static,
+            zeroclaw_providers::traits::StreamResult<zeroclaw_providers::traits::StreamEvent>,
+        > {
+            use futures_util::StreamExt as _;
+            // Never yields: the first poll parks forever (half-open socket).
+            futures_util::stream::once(std::future::pending::<
+                zeroclaw_providers::traits::StreamResult<zeroclaw_providers::traits::StreamEvent>,
+            >())
+            .boxed()
+        }
+    }
+
+    impl ::zeroclaw_api::attribution::Attributable for StallingStreamProvider {
+        fn role(&self) -> ::zeroclaw_api::attribution::Role {
+            ::zeroclaw_api::attribution::Role::Provider(
+                ::zeroclaw_api::attribution::ProviderKind::Model(
+                    ::zeroclaw_api::attribution::ModelProviderKind::Custom,
+                ),
+            )
+        }
+        fn alias(&self) -> &str {
+            "StallingStreamProvider"
+        }
+    }
+
+    #[tokio::test]
+    async fn stalled_stream_surfaces_recoverable_error_not_freeze() {
+        let memory_cfg = zeroclaw_config::schema::MemoryConfig {
+            backend: "none".into(),
+            ..zeroclaw_config::schema::MemoryConfig::default()
+        };
+        let mem: Arc<dyn Memory> = Arc::from(
+            zeroclaw_memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
+                .expect("memory creation should succeed"),
+        );
+        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+        let mut agent = Agent::builder()
+            .model_provider(Box::new(StallingStreamProvider))
+            .tools(vec![])
+            .memory(mem)
+            .observer(observer)
+            .tool_dispatcher(Box::new(NativeToolDispatcher))
+            .workspace_dir(std::path::PathBuf::from("/tmp"))
+            .stream_idle_timeout_secs(Some(1))
+            .build()
+            .expect("agent builder should succeed");
+
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel::<TurnEvent>(8);
+        // The 1s idle timeout fires and the turn returns an error instead of
+        // parking forever. Bounded by an outer timeout so a regression that
+        // reintroduces the freeze fails the test instead of hanging CI.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            agent.turn_streamed("hi", event_tx, None),
+        )
+        .await
+        .expect("turn must not hang past the idle timeout");
+        let err = result.expect_err("a stalled stream must surface an error, not hang");
+        assert!(
+            err.to_string().contains("stalled"),
+            "stall error should name the stall: {err}"
+        );
+        // Must NOT be misclassified as a cancellation.
+        assert!(
+            !crate::agent::loop_::is_tool_loop_cancelled(&err),
+            "a provider stall is a recoverable failure, not a cancellation"
         );
     }
 }
