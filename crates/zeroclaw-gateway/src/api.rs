@@ -2387,10 +2387,16 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let json = response_json(response).await;
         let channel = &json["channels"][0];
+        let webhook_compiled = zeroclaw_channels::listing::is_channel_type_compiled("webhook");
         assert_eq!(channel["name"], "webhook.ops");
-        assert_eq!(channel["compiled"], false);
-        assert_eq!(channel["status"], "not_compiled");
-        assert_eq!(channel["health"], "unavailable");
+        assert_eq!(channel["compiled"], webhook_compiled);
+        if webhook_compiled {
+            assert_eq!(channel["status"], "error");
+            assert_eq!(channel["health"], "down");
+        } else {
+            assert_eq!(channel["status"], "not_compiled");
+            assert_eq!(channel["health"], "unavailable");
+        }
         assert_eq!(channel["readiness"]["enabled"], "ready");
         assert_eq!(channel["readiness"]["authenticated"], "ready");
         assert_eq!(channel["readiness"]["listening"], "missing");
