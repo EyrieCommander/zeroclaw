@@ -284,6 +284,14 @@ impl RpcDispatcher {
         self.tui_id.as_deref()
     }
 
+    /// Test-only: stamp the caller's tui_id without going through the
+    /// `initialize` handshake, so ownership-gated handlers can be exercised
+    /// directly. Never called from prod.
+    #[cfg(test)]
+    pub fn set_tui_id_for_test(&mut self, tui_id: Option<String>) {
+        self.tui_id = tui_id;
+    }
+
     /// Construct a pre-authenticated dispatcher sharing the same context and
     /// RPC outbound as `self`. Used to run long-lived methods (e.g.
     /// `session/prompt`) in a spawned task so the read loop remains live.
@@ -396,7 +404,7 @@ impl RpcDispatcher {
                 return;
             }
             Method::SessionConfigure => self.handle_session_configure(&req.params).await,
-            Method::SessionCancel => self.handle_session_cancel(&req.params),
+            Method::SessionCancel => self.handle_session_cancel(&req.params).await,
             Method::SessionGitBranch => self.handle_session_git_branch(&req.params).await,
             Method::SessionList => self.handle_session_list(&req.params).await,
             Method::SessionListAcp => self.handle_session_list_acp(&req.params).await,
@@ -832,12 +840,26 @@ impl RpcDispatcher {
             ));
         }
 
-        let agent = self
-            .ctx
-            .sessions
-            .get_agent(sid)
-            .await
-            .ok_or_else(|| rpc_err(SESSION_NOT_FOUND, "Session not found"))?;
+        let agent = match self.ctx.sessions.get_agent(sid).await {
+            Some(a) => a,
+            None => {
+                // The session was reaped (orphan grace expired or idle-TTL
+                // backstop fired) between the TUI's last touch and this
+                // prompt landing. The TUI is parked in `working` and will
+                // stay there forever unless we send the TurnComplete it
+                // is waiting for. Emit Failed (not Cancelled — the user
+                // didn't press Esc) and surface the structured error for
+                // request-form callers.
+                self.emit_turn_complete(
+                    sid,
+                    crate::rpc::types::TurnCompletionOutcome::Failed,
+                    "[session no longer exists on the daemon — start a new session to continue]"
+                        .to_string(),
+                )
+                .await;
+                return Err(rpc_err(SESSION_NOT_FOUND, "Session not found"));
+            }
+        };
 
         // Process inline attachments: upload each, append markers to prompt.
         let mut prompt = req.prompt.clone();
@@ -985,19 +1007,24 @@ impl RpcDispatcher {
         .await;
 
         // Drain the cancel cause BEFORE removing the token (removal clears the
-        // cause map). Only meaningful when the outcome is Cancelled.
+        // cause map). On an idle-stall cancel the drain fired its own token
+        // without a recorded cause; record it here so the verdict audit always
+        // has attribution.
+        if let Ok(crate::rpc::turn::TurnOutcome::Cancelled {
+            idle_stall: true, ..
+        }) = &outcome
+        {
+            self.ctx
+                .sessions
+                .record_cancel_cause(sid, crate::rpc::session::CancelCause::IdleStall);
+        }
         let cancel_cause = self.ctx.sessions.take_cancel_cause(sid);
         self.ctx.sessions.remove_cancel_token(sid);
 
         // ── Durable turn-verdict audit row ───────────────────────────────
         // Every turn termination writes one attributed row to the ACP session
-        // store's event log so a spurious cancel is diagnosable after the
-        // trace log rotates. Scoped to ACP mode because that is where the
-        // durable store and a backing `acp_sessions` row exist. Fire-and-
-        // forget on a blocking task: a contended SQLite write must never block
-        // the dispatch path or fail the turn. An `Unattributed` cancel cause is
-        // the signature of the recurring spurious-cancel bug and is recorded
-        // verbatim so the next occurrence is finally observable.
+        // store's event log so a cancel verdict is diagnosable after the trace
+        // log rotates. Fire-and-forget on a blocking task.
         if matches!(chat_mode, crate::rpc::types::ChatMode::Acp)
             && let Some(store) = self.ctx.acp_session_store.clone()
         {
@@ -1011,7 +1038,10 @@ impl RpcDispatcher {
                     ::zeroclaw_log::Action::Cancel,
                     ::zeroclaw_log::EventOutcome::Unknown,
                     Some(
-                        ::serde_json::json!({ "cancel_cause": cancel_cause.as_str() }).to_string(),
+                        ::serde_json::json!({
+                            "cancel_cause": cancel_cause.map(|c| c.as_str()),
+                        })
+                        .to_string(),
                     ),
                 ),
                 Err(e) => (
@@ -1107,7 +1137,9 @@ impl RpcDispatcher {
                         Ok(TurnOutcome::Completed { text, .. }) => {
                             let _ = backend.append(&key, &ChatMessage::assistant(text));
                         }
-                        Ok(TurnOutcome::Cancelled { partial_text }) if !partial_text.is_empty() => {
+                        Ok(TurnOutcome::Cancelled { partial_text, .. })
+                            if !partial_text.is_empty() =>
+                        {
                             let _ = backend.append(&key, &ChatMessage::assistant(partial_text));
                         }
                         _ => {}
@@ -1130,7 +1162,7 @@ impl RpcDispatcher {
                     content: text,
                 })
             }
-            Ok(TurnOutcome::Cancelled { partial_text }) => {
+            Ok(TurnOutcome::Cancelled { partial_text, .. }) => {
                 self.emit_turn_complete(
                     &req.session_id,
                     crate::rpc::types::TurnCompletionOutcome::Cancelled,
@@ -1208,8 +1240,56 @@ impl RpcDispatcher {
         })
     }
 
-    fn handle_session_cancel(&self, params: &Value) -> RpcResult {
+    async fn handle_session_cancel(&self, params: &Value) -> RpcResult {
         let req: SessionIdParams = parse_params(params)?;
+        let owner = self
+            .ctx
+            .sessions
+            .session_owner_tui_id(&req.session_id)
+            .await;
+        let allowed = match (
+            owner.as_ref().and_then(|o| o.as_deref()),
+            self.tui_id.as_deref(),
+        ) {
+            (Some(o), Some(c)) => o == c,
+            _ => false,
+        };
+        if !allowed {
+            let (agent_alias, model_provider, model) =
+                match self.ctx.sessions.get_agent(&req.session_id).await {
+                    Some(agent) => agent.lock().await.attribution_fields(),
+                    None => (String::new(), String::new(), String::new()),
+                };
+            let span = ::zeroclaw_log::info_span!(
+                target: "zeroclaw_log_internal_scope",
+                "zeroclaw_scope",
+                session_key = %req.session_id,
+                agent_alias = %agent_alias,
+                model_provider = %model_provider,
+                model = %model,
+                channel = "rpc",
+            );
+            let _guard = span.enter();
+            ::zeroclaw_log::record!(
+                WARN,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                    .with_category(::zeroclaw_log::EventCategory::Channel)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                    .with_attrs(::serde_json::json!({
+                        "caller_tui_id": self.tui_id.as_deref().unwrap_or("<none>"),
+                        "owner_tui_id": owner
+                            .as_ref()
+                            .and_then(|o| o.as_deref())
+                            .unwrap_or("<none>"),
+                        "peer_label": &self.peer_label,
+                    })),
+                "session/cancel refused: caller does not own the session"
+            );
+            return Err(rpc_err(
+                SESSION_NOT_OWNED,
+                "Caller does not own this session",
+            ));
+        }
         if self.ctx.sessions.cancel_session(&req.session_id) {
             to_result(SessionCancelResult {
                 session_id: req.session_id,
@@ -3363,5 +3443,231 @@ mod tests {
             .get("default")
             .and_then(|e| e.base.model.clone());
         assert_eq!(stored.as_deref(), Some("claude-sonnet-4-5"));
+    }
+
+    // -----------------------------------------------------------------------
+    // session/cancel ownership enforcement — the spurious-cancel bug
+    // -----------------------------------------------------------------------
+
+    /// Build two dispatchers sharing one `RpcContext`/`SessionStore`. Mirrors
+    /// production where each TUI connection gets its own dispatcher with its
+    /// own `tui_id`, all routing to the same shared session map.
+    fn make_two_dispatchers_sharing_context(
+        config: zeroclaw_config::schema::Config,
+    ) -> (
+        RpcDispatcher,
+        RpcDispatcher,
+        Arc<crate::rpc::session::SessionStore>,
+    ) {
+        use zeroclaw_infra::session_queue::SessionActorQueue;
+        let queue = Arc::new(SessionActorQueue::new(4, 10, 60));
+        let sessions = Arc::new(crate::rpc::session::SessionStore::new(16, queue));
+        let ctx = RpcContext::minimal(config, Arc::clone(&sessions));
+        let (tx_a, _rx_a) = tokio::sync::mpsc::channel(64);
+        let (tx_b, _rx_b) = tokio::sync::mpsc::channel(64);
+        let dispatcher_a = RpcDispatcher::new(Arc::clone(&ctx), tx_a, "test-peer-a:pid=1".into());
+        let dispatcher_b = RpcDispatcher::new(ctx, tx_b, "test-peer-b:pid=2".into());
+        (dispatcher_a, dispatcher_b, sessions)
+    }
+
+    async fn create_session_with_owner(
+        dispatcher: &mut RpcDispatcher,
+        sessions: &Arc<crate::rpc::session::SessionStore>,
+        session_id: &str,
+        owner_tui_id: &str,
+    ) -> tokio_util::sync::CancellationToken {
+        dispatcher.set_tui_id_for_test(Some(owner_tui_id.to_string()));
+        let params = json!({
+            "agent_alias": "test-agent",
+            "session_id": session_id,
+        });
+        dispatcher
+            .handle_session_new_for_test(&params)
+            .await
+            .expect("session/new must succeed");
+
+        let stamped_owner = sessions
+            .session_owner_tui_id(session_id)
+            .await
+            .expect("session must exist after session/new");
+        assert_eq!(
+            stamped_owner.as_deref(),
+            Some(owner_tui_id),
+            "harness invariant: session/new must stamp owner_tui_id from the \
+             caller's tui_id; if this fails, the ownership tests below are \
+             measuring nothing"
+        );
+
+        let token = tokio_util::sync::CancellationToken::new();
+        sessions.register_cancel_token(session_id, token.clone());
+        token
+    }
+
+    /// Variant of `make_two_dispatchers_sharing_context` that returns the
+    /// writer-channel receivers so a test can assert which notifications
+    /// the dispatcher emitted. The notifications carry the load-bearing
+    /// `session/update TurnComplete` events that flip the TUI out of its
+    /// `working` state — silently dropping one is the production freeze.
+    fn make_dispatcher_with_capture(
+        config: zeroclaw_config::schema::Config,
+    ) -> (
+        RpcDispatcher,
+        tokio::sync::mpsc::Receiver<String>,
+        Arc<crate::rpc::session::SessionStore>,
+    ) {
+        use zeroclaw_infra::session_queue::SessionActorQueue;
+        let queue = Arc::new(SessionActorQueue::new(4, 10, 60));
+        let sessions = Arc::new(crate::rpc::session::SessionStore::new(16, queue));
+        let ctx = RpcContext::minimal(config, Arc::clone(&sessions));
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let dispatcher = RpcDispatcher::new(ctx, tx, "test-peer-cap:pid=1".into());
+        (dispatcher, rx, sessions)
+    }
+
+    /// RED guard: a `session/prompt` for a session that no longer exists
+    /// (e.g. evicted by the reaper while the TUI thought the session was
+    /// still live) MUST emit a `session/update TurnComplete::Failed`
+    /// notification so the TUI can exit `working` state. Silently dropping
+    /// the request — the production behaviour — leaves the TUI parked
+    /// forever with no `TurnComplete` ever arriving. This is the second
+    /// half of the freeze: a reaped session + a fresh prompt = hang.
+    #[tokio::test]
+    async fn session_prompt_on_missing_session_emits_turn_complete_failed() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config = make_acp_test_config(&tmp);
+        let (dispatcher, mut rx, _sessions) = make_dispatcher_with_capture(config);
+
+        let result = dispatcher
+            .handle_session_prompt(&json!({
+                "session_id": "gone-id",
+                "prompt": "anything",
+            }))
+            .await;
+        assert!(
+            result.is_err(),
+            "missing session must still produce an RPC error for legacy \
+             request-form callers; the new behaviour is the additional \
+             notification, not replacing the error"
+        );
+
+        // The notification must already be queued on the writer channel by
+        // the time `handle_session_prompt` returns. `try_recv` rules out
+        // any test flakiness from racing with a spawned task.
+        let raw = rx.try_recv().expect(
+            "handle_session_prompt must emit a session/update TurnComplete \
+             notification before returning on missing-session — without it \
+             the TUI's `working` state never clears and the next prompt is \
+             the production freeze",
+        );
+        let v: serde_json::Value = serde_json::from_str(&raw).expect("notification must be JSON");
+        assert_eq!(v["method"], notification::SESSION_UPDATE);
+        assert_eq!(v["params"]["session_id"], "gone-id");
+        assert_eq!(
+            v["params"]["outcome"], "failed",
+            "missing-session is not Completed and not Cancelled — it is a \
+             distinct Failed verdict. Folding it into Cancelled would lie \
+             about whether the user pressed Esc."
+        );
+    }
+
+    /// Cross-TUI cancel from a distinct dispatcher (separate connection,
+    /// separate `tui_id`) targeting a session owned by another TUI. The
+    /// fixed daemon must refuse and leave the owner's token un-fired.
+    #[tokio::test]
+    async fn session_cancel_from_distinct_non_owner_dispatcher_is_rejected() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config = make_acp_test_config(&tmp);
+        let (mut dispatcher_a, mut dispatcher_b, sessions) =
+            make_two_dispatchers_sharing_context(config);
+
+        let token =
+            create_session_with_owner(&mut dispatcher_a, &sessions, "sess-owned-by-tui-A", "tui-A")
+                .await;
+
+        dispatcher_b.set_tui_id_for_test(Some("tui-B".to_string()));
+        let result = dispatcher_b
+            .handle_session_cancel(&json!({
+                "session_id": "sess-owned-by-tui-A",
+            }))
+            .await;
+
+        let err = result.expect_err(
+            "a cancel from a dispatcher whose tui_id does not match the \
+             session's owner_tui_id must be refused",
+        );
+        assert_ne!(
+            err.code, SESSION_NOT_FOUND,
+            "the rejection must NOT be reported as SESSION_NOT_FOUND — the \
+             session DOES exist; reporting NOT_FOUND would hide the \
+             ownership violation behind a benign-looking error"
+        );
+        assert!(
+            !token.is_cancelled(),
+            "the owner's cancel token must remain un-fired — the rightful \
+             owner's turn must survive a mis-targeted cancel from another TUI"
+        );
+    }
+
+    /// Cancel from a dispatcher that never completed the `initialize`
+    /// handshake (no `tui_id`) must be refused. An unauthenticated caller
+    /// has no provable ownership claim over any session.
+    #[tokio::test]
+    async fn session_cancel_from_anonymous_dispatcher_is_rejected() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config = make_acp_test_config(&tmp);
+        let (mut dispatcher_a, mut dispatcher_b, sessions) =
+            make_two_dispatchers_sharing_context(config);
+
+        let token =
+            create_session_with_owner(&mut dispatcher_a, &sessions, "sess-owned-by-tui-A", "tui-A")
+                .await;
+
+        // dispatcher_b never set its tui_id — fresh connection, no
+        // initialize handshake yet.
+        dispatcher_b.set_tui_id_for_test(None);
+        let result = dispatcher_b
+            .handle_session_cancel(&json!({
+                "session_id": "sess-owned-by-tui-A",
+            }))
+            .await;
+
+        let err = result.expect_err("anonymous cancel must be refused");
+        assert_ne!(err.code, SESSION_NOT_FOUND);
+        assert!(
+            !token.is_cancelled(),
+            "anonymous cancel must not fire the token"
+        );
+    }
+
+    /// Regression guard: the legitimate owner must still be able to cancel
+    /// its own session via its OWN dispatcher. A fix that over-rejects and
+    /// breaks the user-pressed-Esc path is unacceptable.
+    #[tokio::test]
+    async fn session_cancel_from_owner_dispatcher_still_works() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config = make_acp_test_config(&tmp);
+        let (mut dispatcher_a, _dispatcher_b, sessions) =
+            make_two_dispatchers_sharing_context(config);
+
+        let token =
+            create_session_with_owner(&mut dispatcher_a, &sessions, "sess-owned-by-tui-A", "tui-A")
+                .await;
+
+        // Same dispatcher, same tui_id that created the session.
+        let result = dispatcher_a
+            .handle_session_cancel(&json!({
+                "session_id": "sess-owned-by-tui-A",
+            }))
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "owner cancel must succeed; got: {:?}",
+            result.err()
+        );
+        assert!(
+            token.is_cancelled(),
+            "owner cancel must fire the session's cancel token"
+        );
     }
 }

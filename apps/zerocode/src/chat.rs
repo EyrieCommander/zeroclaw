@@ -35,14 +35,6 @@ const APPROVAL_OVERLAY_HEIGHT: u16 = 7;
 /// How often the cwd line re-polls the daemon for the current git branch.
 const GIT_BRANCH_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Watchdog: if a turn sits in `Cancelling` this long without the daemon
-/// sending a terminal `TurnComplete`, the TUI force-commits the turn itself.
-/// The daemon now guarantees a verdict on every cancel, so this should never
-/// fire in practice — it exists so a dropped or lagged notification can never
-/// wedge the UI in `Cancelling` permanently. Generous enough that a slow-but-
-/// honest wind-down (large partial flush, contended socket) is not cut short.
-const CANCEL_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(10);
-
 // ── Chat pane (tab mode) ─────────────────────────────────────────
 
 enum ChatPhase {
@@ -235,30 +227,6 @@ impl Chat {
         }
     }
 
-    /// Force-commit a turn stuck in `Cancelling` past the watchdog timeout.
-    /// The daemon now always sends a terminal `TurnComplete`, so this is a
-    /// last-resort guard against a lost notification leaving the UI gated
-    /// forever. Reaching the timeout is a bug worth surfacing, so it appends a
-    /// visible note rather than silently recovering.
-    fn check_cancel_watchdog(&mut self) {
-        let ChatPhase::Active(ref mut state) = self.phase else {
-            return;
-        };
-        if !matches!(state.turn_status, TurnStatus::Cancelling) {
-            return;
-        }
-        let fired = state
-            .cancel_requested_at
-            .is_some_and(|t| t.elapsed() >= CANCEL_WATCHDOG_TIMEOUT);
-        if !fired {
-            return;
-        }
-        state.entries.push(ChatEntry::SystemMessage(Arc::<str>::from(
-            "[turn cancelled — daemon sent no confirmation within the timeout; recovered locally]",
-        )));
-        state.commit_turn(String::new());
-    }
-
     fn drain_git_branch_results(&mut self) {
         while let Ok((sid, branch)) = self.git_branch_rx.try_recv() {
             self.git_branch_inflight = false;
@@ -311,7 +279,6 @@ impl Chat {
         self.drain_notifications();
         self.drain_git_branch_results();
         self.maybe_refresh_git_branch();
-        self.check_cancel_watchdog();
 
         match &mut self.phase {
             ChatPhase::PickAgent {
@@ -605,7 +572,6 @@ impl Chat {
                 if !matches!(state.turn_status, TurnStatus::Cancelling) {
                     let _ = self.rpc.session_cancel(&state.session_id).await;
                     state.turn_status = TurnStatus::Cancelling;
-                    state.cancel_requested_at = Some(Instant::now());
                 }
             } else {
                 return true;
@@ -621,7 +587,6 @@ impl Chat {
                 {
                     let _ = self.rpc.session_cancel(&state.session_id).await;
                     state.turn_status = TurnStatus::Cancelling;
-                    state.cancel_requested_at = Some(Instant::now());
                 }
             }
             Some(ChatTabAction::ApprovalApprove) if state.pending_approval().is_some() => {
@@ -2252,11 +2217,6 @@ pub struct ChatState {
     /// Anchor for the dots animation — reset each time a turn begins so
     /// the pulse starts from phase 0.
     turn_started_at: Instant,
-    /// Wall-clock instant the user requested cancel (entered `Cancelling`).
-    /// Drives the watchdog that force-commits the turn if the daemon never
-    /// sends a terminal `TurnComplete` — a dropped notification must never
-    /// wedge the UI in `Cancelling` permanently.
-    cancel_requested_at: Option<Instant>,
     show_thoughts: bool,
     /// Browse mode cursor (most-recently moved position).
     browse_cursor: Option<usize>,
@@ -2316,7 +2276,6 @@ impl ChatState {
             pending_approval: None,
             turn_in_flight: false,
             turn_status: TurnStatus::Idle,
-            cancel_requested_at: None,
             turn_started_at: Instant::now(),
             show_thoughts: true,
             browse_cursor: None,
@@ -2794,7 +2753,6 @@ impl ChatState {
         self.mark_dirty_append();
         self.turn_in_flight = false;
         self.turn_status = TurnStatus::Idle;
-        self.cancel_requested_at = None;
         self.input_bar.cleanup_temps();
     }
 
@@ -2827,7 +2785,6 @@ impl ChatState {
         self.pending_approval = None;
         self.turn_in_flight = false;
         self.turn_status = TurnStatus::Idle;
-        self.cancel_requested_at = None;
         self.browse_cursor = None;
         self.browse_anchor = None;
         self.browse_multi.clear();

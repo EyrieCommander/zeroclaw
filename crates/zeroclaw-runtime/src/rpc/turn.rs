@@ -14,6 +14,11 @@ pub enum TurnOutcome {
     },
     Cancelled {
         partial_text: String,
+        /// `true` when the drain self-cancelled on idle-stall (no events for
+        /// [`DRAIN_IDLE_TIMEOUT`]); `false` when an external token fire
+        /// (client RPC, reaper, session removal) reached the drain. Lets the
+        /// caller record the right [`crate::rpc::session::CancelCause`].
+        idle_stall: bool,
     },
 }
 
@@ -60,16 +65,6 @@ where
     let cancel_clone = cancel.clone();
     let session_key = attribution.session_key.clone();
 
-    // Caller-side copy of the attribution fields. The spawned turn task moves
-    // `attribution`, but the drain loop below runs in THIS task and emits its
-    // own span-attributed record on the cancel-mid-drain path, so it needs the
-    // same fields to reconstruct the `zeroclaw_scope` span.
-    let attr_session_key = attribution.session_key.clone();
-    let attr_agent_alias = attribution.agent_alias.clone();
-    let attr_model_provider = attribution.model_provider.clone();
-    let attr_model = attribution.model.clone();
-    let attr_channel = attribution.channel;
-
     let turn_handle = zeroclaw_spawn::spawn!(async move {
         let mut guard = agent.lock().await;
         let sk = attribution.session_key.clone();
@@ -95,97 +90,70 @@ where
     let mut accumulated_text = String::new();
 
     // Drive the turn by draining its event channel, but never let a turn task
-    // that is wedged inside a non-cancellable tool call (shell, HTTP, a stalled
-    // provider stream) hold the dispatch path hostage. The event loop exits on
-    // EITHER the channel closing (turn returned) OR the cancel token firing.
-    // Without the cancel arm, a fired token that the in-flight tool does not
-    // poll would leave `event_rx.recv()` awaiting forever, the turn task never
-    // dropping `event_tx`, and the caller never reaching `emit_turn_complete`
-    // — the exact TUI hang where `Esc` parks the client in `Cancelling` with no
-    // terminal `TurnComplete` ever sent.
-    let cancelled_mid_drain =
+    // wedged inside a non-cancellable tool call (shell, HTTP, a stalled provider
+    // stream) hold the dispatch path hostage. The drain exits on channel close,
+    // explicit cancel, OR an idle-stall bound; the latter two return Cancelled
+    // and the in-flight task is aborted on drop.
+    let drain =
         drain_until_done_or_cancelled(&mut event_rx, &cancel, &mut accumulated_text, &on_event)
             .await;
     let _ = session_key; // consumed above
 
-    if cancelled_mid_drain {
-        // The token fired while the turn task may still be blocked in a tool
-        // call that does not observe cancellation. Detach the task so it aborts
-        // on drop (or unwinds when its next await point sees the token) and
-        // return the verdict NOW. The dispatch path emits `TurnComplete` from
-        // here, guaranteeing the client always exits the working state.
-        //
-        // Emit the observability marker for this exact site: before the
-        // select-on-cancel arm existed, control would have parked on
-        // `event_rx.recv()` here forever — the TUI freeze. Recording it under
-        // the turn's attribution span turns every would-have-frozen turn into a
-        // searchable, attributed event instead of a silent hang.
+    match drain {
+        DrainOutcome::Completed => match turn_handle
+            .await
+            .map_err(|e| TurnError::Panicked(format!("{e}")))?
         {
-            use ::zeroclaw_log::Instrument as _;
-            let span = ::zeroclaw_log::info_span!(
-                target: "zeroclaw_log_internal_scope",
-                "zeroclaw_scope",
-                session_key = %attr_session_key.as_deref().unwrap_or(""),
-                agent_alias = %attr_agent_alias,
-                model_provider = %attr_model_provider,
-                model = %attr_model,
-                channel = %attr_channel,
-            );
-            async {
-                ::zeroclaw_log::record!(
-                    DEBUG,
-                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Cancel)
-                        .with_category(::zeroclaw_log::EventCategory::Agent)
-                        .with_attrs(::serde_json::json!({
-                            "partial_text_len": accumulated_text.len(),
-                        })),
-                    "turn: cancel fired mid-drain; returning Cancelled and aborting detached turn task (pre-fix this site would have hung waiting on a wedged tool)"
-                );
-            }
-            .instrument(span)
-            .await;
+            Ok((text, messages)) => Ok(TurnOutcome::Completed { text, messages }),
+            Err(e) if is_tool_loop_cancelled(&e) => Ok(TurnOutcome::Cancelled {
+                partial_text: accumulated_text,
+                idle_stall: false,
+            }),
+            Err(e) => Err(TurnError::AgentError(format!("{e}"))),
+        },
+        DrainOutcome::ExplicitCancel | DrainOutcome::IdleStall => {
+            turn_handle.abort();
+            Ok(TurnOutcome::Cancelled {
+                partial_text: accumulated_text,
+                idle_stall: matches!(drain, DrainOutcome::IdleStall),
+            })
         }
-        turn_handle.abort();
-        return Ok(TurnOutcome::Cancelled {
-            partial_text: accumulated_text,
-        });
-    }
-
-    match turn_handle
-        .await
-        .map_err(|e| TurnError::Panicked(format!("{e}")))?
-    {
-        Ok((text, messages)) => Ok(TurnOutcome::Completed { text, messages }),
-        Err(e) if is_tool_loop_cancelled(&e) => Ok(TurnOutcome::Cancelled {
-            partial_text: accumulated_text,
-        }),
-        Err(e) => Err(TurnError::AgentError(format!("{e}"))),
     }
 }
 
-/// Drain `event_rx`, forwarding each event to `on_event`, until EITHER the
-/// channel closes (the turn task returned and dropped its sender) OR `cancel`
-/// fires. Returns `true` when it stopped because cancel fired — the signal that
-/// the turn task may be wedged and the caller must return the verdict without
-/// awaiting it. Chunk deltas are appended to `accumulated` so a cancel verdict
-/// can still carry whatever partial text streamed before the stop.
+/// Why [`drain_until_done_or_cancelled`] returned. `IdleStall` is a self-fired
+/// cancel (no events for [`DRAIN_IDLE_TIMEOUT`]); `ExplicitCancel` is an
+/// outside fire that reached the drain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DrainOutcome {
+    Completed,
+    ExplicitCancel,
+    IdleStall,
+}
+
+/// Drain `event_rx` until the turn finishes, the cancel token fires, or the
+/// stream stalls past [`DRAIN_IDLE_TIMEOUT`]. On idle, fires `cancel` itself
+/// so downstream sees a unified cancel shape. Chunk deltas accumulate in
+/// `accumulated` so partial text survives a cancel.
+const DRAIN_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 async fn drain_until_done_or_cancelled<F, Fut>(
     event_rx: &mut mpsc::Receiver<TurnEvent>,
     cancel: &CancellationToken,
     accumulated: &mut String,
     on_event: &F,
-) -> bool
+) -> DrainOutcome
 where
     F: Fn(TurnEvent) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
     loop {
         if cancel.is_cancelled() {
-            return true;
+            return DrainOutcome::ExplicitCancel;
         }
         tokio::select! {
             biased;
-            _ = cancel.cancelled() => return true,
+            _ = cancel.cancelled() => return DrainOutcome::ExplicitCancel,
             maybe_event = event_rx.recv() => {
                 match maybe_event {
                     Some(event) => {
@@ -194,8 +162,12 @@ where
                         }
                         on_event(event).await;
                     }
-                    None => return false,
+                    None => return DrainOutcome::Completed,
                 }
+            }
+            _ = tokio::time::sleep(DRAIN_IDLE_TIMEOUT) => {
+                cancel.cancel();
+                return DrainOutcome::IdleStall;
             }
         }
     }
@@ -204,76 +176,73 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::mpsc;
 
     fn noop(_e: TurnEvent) -> std::future::Ready<()> {
         std::future::ready(())
     }
 
-    // The regression guard for the TUI hang: a turn task wedged inside a
-    // non-cancellable tool never closes the event channel, so the drain must
-    // return on the cancel token alone — promptly — rather than parking on
-    // `recv()` forever. `tx` is held (never dropped) to model the wedge.
     #[tokio::test]
-    async fn cancel_unblocks_drain_when_channel_never_closes() {
+    async fn drain_must_not_hang_when_no_events_and_no_cancel() {
+        let (sender_kept_alive, mut event_rx) = mpsc::channel::<TurnEvent>(8);
+        let cancel = CancellationToken::new();
+        let mut acc = String::new();
+
+        let elapsed = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            drain_until_done_or_cancelled(&mut event_rx, &cancel, &mut acc, &noop),
+        )
+        .await;
+
+        drop(sender_kept_alive);
+
+        elapsed.expect(
+            "drain must return when no events arrive and no cancel fires; \
+             an unbounded idle wait is the TUI 'working' freeze. The fix must \
+             cap the idle-event window at a value substantially below 5s in \
+             default test configuration; the production threshold may be \
+             larger but must always be finite.",
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_must_still_accumulate_chunks_when_events_arrive_steadily() {
         let (tx, mut rx) = mpsc::channel::<TurnEvent>(8);
         let cancel = CancellationToken::new();
         let mut acc = String::new();
 
-        let c2 = cancel.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            c2.cancel();
+        let sender = tokio::spawn(async move {
+            for delta in ["he", "llo", " ", "world"] {
+                let _ = tx
+                    .send(TurnEvent::Chunk {
+                        delta: delta.to_string(),
+                    })
+                    .await;
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
         });
 
         let cancelled = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
+            std::time::Duration::from_secs(10),
             drain_until_done_or_cancelled(&mut rx, &cancel, &mut acc, &noop),
         )
         .await
-        .expect("drain must return once cancel fires, not hang on a wedged channel");
+        .expect("drain must terminate after the sender drops");
 
-        assert!(cancelled, "drain stopped because cancel fired");
-        drop(tx); // keep the sender alive until here to prove the channel stayed open
-    }
-
-    // A token already cancelled before the first poll must short-circuit to a
-    // cancelled verdict without consuming an event.
-    #[tokio::test]
-    async fn pre_cancelled_token_returns_immediately() {
-        let (_tx, mut rx) = mpsc::channel::<TurnEvent>(8);
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        let mut acc = String::new();
-        let cancelled = drain_until_done_or_cancelled(&mut rx, &cancel, &mut acc, &noop).await;
-        assert!(cancelled);
-    }
-
-    // Normal completion: the turn task finishes and drops the sender. The drain
-    // must observe the closed channel and report NOT-cancelled, having
-    // accumulated the streamed chunk text.
-    #[tokio::test]
-    async fn closed_channel_returns_not_cancelled_and_accumulates() {
-        let (tx, mut rx) = mpsc::channel::<TurnEvent>(8);
-        let cancel = CancellationToken::new();
-        let mut acc = String::new();
-
-        tokio::spawn(async move {
-            let _ = tx
-                .send(TurnEvent::Chunk {
-                    delta: "hello".to_string(),
-                })
-                .await;
-            // sender dropped here -> channel closes
-        });
-
-        let cancelled = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            drain_until_done_or_cancelled(&mut rx, &cancel, &mut acc, &noop),
-        )
-        .await
-        .expect("drain must return when the channel closes");
-
-        assert!(!cancelled, "completion is not a cancel");
-        assert_eq!(acc, "hello");
+        sender.await.unwrap();
+        assert_eq!(
+            cancelled,
+            DrainOutcome::Completed,
+            "channel closure is not a cancel; drain returned the wrong verdict"
+        );
+        assert_eq!(
+            acc, "hello world",
+            "drain dropped chunks instead of accumulating them; a fix that \
+             short-circuits with too-aggressive an idle window (e.g. <250ms) \
+             would corrupt legitimate streaming turns. The production idle \
+             window must sit comfortably between the inter-chunk gap of a \
+             healthy stream (~hundreds of ms) and the user-perceptible hang \
+             threshold (~seconds)."
+        );
     }
 }

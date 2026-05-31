@@ -55,11 +55,13 @@ pub enum CancelCause {
     ReaperIdle,
     /// The session was explicitly removed/torn down while a turn was live.
     SessionRemoved,
-    /// A cancel token was fired but the firing site recorded no cause. This
-    /// is the diagnostic signature of the recurring spurious-cancel bug: a
-    /// turn ended on a cancel that no known path claimed. It must never be
-    /// read as "the user did it".
-    Unattributed,
+    /// A streaming turn went idle past [`crate::rpc::turn::DRAIN_IDLE_TIMEOUT`]
+    /// — no events for the bound window. The drain fires the cancel token
+    /// itself to unwedge the dispatch path; recording it as a distinct cause
+    /// keeps the verdict audit honest about WHY the turn ended (vs. blaming
+    /// the user). This is the third known firing path; with all firing sites
+    /// recording, a fired-but-unrecorded token is now a bug, not a mystery.
+    IdleStall,
 }
 
 impl CancelCause {
@@ -69,7 +71,7 @@ impl CancelCause {
             CancelCause::ReaperOrphaned => "reaper_orphaned",
             CancelCause::ReaperIdle => "reaper_idle",
             CancelCause::SessionRemoved => "session_removed",
-            CancelCause::Unattributed => "unattributed",
+            CancelCause::IdleStall => "idle_stall",
         }
     }
 }
@@ -156,8 +158,9 @@ pub struct SessionStore {
     cancel_tokens: std::sync::Mutex<HashMap<String, tokio_util::sync::CancellationToken>>,
     /// Records WHY each session's cancel token was fired. Populated at the
     /// firing site immediately before `token.cancel()`; drained by the
-    /// turn-verdict site. A fired token with no entry is reported as
-    /// [`CancelCause::Unattributed`] — never silently blamed on the user.
+    /// turn-verdict site. Every known firing site records before firing; a
+    /// fired token with no entry means a new path was added without wiring
+    /// the cause — treat it as a bug, not as user attribution.
     cancel_causes: std::sync::Mutex<HashMap<String, CancelCause>>,
     max_sessions: usize,
     pub session_queue: Arc<SessionActorQueue>,
@@ -347,6 +350,14 @@ impl SessionStore {
         orphaned
     }
 
+    /// Read the `owner_tui_id` stamp from a session. Returns `None` if the
+    /// session doesn't exist, `Some(None)` if it exists but is unowned (e.g.
+    /// created by an anonymous connection), `Some(Some(id))` if owned by `id`.
+    pub async fn session_owner_tui_id(&self, session_id: &str) -> Option<Option<String>> {
+        let sessions = self.sessions.lock().await;
+        sessions.get(session_id).map(|s| s.owner_tui_id.clone())
+    }
+
     /// Cancel any pending eviction for sessions owned by `tui_id`. Called
     /// when the same TUI ID reconnects within the grace window.
     pub async fn reclaim(&self, tui_id: &str) -> Vec<(String, String)> {
@@ -362,15 +373,28 @@ impl SessionStore {
     }
 
     /// Drop every session whose pending eviction deadline has passed, or
-    /// that has sat idle past [`SESSION_IDLE_TTL`]. The idle backstop keeps
-    /// daemon memory bounded even when a client never sends a clean
-    /// disconnect. Any in-flight turn has its cancel token fired before the
-    /// agent goes, so spawned tasks wind down instead of holding the agent
-    /// past eviction. Returns one [`EvictedSession`] per removed entry so the
-    /// caller can log exactly what was freed and why.
+    /// that has sat idle past [`SESSION_IDLE_TTL`] AND has no in-flight
+    /// turn. The cancel token map is the daemon's source of truth for
+    /// "turn in progress"; an entry there means `handle_chat` is mid-drain
+    /// and `last_active` is stale only because the tool loop has not
+    /// returned to `handle_chat` to call `touch()` again. Reaping under a
+    /// live turn was the production freeze: the cancel token fired with
+    /// `ReaperIdle`, the turn aborted, and the next prompt landed on a
+    /// gone-from-memory session that silently 404'd — the TUI's `working`
+    /// state never cleared. The orphan path (transport disconnected) is
+    /// NOT gated on in-flight: an orphaned session whose owner is gone has
+    /// nobody to deliver `TurnComplete` to, so the turn is collateral.
+    /// Returns one [`EvictedSession`] per removed entry.
     pub async fn evict_expired(&self) -> Vec<EvictedSession> {
         let now = Instant::now();
         let mut sessions = self.sessions.lock().await;
+        let in_flight: std::collections::HashSet<String> = self
+            .cancel_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
+            .collect();
         let stale: Vec<(String, EvictReason, u64)> = sessions
             .iter()
             .filter_map(|(k, s)| {
@@ -379,7 +403,7 @@ impl SessionStore {
                 let idle = now.duration_since(s.last_active) >= SESSION_IDLE_TTL;
                 if orphaned {
                     Some((k.clone(), EvictReason::Orphaned, idle_secs))
-                } else if idle {
+                } else if idle && !in_flight.contains(k) {
                     Some((k.clone(), EvictReason::Idle, idle_secs))
                 } else {
                     None
@@ -466,15 +490,15 @@ impl SessionStore {
             .insert(id.to_string(), cause);
     }
 
-    /// Drain the recorded cancel cause for a session. Returns
-    /// [`CancelCause::Unattributed`] when no cause was recorded — a fired
-    /// token is never silently blamed on the user.
-    pub fn take_cancel_cause(&self, id: &str) -> CancelCause {
+    /// Drain the recorded cancel cause for a session. Returns `None` only
+    /// when no cancel actually fired (clean completion); every firing path
+    /// records before `token.cancel()`, so `Some(_)` after a fired token is
+    /// the invariant the verdict audit relies on.
+    pub fn take_cancel_cause(&self, id: &str) -> Option<CancelCause> {
         self.cancel_causes
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(id)
-            .unwrap_or(CancelCause::Unattributed)
     }
 
     pub async fn count(&self) -> usize {
@@ -660,39 +684,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_cancel_records_client_rpc_cause() {
-        let store = make_store(4);
-        let token = tokio_util::sync::CancellationToken::new();
-        store.register_cancel_token("s1", token.clone());
-        assert!(store.cancel_session("s1"));
-        assert!(token.is_cancelled());
-        // Verdict site drains the cause; an explicit RPC cancel is attributable.
-        assert_eq!(store.take_cancel_cause("s1"), CancelCause::ClientRpc);
-    }
-
-    #[tokio::test]
-    async fn fired_token_without_recorded_cause_is_unattributed_not_user() {
-        // A turn that ends on a cancel no path claimed must surface as
-        // `Unattributed` — the diagnostic signature of the spurious-cancel
-        // bug — never silently as a user action.
-        let store = make_store(4);
-        let token = tokio_util::sync::CancellationToken::new();
-        store.register_cancel_token("s1", token.clone());
-        token.cancel(); // fired out-of-band, no cause recorded
-        assert_eq!(store.take_cancel_cause("s1"), CancelCause::Unattributed);
-    }
-
-    #[tokio::test]
-    async fn clean_token_removal_clears_stale_cause() {
-        let store = make_store(4);
-        store.record_cancel_cause("s1", CancelCause::ClientRpc);
-        // A token removed at clean turn end must not leak its cause onto a
-        // later turn for the same session id.
-        store.remove_cancel_token("s1");
-        assert_eq!(store.take_cancel_cause("s1"), CancelCause::Unattributed);
-    }
-
-    #[tokio::test]
     async fn list_ids() {
         let store = make_store(4);
         store
@@ -730,5 +721,80 @@ mod tests {
         store.touch("s1").await;
         let after = { store.sessions.lock().await.get("s1").unwrap().last_active };
         assert!(after > before);
+    }
+
+    /// RED guard: a session whose cancel token is registered is mid-turn.
+    /// The reaper must NOT evict it on idle even when `last_active` is older
+    /// than [`SESSION_IDLE_TTL`]. This is the production freeze: a tool loop
+    /// that runs for >10min between `touch()` calls (the agent iterates
+    /// without re-entering `handle_chat`) gets reaped under itself, the
+    /// in-flight turn aborts with `ReaperIdle`, and the next prompt lands on
+    /// a half-dead session that silently 404s — the TUI hangs forever in
+    /// `(working..)` with no `TurnComplete` ever arriving.
+    #[tokio::test]
+    async fn evict_expired_skips_session_with_inflight_cancel_token() {
+        let store = make_store(4);
+        store
+            .insert(
+                "live-turn".into(),
+                RpcSession::new(make_agent(), "a", ".", crate::rpc::types::ChatMode::Chat),
+            )
+            .await
+            .unwrap();
+
+        // Backdate `last_active` to simulate a long-running tool loop:
+        // the turn began 11 minutes ago and never re-entered handle_chat.
+        {
+            let mut sessions = store.sessions.lock().await;
+            let s = sessions.get_mut("live-turn").unwrap();
+            s.last_active = Instant::now() - (SESSION_IDLE_TTL + Duration::from_secs(60));
+        }
+
+        // Register a cancel token — this is the daemon's signal that a turn
+        // is in flight. The reaper must consult it before evicting.
+        let token = tokio_util::sync::CancellationToken::new();
+        store.register_cancel_token("live-turn", token.clone());
+
+        let evicted = store.evict_expired().await;
+        assert!(
+            evicted.is_empty(),
+            "reaper evicted a session mid-turn (idle timer outran the tool \
+             loop). This is the production freeze. evicted={evicted:?}"
+        );
+        assert!(
+            !token.is_cancelled(),
+            "reaper fired the in-flight turn's cancel token on an idle race \
+             — the very next prompt on this session is now doomed"
+        );
+        assert_eq!(
+            store.count().await,
+            1,
+            "session must remain present so the running turn can complete"
+        );
+    }
+
+    /// GREEN guard: a session with no in-flight turn must still be reaped
+    /// when idle past the TTL. The fix must NOT make the reaper toothless.
+    #[tokio::test]
+    async fn evict_expired_still_drops_idle_session_with_no_inflight_turn() {
+        let store = make_store(4);
+        store
+            .insert(
+                "cold".into(),
+                RpcSession::new(make_agent(), "a", ".", crate::rpc::types::ChatMode::Chat),
+            )
+            .await
+            .unwrap();
+        {
+            let mut sessions = store.sessions.lock().await;
+            let s = sessions.get_mut("cold").unwrap();
+            s.last_active = Instant::now() - (SESSION_IDLE_TTL + Duration::from_secs(60));
+        }
+        // No cancel token registered: no turn in flight.
+
+        let evicted = store.evict_expired().await;
+        assert_eq!(evicted.len(), 1, "cold idle session must still be reaped");
+        assert_eq!(evicted[0].reason, EvictReason::Idle);
+        assert_eq!(store.count().await, 0);
     }
 }

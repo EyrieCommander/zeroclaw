@@ -103,6 +103,7 @@ pub mod error_codes {
     pub const SESSION_NOT_FOUND: i32 = -32000;
     pub const SESSION_LIMIT_REACHED: i32 = -32001;
     pub const SESSION_BUSY: i32 = -32002;
+    pub const SESSION_NOT_OWNED: i32 = -32003;
     pub const AUTH_REQUIRED: i32 = -32010;
     pub const VERSION_MISMATCH: i32 = -32011;
 
