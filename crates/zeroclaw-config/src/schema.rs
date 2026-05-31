@@ -476,6 +476,11 @@ pub struct Config {
     #[nested]
     pub file_upload: FileUploadConfig,
 
+    /// Standalone file download tool configuration (`[file_download]`).
+    #[serde(default)]
+    #[nested]
+    pub file_download: FileDownloadConfig,
+
     /// Plugin system configuration (`[plugins]`).
     #[serde(default)]
     #[nested]
@@ -6922,6 +6927,64 @@ impl Default for FileUploadConfig {
     }
 }
 
+// ── File Download ───────────────────────────────────────────────
+
+/// Standalone file download tool configuration (`[file_download]`).
+///
+/// When `url` is set to a non-empty value, registers a `file_download` tool
+/// that GETs a file from the configured endpoint and writes it to the agent's
+/// workspace filesystem. The LLM supplies only a document identifier and a
+/// workspace-relative destination path; the endpoint URL comes solely from this
+/// config and is never model-controlled. Response bytes are streamed to disk
+/// and never loaded into model context.
+///
+/// When `url` is `None` or empty, the tool is not registered.
+#[derive(Debug, Clone, Serialize, Deserialize, Configurable)]
+#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+#[prefix = "file-download"]
+pub struct FileDownloadConfig {
+    /// Download endpoint URL. Tool is disabled when this is `None` or empty.
+    /// The file to fetch is selected by the `document_id` query parameter.
+    #[serde(default)]
+    pub url: Option<String>,
+
+    /// Maximum download size in bytes. Enforced while streaming: the transfer
+    /// is aborted and the partial file removed once this ceiling is exceeded,
+    /// so an oversized or unbounded body never fully buffers in memory or lands
+    /// on disk. Default: 25 MiB.
+    #[serde(default = "default_file_download_max_size_bytes")]
+    pub max_file_size_bytes: u64,
+
+    /// Request timeout in seconds. Default: 120.
+    #[serde(default = "default_file_download_timeout_secs")]
+    pub timeout_secs: u64,
+
+    /// Static HTTP headers attached to every download request — typically an
+    /// `Authorization: Bearer …` token for the upstream endpoint. Same shape as
+    /// `[mcp.servers.*.headers]`.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+}
+
+fn default_file_download_max_size_bytes() -> u64 {
+    25 * 1024 * 1024
+}
+
+fn default_file_download_timeout_secs() -> u64 {
+    120
+}
+
+impl Default for FileDownloadConfig {
+    fn default() -> Self {
+        Self {
+            url: None,
+            max_file_size_bytes: default_file_download_max_size_bytes(),
+            timeout_secs: default_file_download_timeout_secs(),
+            headers: HashMap::new(),
+        }
+    }
+}
+
 // ── Claude Code ─────────────────────────────────────────────────
 
 /// Claude Code CLI tool configuration (`[claude_code]` section).
@@ -10389,6 +10452,12 @@ pub struct TelegramConfig {
     /// are not exposed to the model when responding via this channel.
     #[serde(default)]
     pub excluded_tools: Vec<String>,
+
+    /// Default recipient for daemon/CLI `channel_send` calls.
+    /// Injected into the agent system prompt so it knows where to deliver
+    /// outbound messages without asking the user for a target ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_target: Option<String>,
 }
 
 impl ChannelConfig for TelegramConfig {
@@ -10473,6 +10542,12 @@ pub struct DiscordConfig {
     /// are not exposed to the model when responding via this channel.
     #[serde(default)]
     pub excluded_tools: Vec<String>,
+
+    /// Default recipient for daemon/CLI `channel_send` calls.
+    /// Injected into the agent system prompt so it knows where to deliver
+    /// outbound messages without asking the user for a target ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_target: Option<String>,
 }
 
 impl ChannelConfig for DiscordConfig {
@@ -10557,6 +10632,12 @@ pub struct SlackConfig {
     /// are not exposed to the model when responding via this channel.
     #[serde(default)]
     pub excluded_tools: Vec<String>,
+
+    /// Default recipient for daemon/CLI `channel_send` calls.
+    /// Injected into the agent system prompt so it knows where to deliver
+    /// outbound messages without asking the user for a target ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_target: Option<String>,
 }
 
 fn default_slack_draft_update_interval_ms() -> u64 {
@@ -10646,6 +10727,12 @@ pub struct MattermostConfig {
     /// are not exposed to the model when responding via this channel.
     #[serde(default)]
     pub excluded_tools: Vec<String>,
+
+    /// Default recipient for daemon/CLI `channel_send` calls.
+    /// Injected into the agent system prompt so it knows where to deliver
+    /// outbound messages without asking the user for a target ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_target: Option<String>,
 }
 
 impl ChannelConfig for MattermostConfig {
@@ -10822,6 +10909,12 @@ pub struct MatrixConfig {
     /// are not exposed to the model when responding via this channel.
     #[serde(default)]
     pub excluded_tools: Vec<String>,
+
+    /// Default recipient for daemon/CLI `channel_send` calls.
+    /// Injected into the agent system prompt so it knows where to deliver
+    /// outbound messages without asking the user for a target ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_target: Option<String>,
 }
 
 impl ChannelConfig for MatrixConfig {
@@ -10876,6 +10969,12 @@ pub struct SignalConfig {
     /// are not exposed to the model when responding via this channel.
     #[serde(default)]
     pub excluded_tools: Vec<String>,
+
+    /// Default recipient for daemon/CLI `channel_send` calls.
+    /// Injected into the agent system prompt so it knows where to deliver
+    /// outbound messages without asking the user for a target ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_target: Option<String>,
 }
 
 impl ChannelConfig for SignalConfig {
@@ -11017,6 +11116,12 @@ pub struct WhatsAppConfig {
     /// are not exposed to the model when responding via this channel.
     #[serde(default)]
     pub excluded_tools: Vec<String>,
+
+    /// Default recipient for daemon/CLI `channel_send` calls.
+    /// Injected into the agent system prompt so it knows where to deliver
+    /// outbound messages without asking the user for a target ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_target: Option<String>,
 }
 
 impl ChannelConfig for WhatsAppConfig {
@@ -11366,6 +11471,12 @@ pub struct IrcConfig {
     /// are not exposed to the model when responding via this channel.
     #[serde(default)]
     pub excluded_tools: Vec<String>,
+
+    /// Default recipient for daemon/CLI `channel_send` calls.
+    /// Injected into the agent system prompt so it knows where to deliver
+    /// outbound messages without asking the user for a target ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_target: Option<String>,
 }
 
 impl ChannelConfig for IrcConfig {
@@ -11445,6 +11556,12 @@ pub struct LarkConfig {
     /// are not exposed to the model when responding via this channel.
     #[serde(default)]
     pub excluded_tools: Vec<String>,
+
+    /// Default recipient for daemon/CLI `channel_send` calls.
+    /// Injected into the agent system prompt so it knows where to deliver
+    /// outbound messages without asking the user for a target ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_target: Option<String>,
 }
 
 impl ChannelConfig for LarkConfig {
@@ -13012,6 +13129,7 @@ impl Default for Config {
             linkedin: LinkedInConfig::default(),
             image_gen: ImageGenConfig::default(),
             file_upload: FileUploadConfig::default(),
+            file_download: FileDownloadConfig::default(),
             plugins: PluginsConfig::default(),
             locale: None,
             verifiable_intent: VerifiableIntentConfig::default(),
@@ -16370,6 +16488,7 @@ auto_save = true
                         proxy_url: None,
                         approval_timeout_secs: default_telegram_approval_timeout_secs(),
                         excluded_tools: vec![],
+                        default_target: None,
                     },
                 )]),
                 discord: HashMap::new(),
@@ -16454,6 +16573,7 @@ auto_save = true
             linkedin: LinkedInConfig::default(),
             image_gen: ImageGenConfig::default(),
             file_upload: FileUploadConfig::default(),
+            file_download: FileDownloadConfig::default(),
             plugins: PluginsConfig::default(),
             locale: None,
             verifiable_intent: VerifiableIntentConfig::default(),
@@ -17052,6 +17172,7 @@ default_temperature = 0.7
             linkedin: LinkedInConfig::default(),
             image_gen: ImageGenConfig::default(),
             file_upload: FileUploadConfig::default(),
+            file_download: FileDownloadConfig::default(),
             plugins: PluginsConfig::default(),
             locale: None,
             verifiable_intent: VerifiableIntentConfig::default(),
@@ -17146,6 +17267,7 @@ default_temperature = 0.7
                 port: None,
                 proxy_url: None,
                 excluded_tools: vec![],
+                default_target: None,
             },
         );
 
@@ -17394,6 +17516,7 @@ default_temperature = 0.7
             proxy_url: None,
             approval_timeout_secs: 120,
             excluded_tools: vec![],
+            default_target: None,
         };
         let json = serde_json::to_string(&tc).unwrap();
         let parsed: TelegramConfig = serde_json::from_str(&json).unwrap();
@@ -17430,6 +17553,7 @@ default_temperature = 0.7
             stall_timeout_secs: 0,
             approval_timeout_secs: 300,
             excluded_tools: vec![],
+            default_target: None,
         };
         let json = serde_json::to_string(&dc).unwrap();
         let parsed: DiscordConfig = serde_json::from_str(&json).unwrap();
@@ -17455,6 +17579,7 @@ default_temperature = 0.7
             stall_timeout_secs: 0,
             approval_timeout_secs: 300,
             excluded_tools: vec![],
+            default_target: None,
         };
         let json = serde_json::to_string(&dc).unwrap();
         let parsed: DiscordConfig = serde_json::from_str(&json).unwrap();
@@ -17511,6 +17636,7 @@ allowed_contacts = ["+1234567890", "user@icloud.com"]
             reply_in_thread: true,
             ack_reactions: Some(true),
             excluded_tools: vec![],
+            default_target: None,
         };
         let json = serde_json::to_string(&mc).unwrap();
         let parsed: MatrixConfig = serde_json::from_str(&json).unwrap();
@@ -17544,6 +17670,7 @@ allowed_contacts = ["+1234567890", "user@icloud.com"]
             reply_in_thread: true,
             ack_reactions: Some(true),
             excluded_tools: vec![],
+            default_target: None,
         };
         let toml_str = toml::to_string(&mc).unwrap();
         let parsed: MatrixConfig = toml::from_str(&toml_str).unwrap();
@@ -17593,6 +17720,7 @@ allowed_users = ["@u:matrix.org"]
             proxy_url: None,
             approval_timeout_secs: 300,
             excluded_tools: vec![],
+            default_target: None,
         };
         let json = serde_json::to_string(&sc).unwrap();
         let parsed: SignalConfig = serde_json::from_str(&json).unwrap();
@@ -17617,6 +17745,7 @@ allowed_users = ["@u:matrix.org"]
             proxy_url: None,
             approval_timeout_secs: 300,
             excluded_tools: vec![],
+            default_target: None,
         };
         let toml_str = toml::to_string(&sc).unwrap();
         let parsed: SignalConfig = toml::from_str(&toml_str).unwrap();
@@ -17673,6 +17802,7 @@ allowed_users = ["@u:matrix.org"]
                     reply_in_thread: true,
                     ack_reactions: Some(true),
                     excluded_tools: vec![],
+                    default_target: None,
                 },
             )]),
             signal: HashMap::new(),
@@ -17948,6 +18078,7 @@ bot_token = "xoxb-tok"
             proxy_url: None,
             approval_timeout_secs: 300,
             excluded_tools: vec![],
+            default_target: None,
         };
         let json = serde_json::to_string(&wc).unwrap();
         let parsed: WhatsAppConfig = serde_json::from_str(&json).unwrap();
@@ -17978,6 +18109,7 @@ bot_token = "xoxb-tok"
             proxy_url: None,
             approval_timeout_secs: 300,
             excluded_tools: vec![],
+            default_target: None,
         };
         let toml_str = toml::to_string(&wc).unwrap();
         let parsed: WhatsAppConfig = toml::from_str(&toml_str).unwrap();
@@ -18031,6 +18163,7 @@ allowed_numbers = ["+1", "+2"]
             proxy_url: None,
             approval_timeout_secs: 300,
             excluded_tools: vec![],
+            default_target: None,
         };
         assert!(wc.is_ambiguous_config());
         assert_eq!(wc.backend_type(), "cloud");
@@ -18058,6 +18191,7 @@ allowed_numbers = ["+1", "+2"]
             proxy_url: None,
             approval_timeout_secs: 300,
             excluded_tools: vec![],
+            default_target: None,
         };
         assert!(!wc.is_ambiguous_config());
         assert_eq!(wc.backend_type(), "web");
@@ -18097,6 +18231,7 @@ allowed_numbers = ["+1", "+2"]
                     proxy_url: None,
                     approval_timeout_secs: 300,
                     excluded_tools: vec![],
+                    default_target: None,
                 },
             )]),
             linq: HashMap::new(),
@@ -19191,6 +19326,7 @@ default_model = "legacy-model"
                 port: None,
                 proxy_url: None,
                 excluded_tools: vec![],
+                default_target: None,
             },
         );
         config.save().await.unwrap();
@@ -19659,6 +19795,7 @@ api_token = "tok"
             port: None,
             proxy_url: None,
             excluded_tools: vec![],
+            default_target: None,
         };
         let json = serde_json::to_string(&lc).unwrap();
         let parsed: LarkConfig = serde_json::from_str(&json).unwrap();
@@ -19683,6 +19820,7 @@ api_token = "tok"
             port: Some(9898),
             proxy_url: None,
             excluded_tools: vec![],
+            default_target: None,
         };
         let toml_str = toml::to_string(&lc).unwrap();
         let parsed: LarkConfig = toml::from_str(&toml_str).unwrap();
@@ -20085,6 +20223,7 @@ require_otp_to_resume = true
                 proxy_url: None,
                 approval_timeout_secs: default_telegram_approval_timeout_secs(),
                 excluded_tools: vec![],
+                default_target: None,
             },
         );
 
@@ -20927,6 +21066,7 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
             reply_in_thread: true,
             ack_reactions: Some(true),
             excluded_tools: vec![],
+            default_target: None,
         };
         let fields = mx.secret_fields();
         assert_eq!(fields.len(), 3);
@@ -20959,6 +21099,7 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
             reply_in_thread: true,
             ack_reactions: Some(true),
             excluded_tools: vec![],
+            default_target: None,
         };
         let fields = mx.secret_fields();
         assert!(!fields[0].is_set);
@@ -20984,6 +21125,7 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
             reply_in_thread: true,
             ack_reactions: Some(true),
             excluded_tools: vec![],
+            default_target: None,
         };
         mx.set_secret("channels.matrix.access-token", "new-token".into())
             .unwrap();
@@ -21010,6 +21152,7 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
             reply_in_thread: true,
             ack_reactions: Some(true),
             excluded_tools: vec![],
+            default_target: None,
         };
         assert!(
             mx.set_secret("channels.matrix.nonexistent", "val".into())
@@ -21047,6 +21190,7 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
                 reply_in_thread: true,
                 ack_reactions: Some(true),
                 excluded_tools: vec![],
+                default_target: None,
             },
         );
 
@@ -21079,6 +21223,7 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
                 reply_in_thread: true,
                 ack_reactions: Some(true),
                 excluded_tools: vec![],
+                default_target: None,
             },
         );
 
@@ -21120,6 +21265,7 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
                 reply_in_thread: true,
                 ack_reactions: Some(true),
                 excluded_tools: vec![],
+                default_target: None,
             },
         );
         config
@@ -21170,6 +21316,7 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
             reply_in_thread: true,
             ack_reactions: Some(true),
             excluded_tools: vec![],
+            default_target: None,
         };
 
         // Encrypt
@@ -21207,6 +21354,7 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
             reply_in_thread: true,
             ack_reactions: Some(true),
             excluded_tools: vec![],
+            default_target: None,
         };
 
         mx.encrypt_secrets(&store).unwrap();
@@ -21240,6 +21388,7 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
             reply_in_thread: true,
             ack_reactions: Some(true),
             excluded_tools: vec![],
+            default_target: None,
         };
 
         mx.encrypt_secrets(&store).unwrap();
@@ -21268,6 +21417,7 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
             reply_in_thread: true,
             ack_reactions: Some(true),
             excluded_tools: vec![],
+            default_target: None,
         }
     }
 

@@ -488,7 +488,15 @@ pub fn conversation_history_key(msg: &zeroclaw_api::channel::ChannelMessage) -> 
     // Sanitize so the runtime HashMap key matches `SessionStore::list_sessions`
     // after a restart; otherwise hydration loads sessions under the on-disk
     // (sanitized) name while lookup keeps producing the un-sanitized form.
-    let raw = match &msg.thread_ts {
+    let thread_scope = match msg.thread_ts.as_deref() {
+        // Matrix root events can be self-anchored when `reply_in_thread`
+        // is enabled so outbound replies open a thread. That anchor is a
+        // delivery detail, not a conversation-history boundary; otherwise
+        // every top-level Matrix message becomes a fresh session.
+        Some(tid) if is_matrix_channel_name(&msg.channel) && tid == msg.id => None,
+        other => other,
+    };
+    let raw = match thread_scope {
         Some(tid) => format!("{channel_scope}_{}_{tid}_{}", msg.reply_target, msg.sender),
         None => format!("{channel_scope}_{}_{}", msg.reply_target, msg.sender),
     };
@@ -2563,21 +2571,6 @@ fn strip_think_tags_inline(s: &str) -> String {
     result.trim().to_string()
 }
 
-fn build_email_reply(msg: &ChannelMessage, content: impl Into<String>) -> SendMessage {
-    let mut sm = SendMessage::new(content, &msg.reply_target)
-        .in_thread(msg.thread_ts.clone())
-        .in_reply_to(Some(msg.id.clone()));
-    if let Some(ref subj) = msg.subject {
-        let reply_subject = if subj.to_ascii_lowercase().starts_with("re:") {
-            subj.clone()
-        } else {
-            format!("Re: {}", subj)
-        };
-        sm = sm.subject(reply_subject);
-    }
-    sm
-}
-
 fn starts_with_visible_tool_call_tag_example(response: &str) -> bool {
     let lower = response.trim_start().to_ascii_lowercase();
     let starts_with_tool_tag = lower.starts_with("<tool_call")
@@ -3467,7 +3460,7 @@ async fn process_channel_message_body(
                 route.model_provider
             );
             if let Some(channel) = target_channel.as_ref() {
-                let _ = channel.send(&build_email_reply(&msg, message)).await;
+                let _ = channel.send(&SendMessage::reply_to(&msg, message)).await;
             }
             return;
         }
@@ -4434,12 +4427,12 @@ async fn process_channel_message_body(
                             "Failed to finalize draft; sending as new message"
                         );
                         let _ = channel
-                            .send(&build_email_reply(&msg, &delivered_response))
+                            .send(&SendMessage::reply_to(&msg, &delivered_response))
                             .await;
                     }
                 } else if let Err(e) = channel
                     .send(
-                        &build_email_reply(&msg, &delivered_response)
+                        &SendMessage::reply_to(&msg, &delivered_response)
                             .with_cancellation(cancellation_token.clone()),
                     )
                     .await
@@ -5874,6 +5867,61 @@ impl ActiveChannelAliases {
     fn contains(&self, channel_ref: &str) -> bool {
         self.aliases.is_empty() || self.aliases.contains(channel_ref)
     }
+}
+
+/// Build `channel_key → Arc<dyn Channel>` map from config.
+///
+/// Constructs channel instances without starting listen loops.
+/// Called by CLI and other callers that need a channel map
+/// for late-bound tool handle population.
+pub fn build_channel_map(
+    config: &Config,
+) -> HashMap<String, Arc<dyn zeroclaw_api::channel::Channel>> {
+    let config_arc = Arc::new(RwLock::new(config.clone()));
+    collect_configured_channels(&config_arc, "", &[])
+        .into_iter()
+        .map(|ch| {
+            let key = composite_channel_key(ch.channel.name(), ch.alias.as_deref());
+            (key, ch.channel)
+        })
+        .collect()
+}
+
+/// Build configured channels and register them into late-bound tool handles.
+///
+/// Constructs channel instances from config (without starting listen loops)
+/// and inserts each into the provided handles under their composite key
+/// (`<channel>.<alias>` or bare `<channel>` for singletons).
+///
+/// Returns the list of registered channel names for logging.
+pub fn register_channels_for_tools(
+    config: &Config,
+    ask_user_handle: &Option<tools::PerToolChannelHandle>,
+    reaction_handle: &Option<tools::PerToolChannelHandle>,
+    poll_handle: &Option<tools::PerToolChannelHandle>,
+    escalate_handle: &Option<tools::PerToolChannelHandle>,
+    channel_send_handle: &Option<tools::PerToolChannelHandle>,
+) -> Vec<String> {
+    let config_arc = Arc::new(RwLock::new(config.clone()));
+    let configured = collect_configured_channels(&config_arc, "", &[]);
+
+    let handles = [
+        ask_user_handle.as_ref(),
+        reaction_handle.as_ref(),
+        poll_handle.as_ref(),
+        escalate_handle.as_ref(),
+        channel_send_handle.as_ref(),
+    ];
+
+    let mut names = Vec::new();
+    for ch in &configured {
+        let key = composite_channel_key(ch.channel.name(), ch.alias.as_deref());
+        for handle in handles.iter().flatten() {
+            handle.write().insert(key.clone(), Arc::clone(&ch.channel));
+        }
+        names.push(key);
+    }
+    names
 }
 
 fn collect_configured_channels(
@@ -7572,10 +7620,11 @@ pub async fn start_channels(
         let (
             mut built_tools,
             delegate_handle_ch,
-            reaction_handle_ch,
-            _channel_map_handle,
             ask_user_handle_ch,
+            reaction_handle_ch,
+            poll_handle_ch,
             escalate_handle_ch,
+            channel_send_handle_ch,
         ) = tools::all_tools_with_runtime(
             Arc::new(config.clone()),
             &security,
@@ -7967,8 +8016,8 @@ pub async fn start_channels(
 
         // Wire this agent's reaction / ask_user / escalate tool handles
         // into the shared `channels_by_name` map.
-        if let Some(ref handle) = reaction_handle_ch {
-            let mut map = handle.write();
+        {
+            let mut map = reaction_handle_ch.write();
             for (name, ch) in channels_by_name.as_ref() {
                 map.insert(name.clone(), Arc::clone(ch));
             }
@@ -7979,7 +8028,19 @@ pub async fn start_channels(
                 map.insert(name.clone(), Arc::clone(ch));
             }
         }
+        if let Some(ref handle) = poll_handle_ch {
+            let mut map = handle.write();
+            for (name, ch) in channels_by_name.as_ref() {
+                map.insert(name.clone(), Arc::clone(ch));
+            }
+        }
         if let Some(ref handle) = escalate_handle_ch {
+            let mut map = handle.write();
+            for (name, ch) in channels_by_name.as_ref() {
+                map.insert(name.clone(), Arc::clone(ch));
+            }
+        }
+        if let Some(ref handle) = channel_send_handle_ch {
             let mut map = handle.write();
             for (name, ch) in channels_by_name.as_ref() {
                 map.insert(name.clone(), Arc::clone(ch));
@@ -13734,6 +13795,36 @@ BTC is currently around $65,000 based on latest tool output."#
     }
 
     #[test]
+    fn matrix_self_anchored_root_history_key_omits_event_id() {
+        let first = zeroclaw_api::channel::ChannelMessage {
+            id: "$first:server".into(),
+            sender: "@alice:server".into(),
+            reply_target: "!room:server".into(),
+            content: "call me boss".into(),
+            channel: "matrix".into(),
+            channel_alias: None,
+            timestamp: 1,
+            thread_ts: Some("$first:server".into()),
+            interruption_scope_id: Some("$first:server".into()),
+            attachments: vec![],
+            subject: None,
+        };
+        let second = zeroclaw_api::channel::ChannelMessage {
+            id: "$second:server".into(),
+            content: "hello".into(),
+            timestamp: 2,
+            thread_ts: Some("$second:server".into()),
+            interruption_scope_id: Some("$second:server".into()),
+            ..first.clone()
+        };
+
+        let key = conversation_history_key(&first);
+        assert_eq!(key, conversation_history_key(&second));
+        assert!(!key.contains("$first:server"));
+        assert!(!key.contains("$second:server"));
+    }
+
+    #[test]
     fn matrix_thread_conversation_history_key_uses_thread_root() {
         let msg = zeroclaw_api::channel::ChannelMessage {
             id: "$reply:server".into(),
@@ -15016,6 +15107,7 @@ This is an example JSON object for profile settings."#;
                 interrupt_on_new_message: false,
                 proxy_url: None,
                 excluded_tools: vec![],
+                default_target: None,
             },
         );
         // A channel is only collected when an enabled agent references it.
@@ -15062,6 +15154,7 @@ This is an example JSON object for profile settings."#;
                 interrupt_on_new_message: false,
                 proxy_url: None,
                 excluded_tools: vec![],
+                default_target: None,
             },
         );
         config.agents.clear();
@@ -16599,6 +16692,7 @@ This is an example JSON object for profile settings."#;
                 proxy_url: None,
                 approval_timeout_secs: 120,
                 excluded_tools: vec![],
+                default_target: None,
             },
         );
         let config_arc = Arc::new(RwLock::new(config));
@@ -17538,39 +17632,37 @@ Done."#;
 
     fn email_msg(id: &str, subject: Option<&str>) -> ChannelMessage {
         ChannelMessage {
-            id: id.into(),
-            sender: "user@example.com".into(),
-            reply_target: "user@example.com".into(),
-            content: "Hello".into(),
-            channel: "email".into(),
-            channel_alias: None,
-            timestamp: 0,
-            thread_ts: None,
-            interruption_scope_id: None,
-            attachments: vec![],
             subject: subject.map(Into::into),
+            ..ChannelMessage::new(
+                id,
+                "user@example.com",
+                "user@example.com",
+                "Hello",
+                "email",
+                0,
+            )
         }
     }
 
     #[test]
-    fn build_email_reply_sets_in_reply_to_and_re_subject() {
+    fn reply_to_sets_in_reply_to_and_re_subject() {
         let msg = email_msg("<abc123@mail.example>", Some("Weekly report"));
-        let sm = build_email_reply(&msg, "Here is the answer");
+        let sm = SendMessage::reply_to(&msg, "Here is the answer");
         assert_eq!(sm.in_reply_to.as_deref(), Some("<abc123@mail.example>"));
         assert_eq!(sm.subject.as_deref(), Some("Re: Weekly report"));
     }
 
     #[test]
-    fn build_email_reply_does_not_double_re_prefix() {
+    fn reply_to_does_not_double_re_prefix() {
         let msg = email_msg("<abc123@mail.example>", Some("Re: Weekly report"));
-        let sm = build_email_reply(&msg, "Here is the answer");
+        let sm = SendMessage::reply_to(&msg, "Here is the answer");
         assert_eq!(sm.subject.as_deref(), Some("Re: Weekly report"));
     }
 
     #[test]
-    fn build_email_reply_no_subject_still_sets_in_reply_to() {
+    fn reply_to_no_subject_still_sets_in_reply_to() {
         let msg = email_msg("<abc123@mail.example>", None);
-        let sm = build_email_reply(&msg, "Here is the answer");
+        let sm = SendMessage::reply_to(&msg, "Here is the answer");
         assert_eq!(sm.in_reply_to.as_deref(), Some("<abc123@mail.example>"));
         assert!(sm.subject.is_none());
     }
