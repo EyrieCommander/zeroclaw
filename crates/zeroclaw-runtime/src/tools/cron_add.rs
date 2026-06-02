@@ -86,7 +86,7 @@ impl Tool for CronAddTool {
     fn description(&self) -> &str {
         "Create a scheduled cron job (shell or agent) with cron/at/every schedules. \
          Use job_type='agent' with a prompt to run the AI agent on schedule. \
-         To deliver output to a channel (Discord, Telegram, Slack, Mattermost, Matrix, QQ, Webhook), set \
+         To deliver output to a configured channel, set \
          delivery={\"mode\":\"announce\",\"channel\":\"discord\",\"to\":\"<channel_id_or_chat_id>\"}. \
          For webhook deliveries that must thread through the originating conversation, also set \
          delivery.thread_id=\"<reply_target>\". \
@@ -176,7 +176,7 @@ impl Tool for CronAddTool {
                         },
                         "channel": {
                             "type": "string",
-                            "enum": ["telegram", "discord", "slack", "mattermost", "matrix", "qq", "webhook", "lark", "feishu"],
+                            "enum": cron::CRON_DELIVERY_SCHEMA_CHANNELS,
                             "description": "Channel type to deliver output to"
                         },
                         "to": {
@@ -939,18 +939,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delivery_schema_includes_matrix_channel() {
+    async fn delivery_schema_includes_supported_channels() {
         let tmp = TempDir::new().unwrap();
         let cfg = test_config(&tmp).await;
         let tool = CronAddTool::new(cfg.clone(), test_security(&cfg), TEST_AGENT);
 
-        let values =
-            tool.parameters_schema()["properties"]["delivery"]["properties"]["channel"]["enum"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
+        let schema = tool.parameters_schema();
+        let values: Vec<&str> = schema["properties"]["delivery"]["properties"]["channel"]["enum"]
+            .as_array()
+            .expect("delivery.channel must have an enum")
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect();
 
-        assert!(values.iter().any(|value| value == "matrix"));
+        assert_eq!(values.as_slice(), cron::CRON_DELIVERY_SCHEMA_CHANNELS);
+        assert!(values.contains(&"dingtalk"));
     }
 
     #[tokio::test]
