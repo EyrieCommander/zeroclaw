@@ -10,8 +10,6 @@ pub mod api_error;
 pub mod autonomy;
 pub mod comment_writer;
 pub mod cost;
-#[cfg(test)]
-mod credential_surfaces;
 pub mod domain_matcher;
 pub mod env_overrides;
 pub mod helpers;

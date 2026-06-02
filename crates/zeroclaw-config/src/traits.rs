@@ -150,6 +150,17 @@ impl HasPropKind for Vec<crate::schema::ToolFilterGroup> {
     const PROP_KIND: PropKind = PropKind::ObjectArray;
 }
 
+/// Security classification for credential-shaped config surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialSurfaceClass {
+    EncryptedSecret,
+    PathOnlyReference,
+    PublicValue,
+    ExternalAuthStore,
+    LegacyEnvPath,
+    RequiresFollowUp,
+}
+
 /// Describes a single property field discovered via `#[derive(Configurable)]`.
 #[derive(Clone)]
 pub struct PropFieldInfo {
@@ -178,6 +189,8 @@ pub struct PropFieldInfo {
     /// Subject to the same write-only / no-readback rules as `#[secret]`.
     /// Reserved for future schema additions; currently no fields are derived.
     pub derived_from_secret: bool,
+    /// Explicit security classification for credential-shaped surfaces.
+    pub credential_class: Option<CredentialSurfaceClass>,
 }
 
 impl PropFieldInfo {
@@ -192,6 +205,7 @@ impl std::fmt::Debug for PropFieldInfo {
             .field("name", &self.name)
             .field("kind", &self.kind)
             .field("is_secret", &self.is_secret)
+            .field("credential_class", &self.credential_class)
             .finish_non_exhaustive()
     }
 }

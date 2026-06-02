@@ -118,11 +118,13 @@ pub struct Config {
     /// Model-routing rules — route `hint:<name>` to specific
     /// model_provider + model combos.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[credential_class = "requires_follow_up"]
     pub model_routes: Vec<ModelRouteConfig>,
 
     /// Embedding-routing rules — route `hint:<name>` to specific
     /// model_provider + model combos for embedding requests.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[credential_class = "requires_follow_up"]
     pub embedding_routes: Vec<EmbeddingRouteConfig>,
 
     /// Observability backend configuration (`[observability]`).
@@ -639,6 +641,7 @@ pub enum AuthMode {
 pub struct ModelProviderConfig {
     /// Secret API token for this model_provider — grab it from the model_provider's dashboard (OpenAI platform, Anthropic console, OpenRouter keys page, etc.). Stored via the OS keyring when possible; never commit it to config.toml directly.
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
@@ -666,6 +669,7 @@ pub struct ModelProviderConfig {
     pub wire_api: Option<WireApi>,
     /// When true, the client pulls credentials from `OPENAI_API_KEY` or `~/.codex/auth.json` instead of the `api_key` field above. Turn on only for the OpenAI Codex model_provider; leave off for standard API-key model_providers.
     #[serde(default, skip_serializing_if = "is_false")]
+    #[credential_class = "external_auth_store"]
     pub requires_openai_auth: bool,
     /// Hard cap on response length in tokens. Most models enforce sensible built-in limits already — leave unset unless you specifically need to clip long outputs for cost or latency reasons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3543,6 +3547,7 @@ pub struct TranscriptionConfig {
     /// If unset, runtime falls back to `GROQ_API_KEY` for backward compatibility.
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub api_key: Option<String>,
     /// Whisper API endpoint URL (Groq transcription provider).
@@ -3749,6 +3754,7 @@ pub struct NodesConfig {
     /// Optional bearer token for node authentication.
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub auth_token: Option<String>,
 }
@@ -3828,6 +3834,7 @@ impl Default for TtsConfig {
 pub struct TtsProviderConfig {
     /// API key (openai, elevenlabs, google).
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub api_key: Option<String>,
     /// Model name. OpenAI uses this for `tts-1`/`tts-1-hd`; elevenlabs uses
@@ -4005,6 +4012,7 @@ pub struct TranscriptionProviderConfig {
     /// API key for the transcription provider.
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub api_key: Option<String>,
     /// Optional language hint passed to the provider (ISO-639-1 like `"en"` /
@@ -4184,6 +4192,7 @@ pub struct LocalWhisperTranscriptionProviderConfig {
     /// local endpoints.
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub bearer_token: Option<String>,
     /// Optional language hint (passed through to the local endpoint).
@@ -4256,6 +4265,7 @@ pub struct OpenAiSttConfig {
     /// OpenAI API key for Whisper transcription.
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub api_key: Option<String>,
     /// Whisper model name (default: "whisper-1").
@@ -4271,6 +4281,7 @@ pub struct DeepgramSttConfig {
     /// Deepgram API key.
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub api_key: Option<String>,
     /// Deepgram model name (default: "nova-2").
@@ -4286,6 +4297,7 @@ pub struct AssemblyAiSttConfig {
     /// AssemblyAI API key.
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub api_key: Option<String>,
 }
@@ -4298,6 +4310,7 @@ pub struct GoogleSttConfig {
     /// Google Cloud API key.
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub api_key: Option<String>,
     /// BCP-47 language code (default: "en-US").
@@ -4318,6 +4331,7 @@ pub struct LocalWhisperConfig {
     /// Omit for unauthenticated local endpoints.
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub bearer_token: Option<String>,
     /// Maximum audio file size in bytes accepted by this endpoint.
@@ -5128,6 +5142,7 @@ pub struct GatewayConfig {
     /// Paired bearer tokens (managed automatically, not user-edited)
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub paired_tokens: Vec<String>,
 
@@ -5142,6 +5157,7 @@ pub struct GatewayConfig {
     /// Trust proxy-forwarded client IP headers (`X-Forwarded-For`, `X-Real-IP`).
     /// Disabled by default; enable only behind a trusted reverse proxy.
     #[serde(default)]
+    #[credential_class = "public_value"]
     pub trust_forwarded_headers: bool,
 
     /// Optional URL path prefix for reverse-proxy deployments.
@@ -5380,6 +5396,7 @@ pub struct NodeTransportConfig {
     /// Shared secret for HMAC authentication between nodes.
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub shared_secret: String,
     /// Maximum age of signed requests in seconds (replay protection).
@@ -5449,6 +5466,7 @@ pub struct ComposioConfig {
     /// Composio API key (stored encrypted when secrets.encrypt = true)
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub api_key: Option<String>,
     /// Default entity ID for multi-user setups
@@ -5492,6 +5510,7 @@ pub struct Microsoft365Config {
     /// Azure AD client secret (stored encrypted when secrets.encrypt = true)
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub client_secret: Option<String>,
     /// Authentication flow: "client_credentials" or "device_code"
@@ -5555,6 +5574,7 @@ impl Default for Microsoft365Config {
 pub struct SecretsConfig {
     /// Enable encryption for API keys and tokens in config.toml
     #[serde(default = "default_true")]
+    #[credential_class = "public_value"]
     pub encrypt: bool,
 }
 
@@ -5579,6 +5599,7 @@ pub struct BrowserComputerUseConfig {
     /// Optional bearer token for computer-use sidecar
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub api_key: Option<String>,
     /// Per-action request timeout in milliseconds
@@ -5803,6 +5824,7 @@ pub struct FirecrawlConfig {
     pub enabled: bool,
     /// Environment variable name for the Firecrawl API key
     #[serde(default = "default_firecrawl_api_key_env")]
+    #[credential_class = "legacy_env_path"]
     pub api_key_env: String,
     /// Firecrawl API base URL
     #[serde(default = "default_firecrawl_api_url")]
@@ -5997,11 +6019,13 @@ pub struct WebSearchConfig {
     /// Brave Search API key (required if search_provider is "brave")
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub brave_api_key: Option<String>,
     /// Tavily Search API key (required if search_provider is "tavily")
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub tavily_api_key: Option<String>,
     /// SearXNG instance URL (required if search_provider is `"searxng"`), e.g. `"https://searx.example.com"`.
@@ -6660,6 +6684,7 @@ impl Default for LinkedInImageConfig {
 pub struct ImageProviderStabilityConfig {
     /// Environment variable name holding the API key.
     #[serde(default = "default_stability_api_key_env")]
+    #[credential_class = "legacy_env_path"]
     pub api_key_env: String,
     /// Stability model identifier.
     #[serde(default = "default_stability_model")]
@@ -6689,9 +6714,11 @@ impl Default for ImageProviderStabilityConfig {
 pub struct ImageProviderImagenConfig {
     /// Environment variable name holding the API key.
     #[serde(default = "default_imagen_api_key_env")]
+    #[credential_class = "legacy_env_path"]
     pub api_key_env: String,
     /// Environment variable for the Google Cloud project ID.
     #[serde(default = "default_imagen_project_id_env")]
+    #[credential_class = "legacy_env_path"]
     pub project_id_env: String,
     /// Vertex AI region.
     #[serde(default = "default_imagen_region")]
@@ -6725,6 +6752,7 @@ impl Default for ImageProviderImagenConfig {
 pub struct ImageProviderDalleConfig {
     /// Environment variable name holding the OpenAI API key.
     #[serde(default = "default_dalle_api_key_env")]
+    #[credential_class = "legacy_env_path"]
     pub api_key_env: String,
     /// DALL-E model identifier.
     #[serde(default = "default_dalle_model")]
@@ -6761,6 +6789,7 @@ impl Default for ImageProviderDalleConfig {
 pub struct ImageProviderFluxConfig {
     /// Environment variable name holding the fal.ai API key.
     #[serde(default = "default_flux_api_key_env")]
+    #[credential_class = "legacy_env_path"]
     pub api_key_env: String,
     /// Flux model identifier.
     #[serde(default = "default_flux_model")]
@@ -6804,6 +6833,7 @@ pub struct ImageGenConfig {
 
     /// Environment variable name holding the fal.ai API key.
     #[serde(default = "default_image_gen_api_key_env")]
+    #[credential_class = "legacy_env_path"]
     pub api_key_env: String,
 }
 
@@ -6926,6 +6956,7 @@ pub struct ClaudeCodeConfig {
     pub max_output_bytes: usize,
     /// Extra env vars passed to the claude subprocess (e.g. ANTHROPIC_API_KEY for API-key billing)
     #[serde(default)]
+    #[credential_class = "legacy_env_path"]
     pub env_passthrough: Vec<String>,
 }
 
@@ -7020,6 +7051,7 @@ pub struct CodexCliConfig {
     pub max_output_bytes: usize,
     /// Extra env vars passed to the codex subprocess (e.g. OPENAI_API_KEY)
     #[serde(default)]
+    #[credential_class = "legacy_env_path"]
     pub env_passthrough: Vec<String>,
 }
 
@@ -7064,6 +7096,7 @@ pub struct GeminiCliConfig {
     pub max_output_bytes: usize,
     /// Extra env vars passed to the gemini subprocess (e.g. GOOGLE_API_KEY)
     #[serde(default)]
+    #[credential_class = "legacy_env_path"]
     pub env_passthrough: Vec<String>,
 }
 
@@ -7108,6 +7141,7 @@ pub struct OpenCodeCliConfig {
     pub max_output_bytes: usize,
     /// Extra env vars passed to the opencode subprocess
     #[serde(default)]
+    #[credential_class = "legacy_env_path"]
     pub env_passthrough: Vec<String>,
 }
 
@@ -8268,6 +8302,7 @@ pub struct QdrantStorageConfig {
     /// API key for Qdrant Cloud or secured instances.
     /// Falls back to `QDRANT_API_KEY` env var if unset.
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub api_key: Option<String>,
 }
@@ -8894,6 +8929,7 @@ pub struct RiskProfileConfig {
     /// Block high-risk commands even when allowlisted.
     pub block_high_risk_commands: bool,
     /// Environment variable names passed through to shell subprocesses.
+    #[credential_class = "legacy_env_path"]
     pub shell_env_passthrough: Vec<String>,
     /// Tools that never require approval in this profile.
     pub auto_approve: Vec<String>,
@@ -9196,6 +9232,7 @@ pub struct ReliabilityConfig {
     /// The primary `api_key` is always tried first; these are extras.
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub api_keys: Vec<String>,
     /// Initial backoff for channel/daemon restarts.
@@ -9777,6 +9814,7 @@ pub struct CloudflareTunnelConfig {
     /// Cloudflare Tunnel token (from Zero Trust dashboard)
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub token: String,
 }
@@ -9800,6 +9838,7 @@ pub struct NgrokTunnelConfig {
     /// ngrok auth token
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub auth_token: String,
     /// Optional custom domain
@@ -9822,6 +9861,7 @@ pub struct OpenVpnTunnelConfig {
     pub config_file: String,
     /// Optional path to auth credentials file (`--auth-user-pass`).
     #[serde(default)]
+    #[credential_class = "path_only_reference"]
     pub auth_file: Option<String>,
     /// Advertised address once VPN is connected (e.g., `"10.8.0.2:42617"`).
     /// When omitted the tunnel falls back to `http://{local_host}:{local_port}`.
@@ -9858,6 +9898,7 @@ pub struct PinggyTunnelConfig {
     /// Pinggy access token (optional — free tier works without one).
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub token: Option<String>,
     /// Server region: `"us"` (USA), `"eu"` (Europe), `"ap"` (Asia), `"br"` (South America), `"au"` (Australia), or omit for auto.
@@ -10729,6 +10770,7 @@ pub struct MatrixConfig {
     /// Matrix access token for the bot account. When unset, the channel
     /// falls back to password login using `user_id` + `password`.
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     #[serde(default)]
     pub access_token: Option<String>,
@@ -10763,11 +10805,13 @@ pub struct MatrixConfig {
     /// Optional Matrix recovery key for automatic E2EE key backup restore.
     /// When set, ZeroClaw recovers room keys and cross-signing secrets on startup.
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     #[serde(default)]
     pub recovery_key: Option<String>,
     /// Optional login password for Matrix account (used for initial login flow).
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     #[serde(default)]
     pub password: Option<String>,
@@ -11751,6 +11795,7 @@ pub struct NevisConfig {
     /// OAuth2 client secret. Encrypted via SecretStore when stored on disk.
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub client_secret: Option<String>,
 
@@ -12518,6 +12563,7 @@ pub struct NotionConfig {
     pub enabled: bool,
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub api_key: String,
     #[serde(default)]
@@ -12614,6 +12660,7 @@ pub struct JiraConfig {
     /// Jira API token. Encrypted at rest. Falls back to `JIRA_API_TOKEN` env var.
     #[serde(default)]
     #[secret]
+    #[credential_class = "encrypted_secret"]
     #[cfg_attr(feature = "schema-export", schemars(extend("x-secret" = true)))]
     pub api_token: String,
     /// Actions the agent is permitted to call.
@@ -22163,8 +22210,8 @@ allowed_users = []
         let fields = config.prop_fields();
         let missing: Vec<_> = fields
             .iter()
-            .filter(|field| crate::credential_surfaces::is_credential_shaped_path(&field.name))
-            .filter(|field| crate::credential_surfaces::classify(&field.name).is_none())
+            .filter(|field| credential_shaped_prop_path(&field.name))
+            .filter(|field| field.credential_class.is_none())
             .map(|field| field.name.clone())
             .collect();
 
@@ -22176,10 +22223,8 @@ allowed_users = []
         let unmarked_secrets: Vec<_> = fields
             .iter()
             .filter(|field| {
-                crate::credential_surfaces::classify(&field.name).is_some_and(|surface| {
-                    surface.class
-                        == crate::credential_surfaces::CredentialSurfaceClass::EncryptedSecret
-                })
+                field.credential_class
+                    == Some(crate::config::CredentialSurfaceClass::EncryptedSecret)
             })
             .filter(|field| !field.is_secret && !Config::prop_is_secret(&field.name))
             .map(|field| field.name.clone())
@@ -22192,40 +22237,64 @@ allowed_users = []
     }
 
     #[test]
-    async fn credential_surface_registry_tracks_object_array_followups() {
+    async fn prop_fields_carry_credential_classification_from_schema_fields() {
+        let mut config = Config::default();
+        config.init_defaults(None);
+        config.providers.models.openai.insert(
+            "codex".into(),
+            OpenAIModelProviderConfig {
+                base: ModelProviderConfig {
+                    requires_openai_auth: true,
+                    ..ModelProviderConfig::default()
+                },
+                ..OpenAIModelProviderConfig::default()
+            },
+        );
+        config
+            .providers
+            .tts
+            .openai
+            .insert("default".into(), OpenAITtsProviderConfig::default());
+        config.providers.transcription.local_whisper.insert(
+            "default".into(),
+            LocalWhisperTranscriptionProviderConfig::default(),
+        );
+        config
+            .channels
+            .matrix
+            .insert("default".into(), MatrixConfig::default());
+
+        let fields = config.prop_fields();
+        let class_for = |name: &str| {
+            fields
+                .iter()
+                .find(|field| field.name == name)
+                .and_then(|field| field.credential_class)
+        };
+
         assert_eq!(
-            crate::credential_surfaces::classify("model-routes.default.api-key")
-                .map(|info| info.class),
-            Some(crate::credential_surfaces::CredentialSurfaceClass::RequiresFollowUp)
+            class_for("providers.models.openai.codex.requires-openai-auth"),
+            Some(crate::config::CredentialSurfaceClass::ExternalAuthStore)
         );
         assert_eq!(
-            crate::credential_surfaces::classify("embedding-routes.semantic.api-key")
-                .map(|info| info.class),
-            Some(crate::credential_surfaces::CredentialSurfaceClass::RequiresFollowUp)
+            class_for("providers.tts.openai.default.api-key"),
+            Some(crate::config::CredentialSurfaceClass::EncryptedSecret)
         );
         assert_eq!(
-            crate::credential_surfaces::classify(
-                "providers.models.openai.codex.requires-openai-auth"
-            )
-            .map(|info| info.class),
-            Some(crate::credential_surfaces::CredentialSurfaceClass::ExternalAuthStore)
+            class_for("providers.transcription.local-whisper.default.bearer-token"),
+            Some(crate::config::CredentialSurfaceClass::EncryptedSecret)
         );
         assert_eq!(
-            crate::credential_surfaces::classify("providers.tts.openai.default.api-key")
-                .map(|info| info.class),
-            Some(crate::credential_surfaces::CredentialSurfaceClass::EncryptedSecret)
+            class_for("channels.matrix.default.access-token"),
+            Some(crate::config::CredentialSurfaceClass::EncryptedSecret)
         );
         assert_eq!(
-            crate::credential_surfaces::classify(
-                "providers.transcription.local-whisper.default.bearer-token"
-            )
-            .map(|info| info.class),
-            Some(crate::credential_surfaces::CredentialSurfaceClass::EncryptedSecret)
+            class_for("model-routes"),
+            Some(crate::config::CredentialSurfaceClass::RequiresFollowUp)
         );
         assert_eq!(
-            crate::credential_surfaces::classify("channels.matrix.default.access-token")
-                .map(|info| info.class),
-            Some(crate::credential_surfaces::CredentialSurfaceClass::EncryptedSecret)
+            class_for("embedding-routes"),
+            Some(crate::config::CredentialSurfaceClass::RequiresFollowUp)
         );
         assert!(Config::prop_is_secret(
             "providers.tts.openai.default.api-key"
@@ -22236,6 +22305,30 @@ allowed_users = []
         assert!(Config::prop_is_secret(
             "channels.matrix.default.access-token"
         ));
+    }
+
+    fn credential_shaped_prop_path(path: &str) -> bool {
+        path.split('.').any(|part| {
+            let has_term = |needle| part.split('-').any(|term| term == needle);
+            part.contains("api-key")
+                || part.contains("api-token")
+                || part.contains("auth-file")
+                || part.contains("auth-header")
+                || part.contains("auth-token")
+                || part.contains("bearer-token")
+                || part.contains("bot-token")
+                || part.contains("access-token")
+                || part.contains("refresh-token")
+                || part.contains("verification-token")
+                || part.contains("paired-tokens")
+                || part == "token"
+                || has_term("credential")
+                || has_term("env")
+                || has_term("header")
+                || has_term("headers")
+                || has_term("password")
+                || has_term("secret")
+        })
     }
 
     #[test]
