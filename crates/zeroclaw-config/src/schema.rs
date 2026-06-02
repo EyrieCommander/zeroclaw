@@ -22247,7 +22247,6 @@ allowed_users = []
                     requires_openai_auth: true,
                     ..ModelProviderConfig::default()
                 },
-                ..OpenAIModelProviderConfig::default()
             },
         );
         config
