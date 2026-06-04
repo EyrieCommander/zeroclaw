@@ -14072,7 +14072,12 @@ impl Config {
             config.onepassword_reference_snapshots =
                 collect_onepassword_reference_snapshots(&config);
             // Decrypt all #[secret]-annotated fields via Configurable derive
-            config.decrypt_secrets(&store)?;
+            config = tokio::task::spawn_blocking(move || {
+                config.decrypt_secrets(&store)?;
+                Ok::<_, anyhow::Error>(config)
+            })
+            .await
+            .context("Config secret decryption task failed")??;
 
             // Apply ZEROCLAW_<lowercase_path> env-var overrides. Hard-errors
             // on any unresolvable path — no silent ignores. Tracks overridden
@@ -22146,6 +22151,68 @@ api_key = "op://zeroclaw/provider/openai-api-key"
         assert!(
             !raw_after.contains("sk-proj-from-onepassword"),
             "resolved secret must not be written back to disk: {raw_after}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test(flavor = "multi_thread", worker_threads = 1)]
+    async fn onepassword_reference_load_does_not_block_runtime_worker() {
+        let _env_guard = env_override_lock().await;
+        let dir = TempDir::new().unwrap();
+        let bin_dir = dir.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        write_fake_op(
+            &bin_dir,
+            r#"#!/bin/sh
+if [ "$1" = "read" ] && [ "$2" = "op://zeroclaw/provider/openai-api-key" ]; then
+  sleep 1
+  printf '%s\n' 'sk-proj-from-onepassword'
+  exit 0
+fi
+exit 65
+"#,
+        );
+        let path = match std::env::var_os("PATH") {
+            Some(existing) if !existing.is_empty() => {
+                format!("{}:{}", bin_dir.display(), existing.to_string_lossy())
+            }
+            _ => bin_dir.display().to_string(),
+        };
+        let _path_guard = EnvValueGuard::set("PATH", path);
+        let _config_guard = EnvValueGuard::set("ZEROCLAW_CONFIG_DIR", dir.path());
+        let _workspace_guard = EnvValueGuard::remove("ZEROCLAW_WORKSPACE");
+
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+schema_version = 3
+
+[providers.models.openai.default]
+model = "gpt-5"
+api_key = "op://zeroclaw/provider/openai-api-key"
+"#,
+        )
+        .unwrap();
+
+        let started = std::time::Instant::now();
+        let load_task = tokio::spawn(Config::load_or_init());
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "op:// config load should not block the async runtime worker"
+        );
+
+        let config = load_task.await.unwrap().unwrap();
+        assert_eq!(
+            config
+                .providers
+                .models
+                .openai
+                .get("default")
+                .and_then(|entry| entry.base.api_key.as_deref()),
+            Some("sk-proj-from-onepassword")
         );
     }
 

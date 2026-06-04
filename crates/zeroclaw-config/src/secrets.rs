@@ -410,6 +410,7 @@ fn validate_onepassword_ref(reference: &str) -> Result<()> {
 
 /// Resolve a 1Password secret reference by invoking the `op` CLI.
 fn resolve_onepassword_ref(reference: &str) -> Result<String> {
+    use std::io::Read;
     use std::process::{Command, Stdio};
 
     validate_onepassword_ref(reference)?;
@@ -437,6 +438,23 @@ fn resolve_onepassword_ref(reference: &str) -> Result<String> {
             }
         })?;
 
+    let mut stdout = child
+        .stdout
+        .take()
+        .context("Failed to capture 1Password CLI stdout")?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .context("Failed to capture 1Password CLI stderr")?;
+    let stdout_handle = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        stdout.read_to_end(&mut output).map(|_| output)
+    });
+    let stderr_handle = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        stderr.read_to_end(&mut output).map(|_| output)
+    });
+
     let deadline = Instant::now() + ONEPASSWORD_READ_TIMEOUT;
     let status = loop {
         if let Some(status) = child
@@ -448,6 +466,8 @@ fn resolve_onepassword_ref(reference: &str) -> Result<String> {
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = stdout_handle.join();
+            let _ = stderr_handle.join();
             anyhow::bail!(
                 "1Password CLI timed out resolving \"{reference}\" after {}s",
                 ONEPASSWORD_READ_TIMEOUT.as_secs()
@@ -456,24 +476,30 @@ fn resolve_onepassword_ref(reference: &str) -> Result<String> {
         std::thread::sleep(Duration::from_millis(25));
     };
 
-    let output = child
-        .wait_with_output()
-        .context("Failed to collect 1Password CLI output")?;
+    let stdout = stdout_handle
+        .join()
+        .map_err(|_| anyhow::Error::msg("1Password CLI stdout reader panicked"))?
+        .context("Failed to read 1Password CLI stdout")?;
+    let stderr = stderr_handle
+        .join()
+        .map_err(|_| anyhow::Error::msg("1Password CLI stderr reader panicked"))?
+        .context("Failed to read 1Password CLI stderr")?;
 
     if !status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let hint = if stderr.contains("not signed in") || stderr.contains("session expired") {
-            " (hint: run `op signin` first)"
-        } else {
-            ""
-        };
+        let stderr_text = String::from_utf8_lossy(&stderr);
+        let hint =
+            if stderr_text.contains("not signed in") || stderr_text.contains("session expired") {
+                " (hint: run `op signin` first)"
+            } else {
+                ""
+            };
         anyhow::bail!(
             "1Password CLI failed to resolve \"{reference}\": {}{hint}",
-            stderr.trim()
+            stderr_text.trim()
         );
     }
 
-    let secret = String::from_utf8(output.stdout)
+    let secret = String::from_utf8(stdout)
         .context("1Password CLI returned non-UTF-8 output")?
         .trim_end_matches(&['\r', '\n'][..])
         .to_string();
@@ -489,7 +515,46 @@ fn resolve_onepassword_ref(reference: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
     use tempfile::TempDir;
+
+    struct EnvValueGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvValueGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            // SAFETY: tests that mutate env vars serialize on env_test_lock().
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvValueGuard {
+        fn drop(&mut self) {
+            // SAFETY: tests that mutate env vars serialize on env_test_lock().
+            unsafe {
+                if let Some(previous) = &self.previous {
+                    std::env::set_var(self.key, previous);
+                } else {
+                    std::env::remove_var(self.key);
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn write_fake_op(bin_dir: &Path, script: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let op_path = bin_dir.join("op");
+        fs::write(&op_path, script).expect("write fake op");
+        let mut perms = fs::metadata(&op_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&op_path, perms).unwrap();
+    }
 
     // ── SecretStore basics ─────────────────────────────────────
 
@@ -562,6 +627,42 @@ mod tests {
             .to_string();
 
         assert!(err.contains("Invalid 1Password reference"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn op_reference_drains_stderr_while_waiting() {
+        let _guard = crate::env_overrides::env_test_lock().await;
+        let tmp = TempDir::new().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        write_fake_op(
+            &bin_dir,
+            r#"#!/bin/sh
+if [ "$1" = "read" ] && [ "$2" = "op://vault/item/field" ]; then
+  yes diagnostic-line >&2 &
+  spam_pid=$!
+  sleep 1
+  kill "$spam_pid"
+  wait "$spam_pid" 2>/dev/null
+  printf '%s\n' 'secret-from-op'
+  exit 0
+fi
+exit 65
+"#,
+        );
+        let path = match std::env::var_os("PATH") {
+            Some(existing) if !existing.is_empty() => {
+                format!("{}:{}", bin_dir.display(), existing.to_string_lossy())
+            }
+            _ => bin_dir.display().to_string(),
+        };
+        let _path_guard = EnvValueGuard::set("PATH", path);
+        let store = SecretStore::new(tmp.path(), true);
+
+        let secret = store.decrypt("op://vault/item/field").unwrap();
+
+        assert_eq!(secret, "secret-from-op");
     }
 
     #[tokio::test]
