@@ -179,7 +179,13 @@ export class AcpWebSocketClient {
         reject,
         timeout,
       });
-      this.ws?.send(JSON.stringify(frame));
+      try {
+        this.ws?.send(JSON.stringify(frame));
+      } catch (err) {
+        clearTimeout(timeout);
+        this.pending.delete(id);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
     });
   }
 
