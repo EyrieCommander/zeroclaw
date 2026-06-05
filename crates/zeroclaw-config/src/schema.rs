@@ -22728,7 +22728,7 @@ api_key = "op://zeroclaw/provider/openai-api-key"
         let mut config = Config::load_or_init().await.unwrap();
         config
             .set_prop_persistent(
-                "providers.models.openai.default.api-key",
+                "providers.models.openai.default.api_key",
                 "sk-proj-new-direct-key",
             )
             .unwrap();
