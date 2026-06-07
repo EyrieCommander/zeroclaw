@@ -3801,8 +3801,8 @@ pub async fn run(
                 &config.data_dir,
                 config.skills.install_suggestions.enabled,
             ) {
-                final_output = suggestion.clone();
-                println!("{suggestion}");
+                final_output = suggestion;
+                println!("{final_output}");
                 observer.record_event(&ObserverEvent::TurnComplete);
                 return Ok(final_output);
             }
@@ -4018,8 +4018,8 @@ pub async fn run(
                     }
                 }
             }
-            final_output = response.clone();
-            println!("{response}");
+            final_output = response;
+            println!("{final_output}");
             observer.record_event(&ObserverEvent::TurnComplete);
         } else {
             println!("🦀 ZeroClaw Interactive Mode");
@@ -4168,11 +4168,11 @@ pub async fn run(
                     &config.data_dir,
                     config.skills.install_suggestions.enabled,
                 ) {
-                    final_output = suggestion.clone();
+                    final_output = suggestion;
                     if let Err(e) = zeroclaw_api::channel::Channel::send(
                         &*cli,
                         &zeroclaw_api::channel::SendMessage::new(
-                            format!("\n{suggestion}\n"),
+                            format!("\n{final_output}\n"),
                             "user",
                         ),
                     )
@@ -4444,12 +4444,12 @@ pub async fn run(
                 drop(delta_tx);
                 let _ = consumer_handle.await;
 
-                final_output = response.clone();
+                final_output = response;
                 if content_was_streamed.load(std::sync::atomic::Ordering::Relaxed) {
                     println!();
                 } else if let Err(e) = zeroclaw_api::channel::Channel::send(
                     &*cli,
-                    &zeroclaw_api::channel::SendMessage::new(format!("\n{response}\n"), "user"),
+                    &zeroclaw_api::channel::SendMessage::new(format!("\n{final_output}\n"), "user"),
                 )
                 .await
                 {
