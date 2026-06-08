@@ -2278,7 +2278,7 @@ fn model_rank_lower(provider: &str, model_l: &str) -> i32 {
             rank -= 10;
         }
     } else if contains_any(
-        &model_l,
+        model_l,
         &[
             "claude", "sonnet", "opus", "gpt", "gemini", "deepseek", "qwen", "kimi", "llama",
             "mistral", "grok", "coder", "code", "reason", "r1", "o3", "o4",
