@@ -112,7 +112,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 use tokio_util::sync::CancellationToken;
 
-use crate::paced_channel::PacedChannel;
 use zeroclaw_api::session_keys::sanitize_session_key;
 use zeroclaw_config::schema::Config;
 use zeroclaw_memory::{self, MEMORY_CONTEXT_CLOSE, MEMORY_CONTEXT_OPEN, Memory};
@@ -6227,7 +6226,7 @@ fn collect_configured_channels(
         channels.push(ConfiguredChannel {
             display_name: "Telegram",
             alias: Some(alias.clone()),
-            channel: PacedChannel::wrap(
+            channel: crate::paced_channel::PacedChannel::wrap(
                 Arc::new(
                     TelegramChannel::new(
                         tg.bot_token.clone(),
@@ -6313,7 +6312,7 @@ fn collect_configured_channels(
         channels.push(ConfiguredChannel {
             display_name: "Discord",
             alias: Some(alias.clone()),
-            channel: PacedChannel::wrap(Arc::new(discord_ch), dc),
+            channel: crate::paced_channel::PacedChannel::wrap(Arc::new(discord_ch), dc),
         });
     }
 
@@ -6344,7 +6343,7 @@ fn collect_configured_channels(
         channels.push(ConfiguredChannel {
             display_name: "Slack",
             alias: Some(alias.clone()),
-            channel: PacedChannel::wrap(
+            channel: crate::paced_channel::PacedChannel::wrap(
                 Arc::new(
                     SlackChannel::new(
                         sl.bot_token.clone(),
@@ -6396,7 +6395,7 @@ fn collect_configured_channels(
         channels.push(ConfiguredChannel {
             display_name: "Mattermost",
             alias: Some(alias.clone()),
-            channel: PacedChannel::wrap(
+            channel: crate::paced_channel::PacedChannel::wrap(
                 Arc::new(
                     MattermostChannel::new(
                         mm.url.clone(),
@@ -6447,7 +6446,7 @@ fn collect_configured_channels(
         channels.push(ConfiguredChannel {
             display_name: "iMessage",
             alias: Some(alias.clone()),
-            channel: PacedChannel::wrap(
+            channel: crate::paced_channel::PacedChannel::wrap(
                 Arc::new(IMessageChannel::new(alias.clone(), peer_resolver)),
                 im,
             ),
@@ -6493,7 +6492,7 @@ fn collect_configured_channels(
                 channels.push(ConfiguredChannel {
                     display_name: "Matrix",
                     alias: Some(alias.clone()),
-                    channel: PacedChannel::wrap(Arc::new(channel), mx),
+                    channel: crate::paced_channel::PacedChannel::wrap(Arc::new(channel), mx),
                 });
             }
             Err(e) => {
@@ -6537,7 +6536,7 @@ fn collect_configured_channels(
         channels.push(ConfiguredChannel {
             display_name: "Signal",
             alias: Some(alias.clone()),
-            channel: PacedChannel::wrap(
+            channel: crate::paced_channel::PacedChannel::wrap(
                 Arc::new(
                     SignalChannel::new(
                         sig.http_url.clone(),
@@ -6598,7 +6597,7 @@ fn collect_configured_channels(
                     channels.push(ConfiguredChannel {
                         display_name: "WhatsApp",
                         alias: Some(alias.clone()),
-                        channel: PacedChannel::wrap(
+                        channel: crate::paced_channel::PacedChannel::wrap(
                             Arc::new(
                                 WhatsAppChannel::new(
                                     wa.access_token.clone().unwrap_or_default(),
@@ -6654,7 +6653,7 @@ fn collect_configured_channels(
                     channels.push(ConfiguredChannel {
                         display_name: "WhatsApp",
                         alias: Some(alias.clone()),
-                        channel: PacedChannel::wrap(
+                        channel: crate::paced_channel::PacedChannel::wrap(
                             Arc::new(
                                 WhatsAppWebChannel::new(wa, alias.clone(), peer_resolver)
                                     .with_transcription(config.transcription.clone())
@@ -7491,7 +7490,7 @@ fn collect_configured_channels(
         channels.push(ConfiguredChannel {
             display_name: "Webhook",
             alias: Some(alias.clone()),
-            channel: PacedChannel::wrap(
+            channel: crate::paced_channel::PacedChannel::wrap(
                 Arc::new(WebhookChannel::new(
                     alias.clone(),
                     wh.port,
