@@ -3795,9 +3795,14 @@ pub async fn run(
                 system_prompt = format!("{prefix}\n\n{system_prompt}");
             }
 
+            let runtime_capability_names = tools_registry
+                .iter()
+                .map(|tool| tool.name())
+                .collect::<Vec<_>>();
             if let Some(suggestion) = crate::skills::render_missing_skill_install_suggestion(
                 &effective_msg,
                 &skills,
+                &runtime_capability_names,
                 &config.data_dir,
                 config.skills.install_suggestions.enabled,
             ) {
@@ -4162,9 +4167,14 @@ pub async fn run(
                     }
                 }
 
+                let runtime_capability_names = tools_registry
+                    .iter()
+                    .map(|tool| tool.name())
+                    .collect::<Vec<_>>();
                 if let Some(suggestion) = crate::skills::render_missing_skill_install_suggestion(
                     &effective_input,
                     &skills,
+                    &runtime_capability_names,
                     &config.data_dir,
                     config.skills.install_suggestions.enabled,
                 ) {
@@ -5038,9 +5048,14 @@ pub async fn process_message(
         }
 
         let effective_msg_ref = effective_message.as_str();
+        let runtime_capability_names = tools_registry
+            .iter()
+            .map(|tool| tool.name())
+            .collect::<Vec<_>>();
         if let Some(suggestion) = crate::skills::render_missing_skill_install_suggestion(
             effective_msg_ref,
             &skills,
+            &runtime_capability_names,
             &config.data_dir,
             config.skills.install_suggestions.enabled,
         ) {
