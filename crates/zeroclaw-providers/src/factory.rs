@@ -1222,6 +1222,9 @@ impl FamilyProviderFactory for CustomModelProviderConfig {
             AuthStyle::Bearer,
             true,
         );
+        if opts.native_tools != Some(true) {
+            p = p.without_native_tools();
+        }
         if opts.merge_system_into_user {
             p = p.with_merge_system_into_user();
         }
@@ -1507,6 +1510,51 @@ mod tests {
             )
             .unwrap();
         assert_ne!(provider.default_wire_api(), "responses");
+    }
+
+    #[test]
+    fn custom_factory_disables_native_tools_by_default() {
+        use zeroclaw_config::schema::{CustomModelProviderConfig, ModelProviderConfig};
+        let cfg = CustomModelProviderConfig {
+            base: ModelProviderConfig {
+                uri: Some("http://10.0.0.15:8000/v1".to_string()),
+                ..Default::default()
+            },
+        };
+        let provider = cfg
+            .create_provider(
+                "vllm",
+                None,
+                Some("http://10.0.0.15:8000/v1"),
+                &ModelProviderRuntimeOptions::default(),
+            )
+            .unwrap();
+        assert!(
+            !provider.supports_native_tools(),
+            "custom OpenAI-compatible endpoints must default to prompt-guided tools"
+        );
+    }
+
+    #[test]
+    fn custom_factory_honors_native_tools_override_true() {
+        use zeroclaw_config::schema::{CustomModelProviderConfig, ModelProviderConfig};
+        let cfg = CustomModelProviderConfig {
+            base: ModelProviderConfig {
+                uri: Some("http://10.0.0.15:8000/v1".to_string()),
+                ..Default::default()
+            },
+        };
+        let options = ModelProviderRuntimeOptions {
+            native_tools: Some(true),
+            ..Default::default()
+        };
+        let provider = cfg
+            .create_provider("vllm", None, Some("http://10.0.0.15:8000/v1"), &options)
+            .unwrap();
+        assert!(
+            provider.supports_native_tools(),
+            "custom endpoints with `native_tools = true` must keep native tool calling available"
+        );
     }
 
     #[test]
