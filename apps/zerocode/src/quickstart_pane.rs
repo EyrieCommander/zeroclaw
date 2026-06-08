@@ -22,8 +22,8 @@ use std::sync::Arc;
 const UNSET_DISPLAY: &str = "<unset>";
 
 use crate::client::{
-    QuickstartApplyResult, QuickstartError, QuickstartFieldDescriptor, QuickstartFieldSection,
-    QuickstartStateResult, QuickstartStep, QuickstartSurface, RpcClient,
+    AppliedAgent, QuickstartApplyResult, QuickstartError, QuickstartFieldDescriptor,
+    QuickstartFieldSection, QuickstartStateResult, QuickstartStep, QuickstartSurface, RpcClient,
 };
 use crate::theme;
 use crate::widgets::{HelpEntry, HelpNode};
@@ -137,6 +137,25 @@ fn in_rect(col: u16, row: u16, r: Rect) -> bool {
 
 fn synth_enter() -> KeyEvent {
     KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE)
+}
+
+fn queue_apply_handoff(
+    reconnect_state: &crate::app::SharedReconnectState,
+    alias: String,
+    daemon_restarted: bool,
+) -> Option<String> {
+    let Ok(mut guard) = reconnect_state.lock() else {
+        return None;
+    };
+    if daemon_restarted {
+        guard.start_chat_now = None;
+        guard.start_chat_with = Some(alias.clone());
+        Some(alias)
+    } else {
+        guard.start_chat_with = None;
+        guard.start_chat_now = Some(alias);
+        None
+    }
 }
 
 /// The character a key press contributes to a free-text buffer (the
@@ -393,8 +412,11 @@ impl FormState {
             Selector::RiskProfile => !self.risk.is_empty(),
             Selector::RuntimeProfile => !self.runtime.is_empty(),
             Selector::Memory => self.memory_chosen,
-            Selector::Channels => self.channels_visited,
-            Selector::PeerGroups => self.peer_groups_visited,
+            // Empty channel and peer-group selections are valid. The
+            // modals still let users review or add entries, but the
+            // optional rows should not block Submit when left empty.
+            Selector::Channels => true,
+            Selector::PeerGroups => true,
             Selector::Agent => !self.agent_name.is_empty(),
             // Submit ticks when the daemon has accepted the submission;
             // until then it stays open so the user can tell it's the
@@ -1750,17 +1772,11 @@ impl QuickstartPane {
         self.last_errors.clear();
         let submission = self.form.to_submission();
         match self.rpc.quickstart_apply(&submission).await {
-            Ok(QuickstartApplyResult::Applied { agent, .. }) => {
-                // Arm the Stage-2 hand-off **before** the daemon reload
-                // kicks in. The socket dies shortly after this returns,
-                // the TUI freezes during the disconnect, and the next
-                // `app::run` iteration reads this back to route the
-                // user into the new agent's Chat tab automatically.
-                if let Ok(mut guard) = self.reconnect_state.lock() {
-                    guard.start_chat_with = Some(agent.alias.clone());
-                }
-                self.applied_alias = Some(agent.alias);
-                self.last_errors.clear();
+            Ok(QuickstartApplyResult::Applied {
+                agent,
+                daemon_restarted,
+            }) => {
+                self.handle_apply_success(agent, daemon_restarted);
             }
             Ok(QuickstartApplyResult::Errors { errors }) => {
                 self.last_errors = errors;
@@ -1774,6 +1790,21 @@ impl QuickstartPane {
             }
         }
         self.busy = false;
+    }
+
+    fn handle_apply_success(&mut self, agent: AppliedAgent, daemon_restarted: bool) {
+        // Arm the Stage-2 hand-off **before** any daemon reload can kick
+        // in. When reload is signalled the socket dies shortly after
+        // this returns, the TUI waits during the disconnect, and the
+        // next `app::run` pane rebuild consumes `start_chat_with`.
+        //
+        // Test/standalone daemons can report `daemon_restarted = false`.
+        // In that case no disconnect is coming, so freezing Quickstart
+        // behind `applied_alias` strands the user. Queue an immediate
+        // connected-client handoff instead.
+        self.applied_alias =
+            queue_apply_handoff(&self.reconnect_state, agent.alias, daemon_restarted);
+        self.last_errors.clear();
     }
 
     fn draw_title(&self, frame: &mut Frame, area: Rect) {
@@ -2428,8 +2459,6 @@ mod tests {
         f.risk = "balanced".into();
         f.runtime = "balanced".into();
         f.memory_chosen = true;
-        f.channels_visited = true;
-        f.peer_groups_visited = true;
         f.agent_name = "bob".into();
         f
     }
@@ -2455,6 +2484,49 @@ mod tests {
         let mut f = complete_form();
         f.agent_name.clear();
         assert!(!f.all_selectors_satisfied());
+    }
+
+    #[test]
+    fn optional_channel_and_peer_group_rows_do_not_block_submit() {
+        // Regression: Channels and Peer groups are labelled optional,
+        // but the checklist stayed incomplete until the user opened
+        // each row and explicitly confirmed "none".
+        let f = complete_form();
+        assert!(f.channels.is_empty());
+        assert!(f.peer_groups.is_empty());
+        assert!(!f.channels_visited);
+        assert!(!f.peer_groups_visited);
+        assert!(f.is_satisfied(Selector::Channels));
+        assert!(f.is_satisfied(Selector::PeerGroups));
+        assert!(f.all_selectors_satisfied());
+    }
+
+    #[test]
+    fn apply_handoff_waits_for_reconnect_when_reload_was_signalled() {
+        let state = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::app::CrossReconnectState::default(),
+        ));
+
+        let applied_alias = queue_apply_handoff(&state, "agent-a".into(), true);
+        let guard = state.lock().unwrap();
+
+        assert_eq!(applied_alias.as_deref(), Some("agent-a"));
+        assert_eq!(guard.start_chat_with.as_deref(), Some("agent-a"));
+        assert!(guard.start_chat_now.is_none());
+    }
+
+    #[test]
+    fn apply_handoff_starts_chat_immediately_without_reload_signal() {
+        let state = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::app::CrossReconnectState::default(),
+        ));
+
+        let applied_alias = queue_apply_handoff(&state, "agent-a".into(), false);
+        let guard = state.lock().unwrap();
+
+        assert!(applied_alias.is_none());
+        assert!(guard.start_chat_with.is_none());
+        assert_eq!(guard.start_chat_now.as_deref(), Some("agent-a"));
     }
 
     fn err(step: QuickstartStep) -> QuickstartError {
