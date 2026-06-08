@@ -10547,6 +10547,12 @@ pub struct ChannelsConfig {
     /// Default: 300s for on-device LLMs (Ollama) which are slower than cloud APIs.
     #[serde(default = "default_channel_message_timeout_secs")]
     pub message_timeout_secs: u64,
+    /// Per-channel multiplier for the global channel message in-flight budget.
+    /// Runtime multiplies this value by the configured channel count, then
+    /// applies its global minimum and maximum bounds to one shared dispatcher
+    /// semaphore. Default: `4`.
+    #[serde(default = "default_channel_max_concurrent_per_channel")]
+    pub max_concurrent_per_channel: usize,
     /// Whether to add acknowledgement reactions (👀 on receipt, ✅/⚠️ on
     /// completion) to incoming channel messages. Default: `true`.
     #[serde(default = "default_true")]
@@ -10825,6 +10831,10 @@ fn default_channel_message_timeout_secs() -> u64 {
     300
 }
 
+fn default_channel_max_concurrent_per_channel() -> usize {
+    4
+}
+
 fn default_session_backend() -> String {
     "sqlite".into()
 }
@@ -10866,6 +10876,7 @@ impl Default for ChannelsConfig {
             voice_duplex: HashMap::new(),
             mqtt: HashMap::new(),
             message_timeout_secs: default_channel_message_timeout_secs(),
+            max_concurrent_per_channel: default_channel_max_concurrent_per_channel(),
             ack_reactions: true,
             show_tool_calls: false,
             session_persistence: true,
@@ -15086,6 +15097,13 @@ impl Config {
                 "transcription.max_audio_bytes must be greater than zero"
             );
         }
+        if self.channels.max_concurrent_per_channel == 0 {
+            validation_bail!(
+                InvalidNumericRange,
+                "channels.max_concurrent_per_channel",
+                "channels.max_concurrent_per_channel must be greater than 0"
+            );
+        }
         // Heartbeat agent: when heartbeat is enabled, the agent field
         // must name a configured agent.
         if self.heartbeat.enabled {
@@ -17500,6 +17518,42 @@ auto_save = true
         assert!(c.discord.is_empty());
         assert!(c.wecom_ws.is_empty());
         assert!(!c.show_tool_calls);
+        assert_eq!(
+            c.max_concurrent_per_channel,
+            default_channel_max_concurrent_per_channel()
+        );
+    }
+
+    #[test]
+    async fn channels_max_concurrent_per_channel_defaults_and_round_trips() {
+        let parsed: ChannelsConfig = toml::from_str("cli = true").unwrap();
+        assert_eq!(
+            parsed.max_concurrent_per_channel,
+            default_channel_max_concurrent_per_channel()
+        );
+
+        let parsed: ChannelsConfig =
+            toml::from_str("cli = true\nmax_concurrent_per_channel = 2").unwrap();
+        assert_eq!(parsed.max_concurrent_per_channel, 2);
+
+        let toml_str = toml::to_string_pretty(&parsed).unwrap();
+        let reparsed: ChannelsConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(reparsed.max_concurrent_per_channel, 2);
+    }
+
+    #[test]
+    async fn validate_rejects_zero_channel_max_concurrent_per_channel() {
+        let mut config = Config::default();
+        config.channels.max_concurrent_per_channel = 0;
+
+        let err = config
+            .validate()
+            .expect_err("zero channel concurrency budget must fail validate");
+        assert!(
+            err.to_string()
+                .contains("channels.max_concurrent_per_channel must be greater than 0"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -17690,6 +17744,7 @@ auto_save = true
                 voice_wake: HashMap::new(),
                 mqtt: HashMap::new(),
                 message_timeout_secs: 300,
+                max_concurrent_per_channel: default_channel_max_concurrent_per_channel(),
                 ack_reactions: true,
                 show_tool_calls: true,
                 session_persistence: true,
@@ -19146,6 +19201,7 @@ allowed_users = ["@u:matrix.org"]
             voice_wake: HashMap::new(),
             mqtt: HashMap::new(),
             message_timeout_secs: 300,
+            max_concurrent_per_channel: default_channel_max_concurrent_per_channel(),
             ack_reactions: true,
             show_tool_calls: true,
             session_persistence: true,
@@ -19586,6 +19642,7 @@ allowed_numbers = ["+1", "+2"]
             voice_wake: HashMap::new(),
             mqtt: HashMap::new(),
             message_timeout_secs: 300,
+            max_concurrent_per_channel: default_channel_max_concurrent_per_channel(),
             ack_reactions: true,
             show_tool_calls: true,
             session_persistence: true,
