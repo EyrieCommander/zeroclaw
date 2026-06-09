@@ -291,6 +291,17 @@ fn personality_template_context(
     }
 }
 
+fn model_provider_ref_from_provider_profile_prop(prop: &str) -> Option<String> {
+    let rest = prop.strip_prefix("providers.models.")?;
+    let (provider_type, rest) = rest.split_once('.')?;
+    let (provider_alias, field) = rest.split_once('.')?;
+    if provider_type.is_empty() || provider_alias.is_empty() || field.is_empty() {
+        None
+    } else {
+        Some(format!("{provider_type}.{provider_alias}"))
+    }
+}
+
 /// Per-connection dispatcher. Shared state lives in [`RpcContext`].
 pub struct RpcDispatcher {
     ctx: Arc<RpcContext>,
@@ -2201,6 +2212,7 @@ impl RpcDispatcher {
 
     async fn handle_config_set(&self, params: &Value) -> RpcResult {
         let req: ConfigSetParams = parse_params(params)?;
+        let refresh_model_provider_ref = model_provider_ref_from_provider_profile_prop(&req.prop);
         {
             let mut config = self.ctx.config.write();
             config.ensure_map_key_for_path(&req.prop);
@@ -2241,10 +2253,76 @@ impl RpcDispatcher {
                 .map_err(|e| rpc_err(INTERNAL_ERROR, format!("Config set failed: {e}")))?;
         }
         self.flush_config().await?;
+        if let Some(model_provider_ref) = refresh_model_provider_ref {
+            self.refresh_live_sessions_for_model_provider(&model_provider_ref)
+                .await;
+        }
         to_result(ConfigSetResult {
             prop: req.prop,
             set: true,
         })
+    }
+
+    async fn refresh_live_sessions_for_model_provider(&self, model_provider_ref: &str) {
+        let session_ids = self.ctx.sessions.list_ids().await;
+        for session_id in session_ids {
+            let Some(agent_alias) = self.ctx.sessions.get_agent_alias(&session_id).await else {
+                continue;
+            };
+            let Some(overrides) = self.ctx.sessions.get_overrides(&session_id).await else {
+                continue;
+            };
+            let uses_provider = {
+                let config = self.ctx.config.read();
+                let effective_ref = overrides.model_provider.as_deref().or_else(|| {
+                    config
+                        .agent(&agent_alias)
+                        .map(|agent| agent.model_provider.as_str())
+                });
+                effective_ref == Some(model_provider_ref)
+            };
+            if !uses_provider {
+                continue;
+            }
+
+            let (model_provider, model_provider_name, model_name) = {
+                let config = self.ctx.config.read();
+                match crate::agent::agent::build_session_model_provider(
+                    &config,
+                    model_provider_ref,
+                    overrides.model.as_deref(),
+                ) {
+                    Ok(built) => built,
+                    Err(e) => {
+                        ::zeroclaw_log::record!(
+                            WARN,
+                            ::zeroclaw_log::Event::new(
+                                module_path!(),
+                                ::zeroclaw_log::Action::Note
+                            )
+                            .with_outcome(::zeroclaw_log::EventOutcome::Unknown)
+                            .with_attrs(::serde_json::json!({
+                                "session_id": session_id,
+                                "agent_alias": agent_alias,
+                                "model_provider": model_provider_ref,
+                                "error": e.to_string(),
+                            })),
+                            "config/set saved provider profile but live session refresh failed"
+                        );
+                        continue;
+                    }
+                }
+            };
+            if self
+                .ctx
+                .sessions
+                .apply_model_provider(&session_id, model_provider, model_provider_name)
+                .await
+                && let Some(agent) = self.ctx.sessions.get_agent(&session_id).await
+            {
+                agent.lock().await.set_model_name(model_name);
+            }
+        }
     }
 
     fn handle_config_validate(&self) -> RpcResult {
@@ -4097,6 +4175,142 @@ mod tests {
             .get("default")
             .and_then(|e| e.base.model.clone());
         assert_eq!(stored.as_deref(), Some("claude-sonnet-4-5"));
+    }
+
+    fn make_model_refresh_test_config(tmp: &tempfile::TempDir) -> zeroclaw_config::schema::Config {
+        use std::collections::HashMap;
+        use zeroclaw_config::schema::{AliasedAgentConfig, Config, RiskProfileConfig};
+
+        let workspace_dir = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace_dir).unwrap();
+
+        let mut config = Config {
+            config_path: tmp.path().join("config.toml"),
+            data_dir: tmp.path().join("data"),
+            ..Default::default()
+        };
+        let provider = config
+            .providers
+            .models
+            .ensure("openai", "test-provider")
+            .expect("openai provider slot exists");
+        provider.api_key = Some("test-key".into());
+        provider.uri = Some("http://127.0.0.1:1".into());
+        provider.model = Some("old-model".into());
+
+        config.agents = HashMap::from([(
+            "test-agent".to_string(),
+            AliasedAgentConfig {
+                enabled: true,
+                model_provider: "openai.test-provider".into(),
+                risk_profile: "test-profile".into(),
+                ..Default::default()
+            },
+        )]);
+        config
+            .risk_profiles
+            .insert("test-profile".into(), RiskProfileConfig::default());
+        config
+            .runtime_profiles
+            .insert("default".into(), Default::default());
+        config
+    }
+
+    async fn create_model_refresh_test_session(
+        dispatcher: &RpcDispatcher,
+        tmp: &tempfile::TempDir,
+    ) -> String {
+        let session_res = dispatcher
+            .handle_session_new_for_test(&json!({
+                "agent_alias": "test-agent",
+                "cwd": tmp.path().join("workspace"),
+            }))
+            .await
+            .expect("session/new should create the agent");
+        session_res
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .expect("session/new result includes session_id")
+            .to_string()
+    }
+
+    async fn model_name_for_session(dispatcher: &RpcDispatcher, session_id: &str) -> String {
+        let agent = dispatcher
+            .ctx
+            .sessions
+            .get_agent(session_id)
+            .await
+            .expect("session agent exists");
+        agent.lock().await.attribution_fields().2
+    }
+
+    #[tokio::test]
+    async fn config_set_provider_model_refreshes_matching_live_session() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dispatcher = make_config_set_test_dispatcher(make_model_refresh_test_config(&tmp));
+        let session_id = create_model_refresh_test_session(&dispatcher, &tmp).await;
+        assert_eq!(
+            model_name_for_session(&dispatcher, &session_id).await,
+            "old-model"
+        );
+
+        let res = dispatcher
+            .handle_config_set(&json!({
+                "prop": "providers.models.openai.test-provider.model",
+                "value": "new-model"
+            }))
+            .await;
+        assert!(res.is_ok(), "config/set must succeed: {res:?}");
+
+        let agent = dispatcher
+            .ctx
+            .sessions
+            .get_agent(&session_id)
+            .await
+            .expect("session agent still exists");
+        assert_eq!(
+            agent.lock().await.attribution_fields().2,
+            "new-model",
+            "config/set must refresh active sessions using the edited provider profile"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_set_provider_refresh_failure_does_not_fail_saved_write() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dispatcher = make_config_set_test_dispatcher(make_model_refresh_test_config(&tmp));
+        let session_id = create_model_refresh_test_session(&dispatcher, &tmp).await;
+        assert_eq!(
+            model_name_for_session(&dispatcher, &session_id).await,
+            "old-model"
+        );
+
+        let res = dispatcher
+            .handle_config_set(&json!({
+                "prop": "providers.models.openai.test-provider.model",
+                "value": ""
+            }))
+            .await;
+        assert!(
+            res.is_ok(),
+            "config/set must report the saved write even if live refresh cannot rebuild: {res:?}"
+        );
+        let cfg = dispatcher.ctx.config.read().clone();
+        let stored = cfg
+            .providers
+            .models
+            .openai
+            .get("test-provider")
+            .and_then(|e| e.base.model.clone());
+        assert_eq!(
+            stored, None,
+            "config/set must still persist the requested provider-profile clear"
+        );
+        assert_eq!(
+            model_name_for_session(&dispatcher, &session_id).await,
+            "old-model",
+            "failed live refresh must leave the existing session provider intact"
+        );
     }
 
     // -----------------------------------------------------------------------
