@@ -906,7 +906,7 @@ impl WeChatChannel {
             let mut cfg = config.write();
             if !cfg.channels.wechat.contains_key(&self.alias) {
                 anyhow::bail!(
-                    "Missing [channels.wechat.{}] section. Run `zeroclaw onboard --channels-only` first",
+                    "Missing [channels.wechat.{}] section. Run `zeroclaw config set channels.wechat.<alias>.app-id=<id>` to configure.",
                     self.alias
                 );
             }
@@ -2272,6 +2272,7 @@ impl Channel for WeChatChannel {
                     thread_ts: None,
                     interruption_scope_id: None,
                     attachments: Vec::new(),
+                    subject: None,
                 };
 
                 if tx.send(channel_msg).await.is_err() {
@@ -2331,7 +2332,7 @@ impl Channel for WeChatChannel {
         let url = self.api_url("sendtyping");
         let user_id = recipient.to_string();
 
-        let handle = tokio::spawn(async move {
+        let handle = zeroclaw_spawn::spawn!(async move {
             loop {
                 let body = serde_json::json!({
                     "ilink_user_id": &user_id,
