@@ -10381,6 +10381,8 @@ temperature = 0.3
         tokio::fs::write(
             &config_path,
             r#"
+schema_version = 3
+
 [agents.agent_a]
 model_provider = "openrouter.hot"
 
