@@ -11,13 +11,13 @@ MCP servers can be connected via three transport types:
 
 ## Configuration
 
-MCP servers are configured under `[mcp]` and `[[mcp.servers]]` in `config.toml`. The display `name` (used as the tool prefix `name__tool_name`) is required, plus `transport` (`stdio` | `sse` | `http`) and the transport-specific fields. See the [Config reference](../reference/config.md) for the full field index and defaults.
+MCP servers are configured under `[mcp]` and `[[mcp.servers]]` in `config.toml`. The display `name` (used as the tool prefix `name__tool_name`) is required, plus `transport` (`stdio` | `sse` | `http`) and the transport-specific fields. Configured servers are enabled by default; set `enabled = false` under `[mcp]` to disable MCP without removing server definitions. See the [Config reference](../reference/config.md) for the full field index and defaults.
 
-Keep `deferred_loading = true` (the default) to load tool schemas on demand — this minimizes initial token overhead.
+By default, ZeroClaw includes configured MCP tool schemas in the model context eagerly. Set `deferred_loading = true` to load schemas on demand via `tool_search` when a large MCP catalog would otherwise add too much initial token overhead.
 
 ## Security and Auto-Approval
 
-By default, any tool execution from an MCP server requires manual approval unless the agent's risk-profile level is set to `full`.
+By default, any tool execution from an MCP server requires manual approval unless the agent's risk-profile level is set to `full`. The `tool_search` discovery step is auto-approved so deferred MCP loading can work in non-interactive sessions, but tools discovered from MCP servers still follow the normal approval policy.
 
 To automatically approve specific tools from an MCP server, add them to `auto_approve` on the agent's risk profile (`[risk_profiles.<alias>]`):
 
@@ -34,4 +34,4 @@ See [Autonomy levels](../security/autonomy.md) for the full surface of per-profi
 ## Tips
 
 - **Tool Filtering**: You can limit which MCP tools are exposed to the LLM using `tool_filter_groups` in your project configuration.
-- **Deferred Loading**: Keeping `deferred_loading = true` reduces the initial token overhead by only sending tool names to the LLM. The agent will fetch the full schema only when it decides to use the tool.
+- **Deferred Loading**: Setting `deferred_loading = true` reduces the initial token overhead by only sending tool names to the LLM. The agent will fetch the full schema only when it decides to use the tool.
