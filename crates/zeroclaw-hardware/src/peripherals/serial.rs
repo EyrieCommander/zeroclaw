@@ -138,11 +138,13 @@ impl SerialPeripheral {
             );
         }
 
-        let mut builder = tokio_serial::new(path, serial_open_baud(path, config.baud));
+        let builder = tokio_serial::new(path, serial_open_baud(path, config.baud));
         #[cfg(unix)]
-        if should_open_serial_nonexclusive(path) {
-            builder = builder.exclusive(false);
-        }
+        let builder = if should_open_serial_nonexclusive(path) {
+            builder.exclusive(false)
+        } else {
+            builder
+        };
         let port = builder.open_native_async().map_err(|e| {
             ::zeroclaw_log::record!(
                 ERROR,

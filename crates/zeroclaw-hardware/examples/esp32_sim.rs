@@ -276,12 +276,14 @@ async fn open_firmware_serial() -> Result<tokio_serial::SerialStream> {
             announced_paths = true;
         }
 
-        let mut builder =
+        let builder =
             tokio_serial::new(PTY_FIRMWARE_PATH, serial_open_baud(PTY_FIRMWARE_PATH, BAUD));
         #[cfg(unix)]
-        if should_open_serial_nonexclusive(PTY_FIRMWARE_PATH) {
-            builder = builder.exclusive(false);
-        }
+        let builder = if should_open_serial_nonexclusive(PTY_FIRMWARE_PATH) {
+            builder.exclusive(false)
+        } else {
+            builder
+        };
 
         match builder.open_native_async() {
             Ok(port) => return Ok(port),
