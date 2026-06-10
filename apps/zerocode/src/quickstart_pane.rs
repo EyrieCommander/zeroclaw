@@ -2239,75 +2239,7 @@ fn is_model_field(field: &QuickstartFieldDescriptor) -> bool {
 }
 
 fn sort_quickstart_models(provider: &str, models: Vec<String>) -> Option<Vec<String>> {
-    let provider_l = provider.to_ascii_lowercase();
-    let mut ranked: Vec<(i32, String, String)> = models
-        .into_iter()
-        .filter_map(|model| {
-            let model_l = model.to_ascii_lowercase();
-            if is_non_chat_model_lower(&model_l) {
-                None
-            } else {
-                Some((model_rank_lower(&provider_l, &model_l), model_l, model))
-            }
-        })
-        .collect();
-    if ranked.is_empty() {
-        return None;
-    }
-    ranked.sort_by(|a, b| {
-        a.0.cmp(&b.0)
-            .then_with(|| a.1.cmp(&b.1))
-            .then_with(|| a.2.cmp(&b.2))
-    });
-    Some(ranked.into_iter().map(|(_, _, model)| model).collect())
-}
-
-fn model_rank_lower(provider: &str, model_l: &str) -> i32 {
-    let mut rank = 100;
-
-    if provider.starts_with("openai") {
-        if model_l.starts_with("gpt-5") {
-            rank -= 70;
-        } else if model_l.starts_with("gpt-4.1")
-            || model_l.starts_with("gpt-4o")
-            || model_l.starts_with("o3")
-            || model_l.starts_with("o4")
-        {
-            rank -= 55;
-        } else if model_l.starts_with("gpt-3.5") {
-            rank -= 10;
-        }
-    } else if contains_any(
-        model_l,
-        &[
-            "claude", "sonnet", "opus", "gpt", "gemini", "deepseek", "qwen", "kimi", "llama",
-            "mistral", "grok", "coder", "code", "reason", "r1", "o3", "o4",
-        ],
-    ) {
-        rank -= 45;
-    }
-
-    rank
-}
-
-fn is_non_chat_model_lower(model: &str) -> bool {
-    contains_any(
-        model,
-        &[
-            "image",
-            "audio",
-            "tts",
-            "transcribe",
-            "embedding",
-            "moderation",
-            "realtime",
-            "whisper",
-        ],
-    )
-}
-
-fn contains_any(haystack: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|needle| haystack.contains(needle))
+    zeroclaw_providers::catalog::sort_model_catalog_for_chat(provider, models)
 }
 
 fn build_field_form_rows(
