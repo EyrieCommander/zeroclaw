@@ -1611,10 +1611,18 @@ pub async fn model_catalog(model_provider: &str) -> (Vec<String>, bool) {
         && let Ok(models) = handle.list_models().await
         && !models.is_empty()
     {
-        return (models, true);
+        return (
+            zeroclaw_providers::catalog::sort_model_catalog_for_chat(model_provider, models)
+                .unwrap_or_default(),
+            true,
+        );
     }
     match zeroclaw_providers::catalog::list_models_for_family(model_provider).await {
-        Ok(models) if !models.is_empty() => (models, true),
+        Ok(models) if !models.is_empty() => (
+            zeroclaw_providers::catalog::sort_model_catalog_for_chat(model_provider, models)
+                .unwrap_or_default(),
+            true,
+        ),
         _ => (Vec::new(), false),
     }
 }
