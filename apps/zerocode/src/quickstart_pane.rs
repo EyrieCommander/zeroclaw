@@ -22,6 +22,29 @@ use std::sync::Arc;
 const UNSET_DISPLAY: &str = "<unset>";
 const MODEL_CATALOG_MAX_ATTEMPTS: u8 = 2;
 
+/// Upper bound on rendered secret-mask bullets. A pasted API key can be
+/// 100+ chars; one bullet per character wraps the masked value across
+/// rows and pushes later fields and the footer out of view. Beyond this
+/// the mask is clipped and a `(+N)` suffix reports the hidden length.
+const SECRET_MASK_MAX: usize = 24;
+
+/// Render a bounded secret mask. One bullet per character lets a pasted
+/// API key wrap across rows and shove later fields off-screen; past
+/// `SECRET_MASK_MAX` the mask is clipped and the hidden length reported
+/// as `(+N)` so the user still has feedback that input was captured.
+fn masked_secret(buf: &str) -> String {
+    let count = buf.chars().count();
+    if count > SECRET_MASK_MAX {
+        format!(
+            "{} (+{})",
+            "•".repeat(SECRET_MASK_MAX),
+            count - SECRET_MASK_MAX
+        )
+    } else {
+        "•".repeat(count)
+    }
+}
+
 use crate::client::{
     AppliedAgent, QuickstartApplyResult, QuickstartError, QuickstartFieldDescriptor,
     QuickstartFieldSection, QuickstartStateResult, QuickstartStep, QuickstartSurface, RpcClient,
@@ -46,10 +69,9 @@ enum Selector {
 }
 
 impl Selector {
-    const ALL: [Selector; 8] = [
+    const ALL: [Selector; 7] = [
         Selector::ModelProvider,
         Selector::RiskProfile,
-        Selector::RuntimeProfile,
         Selector::Memory,
         Selector::Channels,
         Selector::PeerGroups,
@@ -85,6 +107,22 @@ impl Selector {
             Selector::Agent => QuickstartStep::Agent,
             Selector::Submit => QuickstartStep::Agent,
         }
+    }
+
+    /// Localised title for the selector that owns a validation step, so
+    /// a field error can name where the problem lives (e.g.
+    /// `Model provider / alias: …`) instead of only a count.
+    fn title_for_step(step: QuickstartStep) -> String {
+        let sel = match step {
+            QuickstartStep::ModelProvider => Selector::ModelProvider,
+            QuickstartStep::RiskProfile => Selector::RiskProfile,
+            QuickstartStep::RuntimeProfile => Selector::RuntimeProfile,
+            QuickstartStep::Memory => Selector::Memory,
+            QuickstartStep::Channels => Selector::Channels,
+            QuickstartStep::PeerGroups => Selector::PeerGroups,
+            QuickstartStep::Agent => Selector::Agent,
+        };
+        sel.title()
     }
 }
 
@@ -515,10 +553,9 @@ impl FormState {
             SelectorMode::Fresh => SelectorChoice::Fresh(self.risk.clone()),
             SelectorMode::Existing => SelectorChoice::Existing(self.risk.clone()),
         };
-        let runtime_profile = match self.runtime_mode {
-            SelectorMode::Fresh => SelectorChoice::Fresh(self.runtime.clone()),
-            SelectorMode::Existing => SelectorChoice::Existing(self.runtime.clone()),
-        };
+        // Runtime profile picker removed from all surfaces; apply silently
+        // forces the `unbounded` preset. Submit it so the field is well-formed.
+        let runtime_profile = SelectorChoice::Fresh("unbounded".to_string());
         let memory = match self.memory_mode {
             SelectorMode::Fresh => SelectorChoice::Fresh(self.memory),
             SelectorMode::Existing => SelectorChoice::Existing(self.memory_existing_alias.clone()),
@@ -609,12 +646,22 @@ struct TextInputModal {
     peer_group_channel: Option<String>,
 }
 
+/// Lifecycle of the live model catalog for a ModelProvider FieldForm.
+/// The form opens immediately in `Pending` so the modal paints a
+/// loading row instead of the picker blocking on the catalog RPC; a
+/// later `tick` resolves it to `Loaded` (model row upgraded to an
+/// enum picker) or `Empty` (catalog unavailable → free-text fallback).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ModelCatalogState {
+    /// Section has no model row (channels) — nothing to load.
     NotApplicable,
+    /// Catalog fetch not yet started or in flight.
     Pending,
+    /// Catalog fetch failed once and is retrying before falling back.
     Retrying,
+    /// Catalog returned variants; model row is a picker.
     Loaded,
+    /// Catalog was empty or unavailable; model row is free-text.
     Empty,
 }
 
@@ -1829,8 +1876,10 @@ impl QuickstartPane {
         let is_model_provider = matches!(section, QuickstartFieldSection::ModelProvider);
         // Open the form before loading the live model catalog. The next
         // idle tick upgrades the model row to a picker or paints the
-        // free-text fallback, so users see progress instead of a frozen
-        // modal while the catalog RPC runs.
+        // free-text fallback, so users see progress instead of a
+        // frozen modal while the catalog RPC runs. The row builder also
+        // handles bool toggles, enum defaults, and the synthetic model
+        // provider alias row.
         let rows = build_field_form_rows(section, fields, None);
         let model_catalog_state = if is_model_provider {
             ModelCatalogState::Pending
@@ -2147,15 +2196,35 @@ impl QuickstartPane {
             crate::i18n::t("zc-quickstart-status-submitting")
         } else if let Some(alias) = &self.applied_alias {
             crate::i18n::t_args("zc-quickstart-status-created", &[("alias", alias.as_str())])
-        } else if !self.last_errors.is_empty() {
-            if self.last_errors.len() == 1 && !self.last_errors[0].message.is_empty() {
-                self.last_errors[0].message.clone()
+        } else if let Some(first) = self.last_errors.first() {
+            // Name the first actionable field error so the user knows
+            // which field is invalid, instead of only a count. The
+            // daemon's message often already carries the specifics
+            // (e.g. "alias openai.default already exists").
+            let where_ = Selector::title_for_step(first.step);
+            let field_part = if first.field.is_empty() {
+                String::new()
             } else {
+                format!(" / {}", first.field)
+            };
+            let more = self.last_errors.len().saturating_sub(1);
+            let suffix = if more > 0 {
                 crate::i18n::t_args(
-                    "zc-quickstart-status-errors",
-                    &[("count", &self.last_errors.len().to_string())],
+                    "zc-quickstart-status-more-errors",
+                    &[("count", &more.to_string())],
                 )
-            }
+            } else {
+                String::new()
+            };
+            crate::i18n::t_args(
+                "zc-quickstart-status-first-error",
+                &[
+                    ("where", where_.trim()),
+                    ("field", &field_part),
+                    ("message", first.message.trim()),
+                    ("more", &suffix),
+                ],
+            )
         } else if can_create {
             crate::i18n::t_args("zc-quickstart-status-can-create", &[("chord", "c")])
         } else {
@@ -2378,7 +2447,7 @@ fn draw_modal(
         }
         Modal::TextInput(t) => {
             let display = if t.is_secret {
-                "•".repeat(t.buf.chars().count())
+                masked_secret(&t.buf)
             } else {
                 t.buf.clone()
             };
@@ -2425,12 +2494,22 @@ fn draw_modal(
                 };
                 let is_enum = field_row_variants(row).is_some();
                 let is_model_row = is_model_field(&row.descriptor);
+                // Secret fields render a bounded mask so a pasted,
+                // realistic-length API key cannot wrap across rows and
+                // push later fields and the footer out of view.
                 let raw_display = if row.descriptor.is_secret {
-                    "•".repeat(row.buf.chars().count())
+                    masked_secret(&row.buf)
                 } else {
                     row.buf.clone()
                 };
                 let is_empty_buf = raw_display.is_empty();
+                // Ghost text (the field default) is a placeholder for an
+                // empty buffer, but only when the row is NOT focused.
+                // Showing it on the focused row makes the default look
+                // like real, editable text the user cannot Backspace
+                // away — the alias `default` ghost-state defect. The
+                // focused empty row renders empty so the cursor sits
+                // where typing lands.
                 let show_ghost = is_empty_buf && !is_cursor && !is_enum;
                 let (display, value_style) = if is_model_row
                     && matches!(
@@ -3180,9 +3259,16 @@ mod tests {
     fn completed_selector_advances_to_next_row() {
         assert_eq!(next_selector_index_after(Selector::ModelProvider), Some(1));
         assert_eq!(Selector::ALL[1], Selector::RiskProfile);
-        assert_eq!(next_selector_index_after(Selector::Agent), Some(7));
-        assert_eq!(Selector::ALL[7], Selector::Submit);
-        assert_eq!(next_selector_index_after(Selector::Submit), Some(7));
+        let submit_index = Selector::ALL.len() - 1;
+        assert_eq!(
+            next_selector_index_after(Selector::Agent),
+            Some(submit_index)
+        );
+        assert_eq!(Selector::ALL[submit_index], Selector::Submit);
+        assert_eq!(
+            next_selector_index_after(Selector::Submit),
+            Some(submit_index)
+        );
     }
 
     #[test]
@@ -3407,6 +3493,40 @@ mod tests {
 
         editor.scroll_lines(1);
         assert_eq!(editor.cursor_row, 2);
+    }
+
+    #[test]
+    fn secret_mask_is_bounded() {
+        // A short secret masks one bullet per char; a realistic-length
+        // key clips at the cap and reports the hidden remainder so it
+        // can never wrap across rows and hide later fields/footer.
+        assert_eq!(masked_secret("abc"), "•••");
+        assert_eq!(masked_secret(""), "");
+        let long = "x".repeat(100);
+        let masked = masked_secret(&long);
+        assert_eq!(
+            masked.chars().filter(|&c| c == '•').count(),
+            SECRET_MASK_MAX
+        );
+        assert!(masked.ends_with(&format!("(+{})", 100 - SECRET_MASK_MAX)));
+    }
+
+    #[test]
+    fn step_titles_round_trip_through_selector() {
+        // Every validation step must resolve to its owning selector's
+        // title so a field error can name where the problem lives. A
+        // dropped arm would panic the title lookup or mislabel an error.
+        for step in [
+            QuickstartStep::ModelProvider,
+            QuickstartStep::RiskProfile,
+            QuickstartStep::RuntimeProfile,
+            QuickstartStep::Memory,
+            QuickstartStep::Channels,
+            QuickstartStep::PeerGroups,
+            QuickstartStep::Agent,
+        ] {
+            assert!(!Selector::title_for_step(step).is_empty());
+        }
     }
 
     #[test]

@@ -268,8 +268,6 @@ mod platform;
 #[cfg(feature = "plugins-wasm")]
 mod plugins;
 mod providers;
-#[cfg(feature = "schema-export")]
-mod schema_markdown;
 #[cfg(feature = "agent-runtime")]
 mod security;
 #[cfg(feature = "agent-runtime")]
@@ -433,7 +431,7 @@ enum Commands {
         api_key: Option<String>,
 
         /// ModelProvider name. Used as the type key for the synthesized
-        /// `[model_providers.<type>.default]` entry.
+        /// `[providers.models.<type>.default]` entry.
         #[arg(long, hide = true)]
         model_provider: Option<String>,
 
@@ -494,7 +492,7 @@ Examples:
         #[arg(long)]
         model: Option<String>,
 
-        /// Temperature (0.0 - 2.0, defaults to providers.models.<type>.<alias>.temperature)
+        /// Temperature (0.0 - 2.0, defaults to `providers.models.<type>.<alias>.temperature`)
         #[arg(short, long, value_parser = parse_temperature)]
         temperature: Option<f64>,
 
@@ -707,7 +705,7 @@ Examples:
     /// Browse the shared workspace one directory at a time
     // i18n-exempt: clap derive help — framework requires a compile-time literal
     #[command(long_about = "\
-List children of a directory under <install>/shared/. Paths are relative \
+List children of a directory under `<install>`/shared/. Paths are relative \
 to the shared workspace root; `..` traversal that escapes the root is \
 rejected. Used by the dashboard's skill-bundle directory picker and by \
 operators who want to inspect what's installed.
@@ -943,7 +941,7 @@ Examples:
     // i18n-exempt: clap derive help — framework requires a compile-time literal
     #[command(long_about = "\
 Fetch translated Fluent (.ftl) catalogues for a locale from the upstream \
-repository and install them under <config-dir>/data/ftl/<locale>/, where the \
+repository and install them under `<config-dir>/data/ftl/<locale>/`, where the \
 runtime and zerocode loaders read them.
 
 Pass a single locale. By default every catalogue is fetched; restrict with \
@@ -1076,7 +1074,7 @@ async fn run_quickstart_cli(
     use dialoguer::{Confirm, Editor, FuzzySelect, Input, Password};
     use zeroclaw_config::presets::{
         AgentIdentity, BuilderSubmission, ChannelQuickStart, MemoryChoice, ModelProviderChoice,
-        RISK_PRESETS, RUNTIME_PRESETS, SelectorChoice,
+        RISK_PRESETS, SelectorChoice,
     };
     use zeroclaw_runtime::quickstart::{
         FieldSection, QuickstartTypeOption, Surface, apply_with_surface, field_shape,
@@ -1093,7 +1091,6 @@ async fn run_quickstart_cli(
     struct Form {
         provider: Option<ProviderChoice>,
         risk: Option<PresetChoice>,
-        runtime: Option<PresetChoice>,
         memory: Option<MemoryChoice>,
         channels: Vec<ChannelChoice>,
         // Tracks whether the user explicitly visited Channels and
@@ -1153,9 +1150,6 @@ async fn run_quickstart_cli(
         fn risk_done(&self) -> bool {
             self.risk.is_some()
         }
-        fn runtime_done(&self) -> bool {
-            self.runtime.is_some()
-        }
         fn memory_done(&self) -> bool {
             self.memory.is_some()
         }
@@ -1173,7 +1167,6 @@ async fn run_quickstart_cli(
         fn all_done(&self) -> bool {
             self.provider_done()
                 && self.risk_done()
-                && self.runtime_done()
                 && self.memory_done()
                 && self.channels_done()
                 && self.agent_done()
@@ -1239,7 +1232,6 @@ async fn run_quickstart_cli(
     enum Action {
         Provider,
         Risk,
-        Runtime,
         Memory,
         Channels,
         PeerGroups,
@@ -1331,11 +1323,6 @@ async fn run_quickstart_cli(
                 preset_summary(&form.risk)
             ),
             format!(
-                "{} Runtime profile    — {}",
-                glyph(form.runtime_done()),
-                preset_summary(&form.runtime)
-            ),
-            format!(
                 "{} Memory             — {memory_summary}",
                 glyph(form.memory_done())
             ),
@@ -1362,7 +1349,6 @@ async fn run_quickstart_cli(
         let actions = [
             Action::Provider,
             Action::Risk,
-            Action::Runtime,
             Action::Memory,
             Action::Channels,
             Action::PeerGroups,
@@ -1485,7 +1471,7 @@ async fn run_quickstart_cli(
                     // leaves the descriptor unchanged → free-text fallback.
                     let upgraded;
                     let d_used = if d.key.eq_ignore_ascii_case("model") {
-                        let (models, live) =
+                        let (models, _pricing, live) =
                             zeroclaw_runtime::quickstart::model_catalog(&chosen.kind).await;
                         if live && !models.is_empty() {
                             upgraded = zeroclaw_runtime::quickstart::FieldDescriptor {
@@ -1558,22 +1544,6 @@ async fn run_quickstart_cli(
                 )?;
                 if let Some(c) = chosen {
                     form.risk = Some(match c {
-                        Ok(name) => PresetChoice::Fresh(name),
-                        Err(alias) => PresetChoice::Existing(alias),
-                    });
-                }
-            }
-            Action::Runtime => {
-                let chosen = pick_preset(
-                    "Runtime profile",
-                    RUNTIME_PRESETS
-                        .iter()
-                        .map(|p| (p.preset_name, p.label, p.help))
-                        .collect(),
-                    &state.runtime_profiles,
-                )?;
-                if let Some(c) = chosen {
-                    form.runtime = Some(match c {
                         Ok(name) => PresetChoice::Fresh(name),
                         Err(alias) => PresetChoice::Existing(alias),
                     });
@@ -2082,10 +2052,9 @@ async fn run_quickstart_cli(
         PresetChoice::Fresh(n) => SelectorChoice::Fresh(n.to_string()),
         PresetChoice::Existing(a) => SelectorChoice::Existing(a),
     };
-    let runtime_profile = match form.runtime.expect("runtime satisfied") {
-        PresetChoice::Fresh(n) => SelectorChoice::Fresh(n.to_string()),
-        PresetChoice::Existing(a) => SelectorChoice::Existing(a),
-    };
+    // Runtime profile picker removed from all surfaces; apply silently
+    // forces the `unbounded` preset. Submit it so the field stays well-formed.
+    let runtime_profile = SelectorChoice::Fresh("unbounded".to_string());
     let memory = SelectorChoice::Fresh(form.memory.expect("memory satisfied"));
     let channels = form
         .channels
@@ -2452,7 +2421,7 @@ enum ConfigCommands {
         #[arg(long)]
         json: bool,
     },
-    /// Migrate config.toml to the current schema version on disk (preserves comments)
+    /// Migrate the on-disk config to the current schema version (preserves comments)
     Migrate {
         /// Emit a structured JSON envelope ({migrated, backup_path?, schema_version}) instead of plain text.
         #[arg(long)]
@@ -2939,7 +2908,10 @@ async fn main() -> Result<()> {
             #[cfg(feature = "schema-export")]
             {
                 let schema = schemars::schema_for!(config::Config);
-                print!("{}", schema_markdown::generate(&schema.to_value()));
+                print!(
+                    "{}",
+                    zeroclaw_config::schema_markdown::generate(&schema.to_value())
+                );
                 return Ok(());
             }
             #[cfg(not(feature = "schema-export"))]
@@ -4148,12 +4120,12 @@ async fn main() -> Result<()> {
         Commands::Cron { cron_command } => cron::handle_command(cron_command, &config),
 
         Commands::Models { model_command } => {
-            let model_provider = match &model_command {
-                ModelCommands::Refresh { model_provider, .. }
-                | ModelCommands::List { model_provider } => model_provider.as_deref(),
-                _ => None,
+            let (model_provider, show_names) = match &model_command {
+                ModelCommands::Refresh { model_provider, .. } => (model_provider.as_deref(), false),
+                ModelCommands::List { model_provider } => (model_provider.as_deref(), true),
+                _ => (None, false),
             };
-            doctor::run_models(&config, model_provider, false).await
+            doctor::run_models(&config, model_provider, false, show_names).await
         }
 
         Commands::Providers => {
@@ -4170,15 +4142,25 @@ async fn main() -> Result<()> {
             );
             println!("  ID (use in config)  DESCRIPTION"); // i18n-exempt: literal command/identifier example
             println!("  ─────────────────── ───────────");
-            for p in &model_providers {
-                let is_configured = configured_types.contains(p.name);
-                let marker = if is_configured { " (configured)" } else { "" };
-                let local_tag = if p.local { " [local]" } else { "" };
-                println!("  {:<19} {}{}{}", p.name, p.display_name, local_tag, marker);
+            for category in zeroclaw_providers::ModelProviderCategory::all() {
+                let in_category: Vec<_> = model_providers
+                    .iter()
+                    .filter(|p| p.category == *category)
+                    .collect();
+                if in_category.is_empty() {
+                    continue;
+                }
+                println!("\n  {}:", category.as_str());
+                for p in in_category {
+                    let is_configured = configured_types.contains(p.name);
+                    let marker = if is_configured { " (configured)" } else { "" };
+                    let local_tag = if p.local { " [local]" } else { "" };
+                    println!("  {:<19} {}{}{}", p.name, p.display_name, local_tag, marker);
+                }
             }
             println!(
-                "\n  Set [model_providers.custom.<alias>] uri = \"<URL>\" for any \
-                 OpenAI-compatible endpoint, or [model_providers.anthropic.<alias>] \
+                "\n  Set [providers.models.custom.<alias>] uri = \"<URL>\" for any \
+                 OpenAI-compatible endpoint, or [providers.models.anthropic.<alias>] \
                  uri = \"<URL>\" for an Anthropic-compatible endpoint."
             );
             Ok(())
@@ -4196,7 +4178,7 @@ async fn main() -> Result<()> {
             Some(DoctorCommands::Models {
                 model_provider,
                 use_cache,
-            }) => doctor::run_models(&config, model_provider.as_deref(), use_cache).await,
+            }) => doctor::run_models(&config, model_provider.as_deref(), use_cache, false).await,
             Some(DoctorCommands::Traces {
                 id,
                 event,
@@ -4214,6 +4196,13 @@ async fn main() -> Result<()> {
 
         Commands::Channel { channel_command } => match channel_command {
             ChannelCommands::Start => {
+                #[cfg(feature = "hardware")]
+                zeroclaw_runtime::agent::loop_::register_peripheral_tools_fn(Box::new(|config| {
+                    Box::pin(async move {
+                        zeroclaw_hardware::peripherals::create_peripheral_tools(&config).await
+                    })
+                }));
+
                 let cancel = tokio_util::sync::CancellationToken::new();
                 Box::pin(channels::start_channels(config, None, cancel)).await
             }
@@ -4685,7 +4674,7 @@ async fn main() -> Result<()> {
                     // hand. Falls back to free text on `live=false`
                     // (unknown provider, fetch failed, catalog empty).
                     use dialoguer::{FuzzySelect, Input};
-                    let (models, live) =
+                    let (models, _pricing, live) =
                         zeroclaw_runtime::quickstart::model_catalog(provider_type).await;
                     if live && !models.is_empty() {
                         let current = config.get_prop(&path).unwrap_or_default();
