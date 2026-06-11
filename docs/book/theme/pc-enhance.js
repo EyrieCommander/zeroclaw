@@ -147,7 +147,7 @@
     const quickstartHref =
       quickstart?.getAttribute('href') || 'getting-started/quickstart.html';
     const quickstartText =
-      quickstart?.textContent.trim() || localeText('quickStart', 'Quickstart');
+      localeText('quickStart', quickstart?.textContent.trim() || 'Quickstart');
 
     const hero = document.createElement('section');
     hero.className = 'pc-hero';
