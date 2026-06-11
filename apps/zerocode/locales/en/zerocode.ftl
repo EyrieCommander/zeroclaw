@@ -334,6 +334,9 @@ zc-quickstart-block-peers = Peer groups
 zc-quickstart-block-agent = Agent
 zc-quickstart-personality-help = Personality files (e=edit, t=use template, c=clear)
 zc-quickstart-save-and-close = Save & close
+zc-quickstart-no-template = No template is available for `{ $filename }`
+zc-quickstart-agent-name-field = name
+zc-quickstart-file-bytes = { $bytes } bytes
 
 zc-chat-pane-chat = Chat
 zc-chat-pane-acp = ACP

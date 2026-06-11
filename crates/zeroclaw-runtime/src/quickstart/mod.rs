@@ -1620,12 +1620,23 @@ pub async fn model_catalog(
         && let Ok(models) = handle.list_models_with_pricing().await
         && !models.is_empty()
     {
+        let raw_pricing: std::collections::HashMap<
+            String,
+            zeroclaw_api::model_provider::ModelPricing,
+        > = models
+            .iter()
+            .filter_map(|m| m.pricing.as_ref().map(|p| (m.id.clone(), p.clone())))
+            .collect();
+        let ids = models.into_iter().map(|m| m.id).collect();
+        let Some(ids) =
+            zeroclaw_providers::catalog::sort_model_catalog_for_chat(model_provider, ids)
+        else {
+            return (Vec::new(), None, false);
+        };
         let pricing: std::collections::HashMap<String, zeroclaw_api::model_provider::ModelPricing> =
-            models
-                .iter()
-                .filter_map(|m| m.pricing.as_ref().map(|p| (m.id.clone(), p.clone())))
+            ids.iter()
+                .filter_map(|id| raw_pricing.get(id).map(|p| (id.clone(), p.clone())))
                 .collect();
-        let ids: Vec<String> = models.into_iter().map(|m| m.id).collect();
         let pricing = if pricing.is_empty() {
             None
         } else {
@@ -1634,7 +1645,12 @@ pub async fn model_catalog(
         return (ids, pricing, true);
     }
     match zeroclaw_providers::catalog::list_models_for_family(model_provider).await {
-        Ok(models) if !models.is_empty() => (models, None, true),
+        Ok(models) if !models.is_empty() => (
+            zeroclaw_providers::catalog::sort_model_catalog_for_chat(model_provider, models)
+                .unwrap_or_default(),
+            None,
+            true,
+        ),
         _ => (Vec::new(), None, false),
     }
 }
