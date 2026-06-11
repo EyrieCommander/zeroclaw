@@ -883,6 +883,11 @@ impl Agent {
         self.temperature = temperature;
     }
 
+    #[cfg(test)]
+    pub fn temperature_for_test(&self) -> Option<f64> {
+        self.temperature
+    }
+
     pub fn set_model_name(&mut self, model_name: String) {
         self.model_name = model_name;
     }
@@ -1016,7 +1021,7 @@ impl Agent {
         .await
     }
 
-    /// Like [`from_config_with_session_cwd_and_mcp_backchannel`] but also
+    /// Like [`Self::from_config_with_session_cwd_and_mcp_backchannel`] but also
     /// injects the TUI's captured shell environment so that tools like
     /// `ShellTool` inherit the user's real `PATH`, `SSH_AUTH_SOCK`, etc.
     /// rather than the daemon's stripped-down process environment.
@@ -1111,7 +1116,7 @@ impl Agent {
                     if !agent_ref.is_empty() {
                         anyhow::bail!(
                             "agents.{agent_alias}.model_provider = \"{agent_ref}\" does not \
-                             resolve to a configured [model_providers.<type>.<alias>] entry"
+                             resolve to a configured [providers.models.<type>.<alias>] entry"
                         );
                     }
                     // V3 schema requires every agent to set model_provider.
@@ -1177,10 +1182,9 @@ impl Agent {
         // `file_write`. Filtering here, before skill registration, is also
         // what lets a scoped elevation wrapper survive: the raw target is
         // removed while the distinct prefixed `{skill}__{tool}` wrapper is
-        // appended later. MCP tools are injected after this gate and are
-        // intentionally exempt from the built-in allow/deny filter (a
-        // restrictive allowlist must not silently drop all MCP tools); the
-        // risk-profile denylist below still applies to them.
+        // appended later. MCP tools are initialized after this built-in
+        // filter, then MCP registration and deferred discovery apply the same
+        // SecurityPolicy explicitly so denied MCP tools do not surface.
         let before_policy_filter = tools.len();
         crate::agent::loop_::apply_policy_tool_filter(&mut tools, Some(security.as_ref()), None);
         if tools.len() != before_policy_filter {
@@ -1217,6 +1221,8 @@ impl Agent {
                 Ok(registry) => {
                     let registry = std::sync::Arc::new(registry);
                     mcp_elevation_arcs = tools::collect_mcp_elevation_arcs(&registry).await;
+                    let mcp_policy =
+                        crate::agent::loop_::mcp_tool_access_policy(security.as_ref(), None);
                     if config.mcp.deferred_loading {
                         let deferred_set = tools::DeferredMcpToolSet::from_registry(
                             std::sync::Arc::clone(&registry),
@@ -1234,17 +1240,36 @@ impl Agent {
                                 registry.server_count()
                             )
                         );
-                        let activated =
-                            Arc::new(std::sync::Mutex::new(tools::ActivatedToolSet::new()));
-                        activated_tools = Some(Arc::clone(&activated));
-                        tools.push(Box::new(tools::ToolSearchTool::new(
-                            deferred_set,
-                            activated,
-                        )));
+                        let allowed_stub_count = crate::agent::loop_::mcp_allowed_tool_count(
+                            deferred_set
+                                .stubs
+                                .iter()
+                                .map(|stub| stub.prefixed_name.as_str()),
+                            mcp_policy.as_ref(),
+                        );
+                        if allowed_stub_count > 0 {
+                            let activated =
+                                Arc::new(std::sync::Mutex::new(tools::ActivatedToolSet::new()));
+                            activated_tools = Some(Arc::clone(&activated));
+                            let mut tool_search =
+                                tools::ToolSearchTool::new(deferred_set, activated);
+                            if let Some(policy) = mcp_policy {
+                                tool_search = tool_search.with_access_policy(policy);
+                            }
+                            tools.push(Box::new(tool_search));
+                        }
                     } else {
                         let names = registry.tool_names();
                         let mut registered = 0usize;
+                        let mut skipped = 0usize;
                         for name in names {
+                            if !crate::agent::loop_::eager_mcp_tool_allowed(
+                                &name,
+                                mcp_policy.as_ref(),
+                            ) {
+                                skipped += 1;
+                                continue;
+                            }
                             if let Some(def) = registry.get_tool_def(&name).await {
                                 let wrapper: std::sync::Arc<dyn tools::Tool> =
                                     std::sync::Arc::new(tools::McpToolWrapper::new(
@@ -1252,11 +1277,14 @@ impl Agent {
                                         def,
                                         std::sync::Arc::clone(&registry),
                                     ));
-                                if let Some(ref handle) = delegate_handle {
-                                    handle.write().push(std::sync::Arc::clone(&wrapper));
+                                if crate::agent::loop_::register_eager_mcp_tool_if_allowed(
+                                    wrapper,
+                                    &mut tools,
+                                    delegate_handle.as_ref(),
+                                    mcp_policy.as_ref(),
+                                ) {
+                                    registered += 1;
                                 }
-                                tools.push(Box::new(tools::ArcToolRef(wrapper)));
-                                registered += 1;
                             }
                         }
                         ::zeroclaw_log::record!(
@@ -1266,9 +1294,10 @@ impl Agent {
                                 ::zeroclaw_log::Action::Note
                             ),
                             &format!(
-                                "MCP: {} tool(s) registered from {} server(s)",
+                                "MCP: {} tool(s) registered from {} server(s), {} skipped by policy",
                                 registered,
-                                registry.server_count()
+                                registry.server_count(),
+                                skipped
                             )
                         );
                     }
@@ -1293,7 +1322,7 @@ impl Agent {
             Some(m) => m.to_string(),
             None => anyhow::bail!(
                 "agents.{agent_alias}.model_provider resolves to a model_provider entry \
-                 with no `model` set. Configure [model_providers.{provider_name}.<alias>] \
+                 with no `model` set. Configure [providers.models.{provider_name}.<alias>] \
                  model = \"...\".",
             ),
         };
@@ -1544,6 +1573,32 @@ impl Agent {
                         })),
                     "trim_history: dropped orphan AssistantToolCalls at head"
                 );
+            }
+
+            // Safety: the orphan-removal cascades above can advance
+            // drop_count all the way to other_messages.len() when the only
+            // non-tool-call entry is the user message at position[0] and
+            // initial_drop_count drops it (e.g. max=50, history=[user,
+            // AC1, TR1, …, AC25, TR25]).  Sending zero messages to the
+            // provider causes a hard 400 "messages: at least one message
+            // is required".  When the cascade would wipe everything, skip
+            // this trim pass so the conversation stays functional even
+            // though it is temporarily over the message limit.
+            if drop_count >= other_messages.len() {
+                ::zeroclaw_log::record!(
+                    WARN,
+                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                        .with_category(::zeroclaw_log::EventCategory::Agent)
+                        .with_outcome(::zeroclaw_log::EventOutcome::Unknown)
+                        .with_attrs(::serde_json::json!({
+                            "history_len": other_messages.len(),
+                            "max_history_messages": max,
+                        })),
+                    "trim_history: orphan-cascade would empty all non-system messages; skipping trim to preserve conversation"
+                );
+                self.history = system_messages;
+                self.history.extend(other_messages);
+                return;
             }
 
             ::zeroclaw_log::record!(
@@ -5552,6 +5607,281 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Regression test for the orphan-cascade-empties-everything 400.
+    ///
+    /// When `max_history_messages` is small relative to a long single-turn
+    /// tool loop, the orphan-removal cascades in `trim_history` can advance
+    /// `drop_count` all the way to `other_messages.len()`. Before the guard,
+    /// `other_messages.drain(0..drop_count)` then emptied the entire
+    /// non-system history, `convert_messages` lifted the system entry into
+    /// `system_prompt`, and the provider received `messages: []` — a hard
+    /// 400 `"messages: at least one message is required"` from Anthropic.
+    ///
+    /// Minimal repro of the cascade:
+    ///   history = [user, AC1, TR1, AC2, TR2]   (no system message)
+    ///   max_history_messages = 4
+    ///   other_messages.len() = 5, initial_drop_count = 1 → drops `user`
+    ///   orphan-TR cascade: pos 1 = AC1, not TR → no-op
+    ///   orphan-AC cascade: pos 1 = AC1, pos 2 = TR1, pos 3 = AC2,
+    ///                      pos 4 = TR2 → drop_count = 5
+    ///   drop_count (5) >= other_messages.len() (5) → guard MUST fire.
+    ///
+    /// Without the guard this test fails: `agent.history` ends up empty,
+    /// which is exactly the shape that crashes the provider call.
+    /// With the guard, the original history is preserved unchanged so the
+    /// session stays over-limit-but-functional.
+    #[test]
+    fn trim_history_does_not_empty_all_messages_on_full_cascade() {
+        use zeroclaw_providers::{ToolCall, ToolResultMessage};
+
+        let memory_cfg = zeroclaw_config::schema::MemoryConfig {
+            backend: "none".into(),
+            ..zeroclaw_config::schema::MemoryConfig::default()
+        };
+        let mem: Arc<dyn Memory> = Arc::from(
+            zeroclaw_memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
+                .expect("memory creation should succeed with valid config"),
+        );
+
+        let agent_config = zeroclaw_config::schema::AliasedAgentConfig {
+            resolved: zeroclaw_config::schema::ResolvedRuntime {
+                max_history_messages: 4,
+                ..Default::default()
+            },
+            ..zeroclaw_config::schema::AliasedAgentConfig::default()
+        };
+
+        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+        let mut agent = Agent::builder()
+            .model_provider(Box::new(MockModelProvider {
+                responses: Mutex::new(vec![]),
+            }))
+            .tools(vec![Box::new(MockTool)])
+            .memory(mem)
+            .observer(observer)
+            .tool_dispatcher(Box::new(NativeToolDispatcher))
+            .workspace_dir(std::path::PathBuf::from("/tmp"))
+            .config(agent_config)
+            .build()
+            .expect("agent builder should succeed with valid config");
+
+        // user
+        agent.history.push(ConversationMessage::Chat(ChatMessage {
+            role: "user".into(),
+            content: "kick off a long tool loop".into(),
+        }));
+        // AC1, TR1
+        agent.history.push(ConversationMessage::AssistantToolCalls {
+            text: Some("Calling tool 1".into()),
+            tool_calls: vec![ToolCall {
+                id: "tc1".into(),
+                name: "tool1".into(),
+                arguments: "{}".into(),
+                extra_content: None,
+            }],
+            reasoning_content: None,
+        });
+        agent
+            .history
+            .push(ConversationMessage::ToolResults(vec![ToolResultMessage {
+                tool_call_id: "tc1".into(),
+                content: "result1".into(),
+            }]));
+        // AC2, TR2
+        agent.history.push(ConversationMessage::AssistantToolCalls {
+            text: Some("Calling tool 2".into()),
+            tool_calls: vec![ToolCall {
+                id: "tc2".into(),
+                name: "tool2".into(),
+                arguments: "{}".into(),
+                extra_content: None,
+            }],
+            reasoning_content: None,
+        });
+        agent
+            .history
+            .push(ConversationMessage::ToolResults(vec![ToolResultMessage {
+                tool_call_id: "tc2".into(),
+                content: "result2".into(),
+            }]));
+
+        assert_eq!(agent.history.len(), 5);
+        let before = agent.history.clone();
+
+        agent.trim_history();
+
+        // Load-bearing assertion: trim_history must NOT produce an empty
+        // provider-visible conversation. Without the guard this is an empty
+        // Vec and the next provider call returns 400.
+        assert!(
+            !agent.history.is_empty(),
+            "trim_history drained every non-system message; the next \
+             provider call would fail with 'messages: at least one message \
+             is required'"
+        );
+
+        // When the full cascade triggers the guard the contract is "skip the
+        // trim, leave history exactly as it was, accept being temporarily
+        // over the limit." Lock that exact behavior — anything weaker (e.g.
+        // partial trim) would silently regress the orphan-pair invariants
+        // the other trim tests cover.
+        assert_eq!(
+            agent.history.len(),
+            before.len(),
+            "trim_history dropped messages despite the orphan cascade \
+             reaching other_messages.len(); the guard's contract is to \
+             preserve the conversation untouched in this case"
+        );
+
+        // Session is temporarily over the configured limit by design. Codify
+        // that so a future "tighten trim_history" refactor cannot silently
+        // turn the guard back into the empty-messages crash.
+        assert!(
+            agent.history.len() > agent.config.resolved.max_history_messages,
+            "expected history to remain over max_history_messages after the \
+             guard fires (that is the documented trade-off); got len={} max={}",
+            agent.history.len(),
+            agent.config.resolved.max_history_messages,
+        );
+    }
+
+    /// Same cascade-to-empty path, but with a system message present.
+    ///
+    /// Verifies the guard's restore path puts the conversation back together
+    /// in the right order (`system_messages` first, then the original
+    /// non-system entries) rather than dropping the system message on the
+    /// floor or returning the slices reversed. Without the guard the system
+    /// message survives (it is held aside in `system_messages`) but the
+    /// non-system half is still drained — so `agent.history` would end up as
+    /// just `[system]` and `convert_messages` would lift it into
+    /// `system_prompt`, again producing `messages: []`.
+    #[test]
+    fn trim_history_full_cascade_with_system_message_preserves_full_history() {
+        use zeroclaw_providers::{ToolCall, ToolResultMessage};
+
+        let memory_cfg = zeroclaw_config::schema::MemoryConfig {
+            backend: "none".into(),
+            ..zeroclaw_config::schema::MemoryConfig::default()
+        };
+        let mem: Arc<dyn Memory> = Arc::from(
+            zeroclaw_memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
+                .expect("memory creation should succeed with valid config"),
+        );
+
+        // Same arithmetic as the previous test: 5 non-system entries with
+        // max=4 → initial_drop_count=1, orphan-AC cascade reaches the end.
+        let agent_config = zeroclaw_config::schema::AliasedAgentConfig {
+            resolved: zeroclaw_config::schema::ResolvedRuntime {
+                max_history_messages: 4,
+                ..Default::default()
+            },
+            ..zeroclaw_config::schema::AliasedAgentConfig::default()
+        };
+
+        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+        let mut agent = Agent::builder()
+            .model_provider(Box::new(MockModelProvider {
+                responses: Mutex::new(vec![]),
+            }))
+            .tools(vec![Box::new(MockTool)])
+            .memory(mem)
+            .observer(observer)
+            .tool_dispatcher(Box::new(NativeToolDispatcher))
+            .workspace_dir(std::path::PathBuf::from("/tmp"))
+            .config(agent_config)
+            .build()
+            .expect("agent builder should succeed with valid config");
+
+        // system (gets partitioned into system_messages by trim_history)
+        agent.history.push(ConversationMessage::Chat(ChatMessage {
+            role: "system".into(),
+            content: "you are a helpful agent".into(),
+        }));
+        // user
+        agent.history.push(ConversationMessage::Chat(ChatMessage {
+            role: "user".into(),
+            content: "kick off a long tool loop".into(),
+        }));
+        // AC1, TR1
+        agent.history.push(ConversationMessage::AssistantToolCalls {
+            text: Some("Calling tool 1".into()),
+            tool_calls: vec![ToolCall {
+                id: "tc1".into(),
+                name: "tool1".into(),
+                arguments: "{}".into(),
+                extra_content: None,
+            }],
+            reasoning_content: None,
+        });
+        agent
+            .history
+            .push(ConversationMessage::ToolResults(vec![ToolResultMessage {
+                tool_call_id: "tc1".into(),
+                content: "result1".into(),
+            }]));
+        // AC2, TR2
+        agent.history.push(ConversationMessage::AssistantToolCalls {
+            text: Some("Calling tool 2".into()),
+            tool_calls: vec![ToolCall {
+                id: "tc2".into(),
+                name: "tool2".into(),
+                arguments: "{}".into(),
+                extra_content: None,
+            }],
+            reasoning_content: None,
+        });
+        agent
+            .history
+            .push(ConversationMessage::ToolResults(vec![ToolResultMessage {
+                tool_call_id: "tc2".into(),
+                content: "result2".into(),
+            }]));
+
+        assert_eq!(agent.history.len(), 6);
+        let before_len = agent.history.len();
+
+        agent.trim_history();
+
+        // System message must still be present and at the head — that is
+        // where trim_history's partition+restore lands it.
+        match agent.history.first() {
+            Some(ConversationMessage::Chat(chat)) => assert_eq!(
+                chat.role, "system",
+                "expected system message at head after restore; got role={:?}",
+                chat.role
+            ),
+            other => panic!(
+                "expected Chat(system) at head of restored history, got {:?}",
+                other
+            ),
+        }
+
+        // The non-system half must not have been drained. Total length must
+        // equal the pre-trim length: guard's contract is "leave history
+        // unchanged" once the system + non-system halves are reassembled.
+        assert_eq!(
+            agent.history.len(),
+            before_len,
+            "trim_history dropped messages from the non-system half despite \
+             the orphan cascade reaching other_messages.len(); guard must \
+             preserve every entry when it fires"
+        );
+
+        // At least one non-system message must remain — without this the
+        // provider still sees `messages: []` after `convert_messages` lifts
+        // the system entry into `system_prompt`.
+        let non_system_remaining = agent
+            .history
+            .iter()
+            .filter(|m| !matches!(m, ConversationMessage::Chat(c) if c.role == "system"))
+            .count();
+        assert!(
+            non_system_remaining > 0,
+            "trim_history left only the system message; convert_messages \
+             would produce messages: [] and the provider call would 400"
+        );
     }
 
     #[test]
