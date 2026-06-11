@@ -668,7 +668,22 @@ pub async fn run(
                 if !matches!(conn_state, ConnectionState::Disconnected { .. }) {
                     match mode {
                         Mode::Dashboard => {
-                            dashboard_pane.handle_mouse(mouse, content_area);
+                            if let Some(action) = dashboard_pane.handle_mouse(mouse, content_area) {
+                                match action {
+                                    dashboard::DashboardMouseAction::OpenAgentConfig(alias) => {
+                                        config_app.open_agent_config(&alias).await?;
+                                        switch_mode(
+                                            &mut mode,
+                                            Mode::Config,
+                                            &conn_state,
+                                            &mut quickstart,
+                                            &mut acp_pane,
+                                            &mut chat_pane,
+                                        )
+                                        .await;
+                                    }
+                                }
+                            }
                         }
                         Mode::Config => {
                             config_app.handle_mouse(mouse, content_area, term).await?;
