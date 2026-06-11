@@ -17,9 +17,11 @@ const FEISHU_WS_BASE_URL: &str = "https://open.feishu.cn";
 const LARK_BASE_URL: &str = "https://open.larksuite.com/open-apis";
 const LARK_WS_BASE_URL: &str = "https://open.larksuite.com";
 
+#[cfg(test)]
 const LARK_ACK_REACTIONS_ZH_CN: &[&str] = &[
     "OK", "JIAYI", "APPLAUSE", "THUMBSUP", "MUSCLE", "SMILE", "DONE",
 ];
+#[cfg(test)]
 const LARK_ACK_REACTIONS_ZH_TW: &[&str] = &[
     "OK",
     "JIAYI",
@@ -29,6 +31,7 @@ const LARK_ACK_REACTIONS_ZH_TW: &[&str] = &[
     "SMILE",
     "DONE",
 ];
+#[cfg(test)]
 const LARK_ACK_REACTIONS_EN: &[&str] = &[
     "OK",
     "THUMBSUP",
@@ -39,6 +42,7 @@ const LARK_ACK_REACTIONS_EN: &[&str] = &[
     "SMILE",
     "DONE",
 ];
+#[cfg(test)]
 const LARK_ACK_REACTIONS_JA: &[&str] = &[
     "OK",
     "THUMBSUP",
@@ -52,6 +56,7 @@ const LARK_ACK_REACTIONS_JA: &[&str] = &[
 
 const MAX_LARK_AUDIO_BYTES: u64 = 25 * 1024 * 1024;
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LarkAckLocale {
     ZhCn,
@@ -3495,6 +3500,7 @@ fn inferred_audio_filename(file_key: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn pick_uniform_index(len: usize) -> usize {
     debug_assert!(len > 0);
     let upper = len as u64;
@@ -3509,10 +3515,12 @@ fn pick_uniform_index(len: usize) -> usize {
     }
 }
 
+#[cfg(test)]
 fn random_from_pool(pool: &'static [&'static str]) -> &'static str {
     pool[pick_uniform_index(pool.len())]
 }
 
+#[cfg(test)]
 fn lark_ack_pool(locale: LarkAckLocale) -> &'static [&'static str] {
     match locale {
         LarkAckLocale::ZhCn => LARK_ACK_REACTIONS_ZH_CN,
@@ -3522,6 +3530,7 @@ fn lark_ack_pool(locale: LarkAckLocale) -> &'static [&'static str] {
     }
 }
 
+#[cfg(test)]
 fn map_locale_tag(tag: &str) -> Option<LarkAckLocale> {
     let normalized = tag.trim().to_ascii_lowercase().replace('-', "_");
     if normalized.is_empty() {
@@ -3547,6 +3556,7 @@ fn map_locale_tag(tag: &str) -> Option<LarkAckLocale> {
     None
 }
 
+#[cfg(test)]
 fn find_locale_hint(value: &serde_json::Value) -> Option<String> {
     match value {
         serde_json::Value::Object(map) => {
@@ -3582,6 +3592,7 @@ fn find_locale_hint(value: &serde_json::Value) -> Option<String> {
     }
 }
 
+#[cfg(test)]
 fn detect_locale_from_post_content(content: &str) -> Option<LarkAckLocale> {
     let parsed = serde_json::from_str::<serde_json::Value>(content).ok()?;
     let obj = parsed.as_object()?;
@@ -3593,6 +3604,7 @@ fn detect_locale_from_post_content(content: &str) -> Option<LarkAckLocale> {
     None
 }
 
+#[cfg(test)]
 fn is_japanese_kana(ch: char) -> bool {
     matches!(
         ch as u32,
@@ -3602,6 +3614,7 @@ fn is_japanese_kana(ch: char) -> bool {
     )
 }
 
+#[cfg(test)]
 fn is_cjk_han(ch: char) -> bool {
     matches!(
         ch as u32,
@@ -3610,6 +3623,7 @@ fn is_cjk_han(ch: char) -> bool {
     )
 }
 
+#[cfg(test)]
 fn is_traditional_only_han(ch: char) -> bool {
     matches!(
         ch,
@@ -3629,6 +3643,7 @@ fn is_traditional_only_han(ch: char) -> bool {
     )
 }
 
+#[cfg(test)]
 fn is_simplified_only_han(ch: char) -> bool {
     matches!(
         ch,
@@ -3648,6 +3663,7 @@ fn is_simplified_only_han(ch: char) -> bool {
     )
 }
 
+#[cfg(test)]
 fn detect_locale_from_text(text: &str) -> Option<LarkAckLocale> {
     if text.chars().any(is_japanese_kana) {
         return Some(LarkAckLocale::Ja);
@@ -3664,6 +3680,7 @@ fn detect_locale_from_text(text: &str) -> Option<LarkAckLocale> {
     None
 }
 
+#[cfg(test)]
 fn detect_lark_ack_locale(
     payload: Option<&serde_json::Value>,
     fallback_text: &str,
@@ -3765,6 +3782,7 @@ fn lark_inline_text_file_preview(text: Cow<'_, str>) -> String {
     }
 }
 
+#[cfg(test)]
 fn random_lark_ack_reaction(
     payload: Option<&serde_json::Value>,
     fallback_text: &str,
