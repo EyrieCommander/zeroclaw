@@ -36,7 +36,7 @@ Synchronous, in-process, single tokio runtime. Nothing crosses the process bound
 1. Parent's tool loop dispatches `spawn_subagent`. The tool reads its `prompt` argument, refuses if empty.
 2. The tool checks two guards in order:
    - **Depth-1 cap.** If the calling run was itself a SubAgent (`AgentRunOverrides.is_subagent == true`), refuse with `"spawn_subagent: a subagent may not spawn its own subagents (depth-1 cap)"`. SubAgents cannot recurse.
-   - **`risk_profile.allowed_tools` gate.** If the parent's `[risk_profiles.<alias>].allowed_tools` does not list `spawn_subagent`, or `excluded_tools` lists it, refuse with a message naming the parent alias.
+   - **Risk-profile tool gate.** If the parent's `[risk_profiles.<alias>].allowed_tools` is non-empty and does not list `spawn_subagent`, or `excluded_tools` lists it, refuse with a message naming the parent alias.
 3. The tool calls `SubAgentSpawn::for_agent` + `build`. Failures (unknown parent alias, escalating override) surface as `ToolResult { success: false, error: "subagent spawn failed: ..." }`.
 4. The tool constructs `AgentRunOverrides { security, memory: None, is_subagent: true }` and awaits `crate::agent::run` (`crates/zeroclaw-runtime/src/agent/loop_.rs`, `pub async fn run`) inside a tracing scope keyed `subagent-<uuid>`. The parent's `tool` execution **blocks** until the child returns.
 5. The child agent loop runs to completion. Its tool registry is built fresh, with `is_subagent_caller: true` flowing into its own `SpawnSubagentTool` so any attempt to recurse is rejected at the same depth-1 gate.
@@ -81,7 +81,7 @@ Inheritance axis by axis:
 
 You don't call these tools yourself; the bot does, from inside its turn. As a user, you influence the bot's choice with how you phrase the request. There is no special command, no slash-syntax, and no JSON the user types. Whether the model picks `spawn_subagent` or `delegate` depends on its system prompt, the tool's `description` text (visible to the model), and the user's wording. **Phrasing influences; it does not force.**
 
-What CAN be made deterministic is **availability**: tools that aren't in the parent agent's registry can't be picked. That gate lives in `[risk_profiles.<alias>].allowed_tools`. If the alias listed for the parent agent's `risk_profile` doesn't include `spawn_subagent`, the model never sees it. Same for `delegate`. Restart the daemon after editing the config.
+What CAN be made deterministic is **availability**: tools that aren't in the parent agent's registry can't be picked. The risk-profile gate lives in `[risk_profiles.<alias>].allowed_tools` and `[risk_profiles.<alias>].excluded_tools`. A non-empty `allowed_tools` list must include `spawn_subagent` or `delegate` for the model to see that tool; an empty `allowed_tools` list leaves tool availability unrestricted unless `excluded_tools` names the tool. Restart the daemon after editing the config.
 
 What's verifiable end-to-end:
 
@@ -100,7 +100,7 @@ These are exact, sourced from `crates/zeroclaw-runtime/src/tools/spawn_subagent.
 
 1. Empty/missing `prompt` argument: `Missing or empty 'prompt' parameter`
 2. Caller is itself a SubAgent (depth-1 cap): `spawn_subagent: a subagent may not spawn its own subagents (depth-1 cap)`
-3. Parent's `risk_profile.allowed_tools` excludes `spawn_subagent`: `spawn_subagent: refused — agent '<parent_alias>' risk_profile does not list spawn_subagent in allowed_tools`
+3. Parent's risk-profile tool gate excludes `spawn_subagent`: `spawn_subagent: refused — agent '<parent_alias>' risk_profile does not list spawn_subagent in allowed_tools`
 4. Unknown parent alias / spawn build error: `subagent spawn failed: <wrapped error>`
 5. Child run returned an error: `subagent run failed: <wrapped error>`
 
@@ -166,13 +166,13 @@ Exact, sourced from `crates/zeroclaw-runtime/src/tools/delegate.rs`.
 
 | | `spawn_subagent` | `delegate` |
 |---|---|---|
-| **Identity** | Same as parent (same UUID, same risk profile) | Target agent's identity (different alias, **same** same risk profile, delegation requires it) |
+| **Identity** | Same as parent (same UUID, same risk profile) | Target agent's identity (different alias, **same** risk profile, delegation requires it) |
 | **Permission model** | Parent's policy verbatim (or narrowed subset) | Target agent's own policy (within the shared risk profile) |
 | **Model provider** | Parent's | Target agent's configured provider |
 | **Spawn depth** | Hard cap at 1 | Up to `runtime_profile.max_delegation_depth` (default 3) |
 | **Background mode** | Not supported | `background: true` returns a `task_id` |
 | **Parallel fan-out** | No built-in argument; multiple calls in one turn run concurrently when `parallel_tools = true` | `parallel: [...]` runs multiple targets concurrently |
-| **Gating** | `risk_profile.allowed_tools` must list `spawn_subagent` | `allowed_tools` must list `delegate`, caller's `delegation_policy mode = "allow"`, and target shares the caller's risk profile |
+| **Gating** | Non-empty `risk_profile.allowed_tools` must list `spawn_subagent`; `excluded_tools` must not list it | Non-empty `allowed_tools` must list `delegate`; `excluded_tools` must not list it; caller's `delegation_policy mode = "allow"`; target shares the caller's risk profile |
 | **Use when** | Internal subtask that should stay within the same identity | Want a different specialist (different model, different alias) on the **same trust tier** to handle the task |
 
 ## What's not supported
