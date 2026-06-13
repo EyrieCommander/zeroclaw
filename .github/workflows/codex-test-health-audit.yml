@@ -1,0 +1,75 @@
+name: Codex Test Health Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      shard_name:
+        description: "Short shard name, used for artifact naming"
+        required: true
+        type: string
+      prompt:
+        description: "Full report-only Codex prompt for this shard"
+        required: true
+        type: string
+      model:
+        description: "Codex model"
+        required: false
+        default: "gpt-5.4-mini"
+        type: string
+      effort:
+        description: "Reasoning effort"
+        required: false
+        default: "medium"
+        type: choice
+        options:
+          - low
+          - medium
+          - high
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Audit ${{ inputs.shard_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Prepare prompt
+        shell: bash
+        env:
+          SHARD_NAME: ${{ inputs.shard_name }}
+          PROMPT: ${{ inputs.prompt }}
+        run: |
+          set -euo pipefail
+          mkdir -p .codex-audit/reports
+          printf '%s\n' "$PROMPT" > .codex-audit/prompt.md
+          {
+            echo "# ${SHARD_NAME} Report"
+            echo
+            echo "_Codex did not produce a final report._"
+          } > ".codex-audit/reports/${SHARD_NAME}.md"
+
+      - name: Run Codex audit
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: .codex-audit/prompt.md
+          output-file: .codex-audit/reports/${{ inputs.shard_name }}.md
+          sandbox: read-only
+          model: ${{ inputs.model }}
+          effort: ${{ inputs.effort }}
+          safety-strategy: drop-sudo
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-test-health-${{ inputs.shard_name }}
+          path: .codex-audit/reports/${{ inputs.shard_name }}.md
+          if-no-files-found: error
