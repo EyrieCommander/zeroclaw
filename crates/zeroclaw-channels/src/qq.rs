@@ -996,16 +996,6 @@ impl QQChannel {
         Ok(())
     }
 
-    /// Compose message content from an incoming QQ event payload.
-    ///
-    /// Handles all attachment types (not just images), downloads to workspace
-    /// if configured, and generates appropriate `[TYPE:path]` markers.
-    async fn compose_message_content(&self, payload: &serde_json::Value) -> Option<String> {
-        self.compose_qq_message(payload)
-            .await
-            .map(|message| message.content)
-    }
-
     async fn compose_qq_message(&self, payload: &serde_json::Value) -> Option<QQComposedMessage> {
         let text = payload
             .get("content")
@@ -2214,6 +2204,12 @@ allowed_users = ["user1"]
         }
     }
 
+    async fn composed_content(ch: &QQChannel, payload: &serde_json::Value) -> Option<String> {
+        ch.compose_qq_message(payload)
+            .await
+            .map(|message| message.content)
+    }
+
     #[tokio::test]
     async fn test_compose_message_content_text_only() {
         let ch = QQChannel::new(
@@ -2224,7 +2220,7 @@ allowed_users = ["user1"]
         );
         let payload = json!({ "content": "  hello world  " });
         assert_eq!(
-            ch.compose_message_content(&payload).await,
+            composed_content(&ch, &payload).await,
             Some("hello world".to_string())
         );
     }
@@ -2245,7 +2241,7 @@ allowed_users = ["user1"]
             }]
         });
         assert_eq!(
-            ch.compose_message_content(&payload).await,
+            composed_content(&ch, &payload).await,
             Some("[IMAGE:https://cdn.example.com/a.jpg]".to_string())
         );
     }
@@ -2266,7 +2262,7 @@ allowed_users = ["user1"]
             ]
         });
         assert_eq!(
-            ch.compose_message_content(&payload).await,
+            composed_content(&ch, &payload).await,
             Some(
                 "Here is an image\n[IMAGE:https://cdn.example.com/a.png]\n[IMAGE:https://cdn.example.com/b.jpeg]"
                     .to_string()
@@ -2291,7 +2287,7 @@ allowed_users = ["user1"]
                 { "content_type": "application/pdf", "url": "https://cdn.example.com/d.pdf" }
             ]
         });
-        let result = ch.compose_message_content(&payload).await.unwrap();
+        let result = composed_content(&ch, &payload).await.unwrap();
         assert!(result.contains("[IMAGE:"));
         assert!(result.contains("[VOICE:"));
         assert!(result.contains("[VIDEO:"));
@@ -2343,7 +2339,7 @@ allowed_users = ["user1"]
             }]
         });
 
-        let result = ch.compose_message_content(&payload).await.unwrap();
+        let result = composed_content(&ch, &payload).await.unwrap();
         assert!(
             result.contains("<VOICE_TRANSCRIPTION>configured transcript</VOICE_TRANSCRIPTION>")
         );
@@ -2396,7 +2392,7 @@ allowed_users = ["user1"]
             }]
         });
 
-        let result = ch.compose_message_content(&payload).await.unwrap();
+        let result = composed_content(&ch, &payload).await.unwrap();
         assert!(result.contains("<VOICE_TRANSCRIPTION>platform transcript</VOICE_TRANSCRIPTION>"));
         assert!(!result.contains("fallback"));
     }
@@ -2416,7 +2412,7 @@ allowed_users = ["user1"]
                 "url": "//cdn.example.com/a.png"
             }]
         });
-        let result = ch.compose_message_content(&payload).await.unwrap();
+        let result = composed_content(&ch, &payload).await.unwrap();
         assert!(result.contains("https://cdn.example.com/a.png"));
         // Ensure the raw `//` prefix was replaced with `https:`
         assert!(!result.starts_with("[IMAGE://"));
@@ -2439,7 +2435,7 @@ allowed_users = ["user1"]
                 "url": "https://cdn.example.com/report.pdf"
             }]
         });
-        let result = ch.compose_message_content(&payload).await.unwrap();
+        let result = composed_content(&ch, &payload).await.unwrap();
         assert!(result.contains("[DOCUMENT:https://cdn.example.com/report.pdf]"));
     }
 
@@ -2458,7 +2454,7 @@ allowed_users = ["user1"]
                 "url": "   "
             }]
         });
-        assert_eq!(ch.compose_message_content(&payload).await, None);
+        assert_eq!(composed_content(&ch, &payload).await, None);
     }
 
     // --- Markdown send body test ---
