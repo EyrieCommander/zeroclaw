@@ -469,6 +469,23 @@ impl Channel for PacedChannel {
             .await
     }
 
+    async fn create_room(
+        &self,
+        name: Option<&str>,
+        topic: Option<&str>,
+        invites: &[String],
+        visibility: Option<&str>,
+        encryption: Option<bool>,
+    ) -> Result<String> {
+        self.inner
+            .create_room(name, topic, invites, visibility, encryption)
+            .await
+    }
+
+    async fn invite_user(&self, room_id: &str, user_id: &str) -> Result<()> {
+        self.inner.invite_user(room_id, user_id).await
+    }
+
     async fn request_approval(
         &self,
         recipient: &str,
@@ -512,9 +529,12 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
     struct CountingChannel {
         sends: AtomicUsize,
         finalize_drafts: AtomicUsize,
+        created_rooms: AtomicUsize,
+        invites: AtomicUsize,
     }
 
     impl Attributable for CountingChannel {
@@ -551,6 +571,21 @@ mod tests {
             self.finalize_drafts.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
+        async fn create_room(
+            &self,
+            _name: Option<&str>,
+            _topic: Option<&str>,
+            _invites: &[String],
+            _visibility: Option<&str>,
+            _encryption: Option<bool>,
+        ) -> Result<String> {
+            self.created_rooms.fetch_add(1, Ordering::SeqCst);
+            Ok("!created:example.com".to_string())
+        }
+        async fn invite_user(&self, _room_id: &str, _user_id: &str) -> Result<()> {
+            self.invites.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
     }
 
     #[tokio::test]
@@ -558,6 +593,7 @@ mod tests {
         let inner = Arc::new(CountingChannel {
             sends: AtomicUsize::new(0),
             finalize_drafts: AtomicUsize::new(0),
+            ..Default::default()
         });
         let cfg = PacingFixture {
             interval_secs: 0,
@@ -575,6 +611,7 @@ mod tests {
         let counting = Arc::new(CountingChannel {
             sends: AtomicUsize::new(0),
             finalize_drafts: AtomicUsize::new(0),
+            ..Default::default()
         });
         let inner: Arc<dyn Channel> = counting.clone();
         // Use 1h to make the wait long enough that we can assert the
@@ -602,6 +639,7 @@ mod tests {
         let counting = Arc::new(CountingChannel {
             sends: AtomicUsize::new(0),
             finalize_drafts: AtomicUsize::new(0),
+            ..Default::default()
         });
         let inner: Arc<dyn Channel> = counting.clone();
         // 1h interval again — we only ever send once per recipient, so
@@ -631,6 +669,7 @@ mod tests {
         let counting = Arc::new(CountingChannel {
             sends: AtomicUsize::new(0),
             finalize_drafts: AtomicUsize::new(0),
+            ..Default::default()
         });
         let inner: Arc<dyn Channel> = counting.clone();
         let cfg = PacingFixture {
@@ -660,6 +699,7 @@ mod tests {
         let counting = Arc::new(CountingChannel {
             sends: AtomicUsize::new(0),
             finalize_drafts: AtomicUsize::new(0),
+            ..Default::default()
         });
         let inner: Arc<dyn Channel> = counting.clone();
         let cfg = PacingFixture {
@@ -715,6 +755,7 @@ mod tests {
         let counting = Arc::new(CountingChannel {
             sends: AtomicUsize::new(0),
             finalize_drafts: AtomicUsize::new(0),
+            ..Default::default()
         });
         let inner: Arc<dyn Channel> = counting.clone();
         // 1h floor: the first op fires immediately, so no real time elapses.
@@ -743,10 +784,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn room_management_forwards_to_inner_channel() {
+        let counting = Arc::new(CountingChannel {
+            sends: AtomicUsize::new(0),
+            finalize_drafts: AtomicUsize::new(0),
+            created_rooms: AtomicUsize::new(0),
+            invites: AtomicUsize::new(0),
+        });
+        let inner: Arc<dyn Channel> = counting.clone();
+        let cfg = PacingFixture {
+            interval_secs: 3600,
+            depth: 4,
+        };
+        let paced = PacedChannel::wrap(inner, &cfg);
+        let invites = vec!["@user:example.com".to_string()];
+
+        let room_id = paced
+            .create_room(
+                Some("Project Room"),
+                Some("Planning"),
+                &invites,
+                Some("private"),
+                Some(false),
+            )
+            .await
+            .unwrap();
+        paced
+            .invite_user(&room_id, "@other:example.com")
+            .await
+            .unwrap();
+
+        assert_eq!(room_id, "!created:example.com");
+        assert_eq!(
+            counting.created_rooms.load(Ordering::SeqCst),
+            1,
+            "create_room must forward through the pacing wrapper",
+        );
+        assert_eq!(
+            counting.invites.load(Ordering::SeqCst),
+            1,
+            "invite_user must forward through the pacing wrapper",
+        );
+    }
+
+    #[tokio::test]
     async fn queued_finalize_draft_preserves_op_through_worker() {
         let counting = Arc::new(CountingChannel {
             sends: AtomicUsize::new(0),
             finalize_drafts: AtomicUsize::new(0),
+            ..Default::default()
         });
         let inner: Arc<dyn Channel> = counting.clone();
         let cfg = PacingFixture {

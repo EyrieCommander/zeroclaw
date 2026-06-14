@@ -378,6 +378,25 @@ pub trait Channel: Send + Sync + crate::attribution::Attributable {
         Ok(())
     }
 
+    /// Create a room, channel, or conversation on the platform.
+    ///
+    /// Channels without a room-creation API report unsupported explicitly.
+    async fn create_room(
+        &self,
+        _name: Option<&str>,
+        _topic: Option<&str>,
+        _invites: &[String],
+        _visibility: Option<&str>,
+        _encryption: Option<bool>,
+    ) -> anyhow::Result<String> {
+        anyhow::bail!("channel does not support room creation")
+    }
+
+    /// Invite a user to an existing room, channel, or conversation.
+    async fn invite_user(&self, _room_id: &str, _user_id: &str) -> anyhow::Result<()> {
+        anyhow::bail!("channel does not support room invites")
+    }
+
     /// Request interactive tool-call approval from the channel operator.
     ///
     /// Returns `Ok(Some(response))` when the operator answers within the
@@ -584,6 +603,37 @@ mod tests {
         let back: ChannelApprovalResponse = serde_json::from_str(&json).unwrap();
         assert!(
             matches!(back, ChannelApprovalResponse::DenyWithEdit { replacement } if replacement == "new content")
+        );
+    }
+
+    #[tokio::test]
+    async fn default_room_management_methods_report_unsupported() {
+        let channel = StubChannel { handle: None };
+
+        let room_err = channel
+            .create_room(
+                Some("Project Room"),
+                Some("Project discussion"),
+                &["@user:example.com".to_string()],
+                Some("private"),
+                Some(true),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            room_err
+                .to_string()
+                .contains("does not support room creation")
+        );
+        let invite_err = channel
+            .invite_user("!room:example.com", "@other:example.com")
+            .await
+            .unwrap_err();
+        assert!(
+            invite_err
+                .to_string()
+                .contains("does not support room invites")
         );
     }
 }

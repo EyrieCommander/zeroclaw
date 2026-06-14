@@ -1,4 +1,4 @@
-//! Matrix channel using matrix-rust-sdk 0.16.
+//! Matrix channel using matrix-rust-sdk 0.17.
 //!
 //! Organisation (single file, internal `mod` blocks):
 //! - `markers`: parse `[image:...] [voice:...]` etc. from outbound text
@@ -3461,6 +3461,75 @@ impl MatrixChannel {
     }
 }
 
+fn build_create_room_request(
+    name: Option<&str>,
+    topic: Option<&str>,
+    invites: &[String],
+    visibility: Option<&str>,
+    encryption: Option<bool>,
+) -> Result<matrix_sdk::ruma::api::client::room::create_room::v3::Request> {
+    use matrix_sdk::ruma::{
+        OwnedUserId,
+        api::client::room::{Visibility, create_room::v3::Request as CreateRoomRequest},
+        events::{InitialStateEvent, room::encryption::RoomEncryptionEventContent},
+    };
+
+    let mut request = CreateRoomRequest::new();
+    request.name = name.map(str::to_owned);
+    request.topic = topic.map(str::to_owned);
+    request.invite = invites
+        .iter()
+        .map(|user_id| {
+            user_id
+                .parse::<OwnedUserId>()
+                .with_context(|| format!("Invalid Matrix user ID: {user_id}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    if let Some(visibility) = visibility {
+        request.visibility = match visibility {
+            "private" => Visibility::Private,
+            "public" => Visibility::Public,
+            other => bail!("Invalid visibility: expected `private` or `public`, got `{other}`"),
+        };
+    }
+
+    if encryption.unwrap_or(false) {
+        request.initial_state.push(
+            InitialStateEvent::with_empty_state_key(
+                RoomEncryptionEventContent::with_recommended_defaults(),
+            )
+            .to_raw_any(),
+        );
+    }
+
+    Ok(request)
+}
+
+fn build_invite_user_request(
+    room_id: &str,
+    user_id: &str,
+) -> Result<matrix_sdk::ruma::api::client::membership::invite_user::v3::Request> {
+    use matrix_sdk::ruma::{
+        OwnedRoomId, OwnedUserId,
+        api::client::membership::invite_user::v3::{
+            InvitationRecipient, InviteUserId, Request as InviteUserRequest,
+        },
+    };
+
+    let room_id = room_id
+        .parse::<OwnedRoomId>()
+        .with_context(|| format!("Invalid Matrix room ID: {room_id}"))?;
+    let user_id = user_id
+        .parse::<OwnedUserId>()
+        .with_context(|| format!("Invalid Matrix user ID: {user_id}"))?;
+
+    Ok(InviteUserRequest::new(
+        room_id,
+        InvitationRecipient::UserId(InviteUserId::new(user_id)),
+    ))
+}
+
 impl ::zeroclaw_api::attribution::Attributable for MatrixChannel {
     fn role(&self) -> ::zeroclaw_api::attribution::Role {
         ::zeroclaw_api::attribution::Role::Channel(::zeroclaw_api::attribution::ChannelKind::Matrix)
@@ -3835,6 +3904,28 @@ impl Channel for MatrixChannel {
         outbound::redact(client, channel_id, &event_id, reason).await
     }
 
+    async fn create_room(
+        &self,
+        name: Option<&str>,
+        topic: Option<&str>,
+        invites: &[String],
+        visibility: Option<&str>,
+        encryption: Option<bool>,
+    ) -> Result<String> {
+        let client = self.ensure_client().await?;
+        let request = build_create_room_request(name, topic, invites, visibility, encryption)?;
+        let room = client.create_room(request).await?;
+
+        Ok(room.room_id().to_string())
+    }
+
+    async fn invite_user(&self, room_id: &str, user_id: &str) -> Result<()> {
+        let client = self.ensure_client().await?;
+        let request = build_invite_user_request(room_id, user_id)?;
+        client.send(request).await?;
+        Ok(())
+    }
+
     async fn request_approval(
         &self,
         recipient: &str,
@@ -4192,6 +4283,90 @@ mod tests {
                 .remove_reaction("bad-room", "bad-event", "✅")
                 .await
                 .expect("ack-disabled reaction removal should be a no-op");
+        }
+    }
+
+    mod room_management {
+        use matrix_sdk::ruma::api::client::{
+            membership::invite_user::v3::InvitationRecipient, room::Visibility,
+        };
+
+        use super::super::{build_create_room_request, build_invite_user_request};
+
+        #[test]
+        fn create_room_request_maps_fields_and_encryption() {
+            let invites = vec![
+                "@user_a:example.com".to_string(),
+                "@user_b:example.com".to_string(),
+            ];
+
+            let request = build_create_room_request(
+                Some("Project Room"),
+                Some("Planning"),
+                &invites,
+                Some("public"),
+                Some(true),
+            )
+            .expect("room request");
+
+            assert_eq!(request.name.as_deref(), Some("Project Room"));
+            assert_eq!(request.topic.as_deref(), Some("Planning"));
+            assert_eq!(request.invite.len(), 2);
+            assert_eq!(request.invite[0].as_str(), "@user_a:example.com");
+            assert_eq!(request.invite[1].as_str(), "@user_b:example.com");
+            assert_eq!(request.visibility, Visibility::Public);
+            assert_eq!(request.initial_state.len(), 1);
+        }
+
+        #[test]
+        fn create_room_request_rejects_invalid_visibility() {
+            let err = build_create_room_request(None, None, &[], Some("shared"), None)
+                .expect_err("invalid visibility should fail");
+
+            assert!(err.to_string().contains("Invalid visibility"));
+        }
+
+        #[test]
+        fn create_room_request_rejects_invalid_invite_user_id() {
+            let invites = vec!["not-a-matrix-user".to_string()];
+            let err = build_create_room_request(None, None, &invites, None, None)
+                .expect_err("invalid Matrix user id should fail");
+
+            assert!(err.to_string().contains("Invalid Matrix user ID"));
+        }
+
+        #[test]
+        fn invite_user_request_maps_room_and_user_ids() {
+            let request = build_invite_user_request("!room:example.com", "@user:example.com")
+                .expect("invite request");
+
+            assert_eq!(request.room_id.as_str(), "!room:example.com");
+            match request.recipient {
+                InvitationRecipient::UserId(invite) => {
+                    assert_eq!(invite.user_id.as_str(), "@user:example.com");
+                    assert_eq!(invite.reason, None);
+                }
+                InvitationRecipient::ThirdPartyId(_) => {
+                    panic!("invite request should target a Matrix user ID")
+                }
+                _ => panic!("invite request should target a Matrix user ID"),
+            }
+        }
+
+        #[test]
+        fn invite_user_request_rejects_invalid_room_id() {
+            let err = build_invite_user_request("not-a-room", "@user:example.com")
+                .expect_err("invalid Matrix room id should fail");
+
+            assert!(err.to_string().contains("Invalid Matrix room ID"));
+        }
+
+        #[test]
+        fn invite_user_request_rejects_invalid_user_id() {
+            let err = build_invite_user_request("!room:example.com", "not-a-user")
+                .expect_err("invalid Matrix user id should fail");
+
+            assert!(err.to_string().contains("Invalid Matrix user ID"));
         }
     }
 
