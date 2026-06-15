@@ -312,43 +312,21 @@ impl DelegateTool {
         self
     }
 
-    /// Build a `SecurityPolicy` for the delegated target agent after
-    /// enforcing the current same-risk-profile delegation boundary,
-    /// with the caller's action / cost tracker shared into the
-    /// returned policy.
+    /// Resolve the target's `SecurityPolicy` for delegation.
     ///
-    /// Returns:
-    /// - `Ok(target_policy)` when `root_config` is set, the target
-    ///   resolves, delegation is permitted by the caller's profile,
-    ///   and the target references the same risk profile as the caller.
-    ///   The returned policy's `tracker` field is the caller's
-    ///   `Arc`-shared tracker so delegated actions count
-    ///   against the caller's `max_actions_per_hour` /
-    ///   `max_cost_per_day_cents`.
-    /// - `Err(_)` when the caller's delegation policy forbids
-    ///   delegation or the target references a different risk profile.
-    /// - `Ok(self.security)` (caller's policy) when `root_config`
-    ///   is `None`. This branch only fires for the legacy unit-test
-    ///   constructors that don't plumb root config.
+    /// Refuses when the caller's `delegation_policy` forbids delegation
+    /// or the target is outside the caller's `reachable_delegate_targets`
+    /// set. Same-profile targets inherit the caller's session workspace
+    /// boundary (issue #7263); cross-profile explicit delegates keep
+    /// their own workspace and must pass `ensure_no_escalation_beyond`
+    /// the caller so a listed delegate cannot widen privilege. Both
+    /// share the caller's action/cost tracker. Falls back to the
+    /// caller's policy when no `root_config` is attached (legacy
+    /// unit-test constructors).
     fn policy_for_target(&self, target_alias: &str) -> anyhow::Result<Arc<SecurityPolicy>> {
         let Some(config) = self.root_config.as_ref() else {
             return Ok(Arc::clone(&self.security));
         };
-        let mut target_policy = SecurityPolicy::for_agent(config, target_alias).map_err(|e| {
-            ::zeroclaw_log::record!(
-                WARN,
-                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
-                    .with_outcome(::zeroclaw_log::EventOutcome::Failure)
-                    .with_attrs(::serde_json::json!({
-                        "target_agent": target_alias,
-                        "error": format!("{}", e),
-                    })),
-                "delegate: could not resolve target's security policy"
-            );
-            anyhow::Error::msg(format!(
-                "could not resolve security policy for delegate target {target_alias:?}: {e}"
-            ))
-        })?;
         if !self.security.delegation_policy.permits() {
             ::zeroclaw_log::record!(
                 WARN,
@@ -356,6 +334,7 @@ impl DelegateTool {
                     .with_outcome(::zeroclaw_log::EventOutcome::Failure)
                     .with_attrs(::serde_json::json!({
                         "target_agent": target_alias,
+                        "caller_alias": self.caller_alias,
                         "caller_risk_profile": self.security.risk_profile_name,
                     })),
                 "delegate refused: caller delegation_policy forbids delegation"
@@ -366,37 +345,71 @@ impl DelegateTool {
                 self.security.risk_profile_name
             )));
         }
-        if self.security.risk_profile_name != target_policy.risk_profile_name {
+
+        if !config
+            .reachable_delegate_targets(&self.caller_alias)
+            .iter()
+            .any(|name| name == target_alias)
+        {
             ::zeroclaw_log::record!(
                 WARN,
                 ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Reject)
                     .with_outcome(::zeroclaw_log::EventOutcome::Failure)
                     .with_attrs(::serde_json::json!({
                         "target_agent": target_alias,
-                        "caller_risk_profile": self.security.risk_profile_name,
-                        "target_risk_profile": target_policy.risk_profile_name,
+                        "caller_alias": self.caller_alias,
                     })),
-                "delegate refused: target risk profile differs from caller"
+                "delegate refused: target not in caller's reachable set"
             );
             return Err(anyhow::Error::msg(format!(
-                "delegate target {target_alias:?} uses risk profile \
-                 {:?}, but delegation requires the same risk profile as the caller ({:?})",
+                "delegate target {target_alias:?} is not reachable from {:?}; \
+                 add it to [agents.{}].delegates or share a risk profile with \
+                 delegate_same_risk_profile enabled",
+                self.caller_alias, self.caller_alias
+            )));
+        }
+
+        let mut target_policy = SecurityPolicy::for_agent(config, target_alias).map_err(|e| {
+            ::zeroclaw_log::record!(
+                WARN,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                    .with_attrs(::serde_json::json!({
+                        "target_agent": target_alias,
+                        "caller_alias": self.caller_alias,
+                        "error": format!("{}", e),
+                    })),
+                "delegate: could not resolve target's security policy"
+            );
+            anyhow::Error::msg(format!(
+                "could not resolve security policy for delegate target {target_alias:?}: {e}"
+            ))
+        })?;
+
+        target_policy.tracker = self.security.tracker.clone();
+
+        if self.security.risk_profile_name == target_policy.risk_profile_name {
+            target_policy.workspace_dir = self.security.workspace_dir.clone();
+        } else if let Err(violation) = target_policy.ensure_no_escalation_beyond(&self.security) {
+            ::zeroclaw_log::record!(
+                WARN,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Reject)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                    .with_attrs(::serde_json::json!({
+                        "target_agent": target_alias,
+                        "caller_alias": self.caller_alias,
+                        "caller_risk_profile": self.security.risk_profile_name,
+                        "target_risk_profile": target_policy.risk_profile_name,
+                        "violation": format!("{violation:?}"),
+                    })),
+                "delegate refused: cross-profile target would escalate beyond caller"
+            );
+            return Err(anyhow::Error::msg(format!(
+                "delegate target {target_alias:?} (risk profile {:?}) would escalate \
+                 beyond the caller (risk profile {:?}): {violation:?}",
                 target_policy.risk_profile_name, self.security.risk_profile_name
             )));
         }
-        target_policy.tracker = self.security.tracker.clone();
-
-        // Inherit the caller's runtime workspace boundary so delegate
-        // children spawned from an ACP/gateway session see the same
-        // session cwd as the caller instead of falling back to the
-        // per-agent install dir declared in config. Identical risk
-        // profile is enforced above, so this carries no extra
-        // privilege — it copies the sandbox boundary the caller
-        // already runs under. Without this, delegating to a sibling
-        // inside an IDE session jails the child to
-        // `~/.zeroclaw/agents/<target>/workspace` even when the user
-        // opened the IDE in their own repo. See issue #7263.
-        target_policy.workspace_dir = self.security.workspace_dir.clone();
 
         Ok(Arc::new(target_policy))
     }
@@ -542,7 +555,10 @@ impl DelegateTool {
 
         let mut resolved = agent_config.resolved.clone();
 
-        if let Some(profile) = self.runtime_profiles.get(&agent_config.runtime_profile) {
+        if let Some(profile) = self
+            .runtime_profiles
+            .get(agent_config.runtime_profile.as_str())
+        {
             if profile.max_tool_iterations > 0 {
                 resolved.max_tool_iterations = profile.max_tool_iterations;
             }
@@ -640,18 +656,23 @@ impl Tool for DelegateTool {
     fn parameters_schema(&self) -> serde_json::Value {
         let delegation_permitted = self.security.delegation_policy.permits();
         let caller_profile = self.security.risk_profile_name.as_str();
-        // Advertise only agents the caller can actually reach: delegation must
-        // be permitted, the target shares the caller's risk profile, and the
-        // delegator never lists itself.
-        let mut agent_names: Vec<&str> = self
-            .agents
-            .iter()
-            .filter(|_| delegation_permitted)
-            .filter(|(name, _)| name.as_str() != self.caller_alias.as_str())
-            .filter(|(_, cfg)| cfg.risk_profile.trim() == caller_profile)
-            .map(|(name, _)| name.as_str())
-            .collect();
+        let mut agent_names: Vec<String> = if !delegation_permitted {
+            Vec::new()
+        } else if let Some(config) = self.root_config.as_ref() {
+            config.reachable_delegate_targets(&self.caller_alias)
+        } else {
+            let mut names: Vec<String> = self
+                .agents
+                .iter()
+                .filter(|(name, _)| name.as_str() != self.caller_alias.as_str())
+                .filter(|(_, cfg)| cfg.risk_profile.trim() == caller_profile)
+                .map(|(name, _)| name.clone())
+                .collect();
+            names.sort_unstable();
+            names
+        };
         agent_names.sort_unstable();
+        agent_names.dedup();
         json!({
             "type": "object",
             "additionalProperties": false,
@@ -2321,8 +2342,8 @@ mod tests {
     fn agentic_agent_config() -> AliasedAgentConfig {
         AliasedAgentConfig {
             model_provider: "openrouter.agentic".into(),
-            risk_profile: "agentic_test".to_string(),
-            runtime_profile: "agentic_test".to_string(),
+            risk_profile: "agentic_test".into(),
+            runtime_profile: "agentic_test".into(),
             ..Default::default()
         }
     }
@@ -2447,8 +2468,8 @@ mod tests {
         );
         let target_config = AliasedAgentConfig {
             model_provider: "custom.local".into(),
-            risk_profile: "agentic_test".to_string(),
-            runtime_profile: "agentic_test".to_string(),
+            risk_profile: "agentic_test".into(),
+            runtime_profile: "agentic_test".into(),
             ..AliasedAgentConfig::default()
         };
         root_config
@@ -2485,7 +2506,8 @@ mod tests {
         ))))
         .with_providers_models(providers_models)
         .with_risk_profiles(root_config.risk_profiles.clone())
-        .with_runtime_profiles(root_config.runtime_profiles.clone());
+        .with_runtime_profiles(root_config.runtime_profiles.clone())
+        .with_caller_alias("caller");
 
         DelegateMemoryFixture {
             _tmp: tmp,
@@ -2846,6 +2868,95 @@ mod tests {
         assert!(desc.contains("none configured"));
     }
 
+    fn roster_schema_config() -> Arc<zeroclaw_config::schema::Config> {
+        use zeroclaw_config::autonomy::{DelegationMode, DelegationPolicy};
+        use zeroclaw_config::schema::{AliasedAgentConfig, Config, RiskProfileConfig};
+        let mut config = Config::default();
+        config.risk_profiles.insert(
+            "shared".to_string(),
+            RiskProfileConfig {
+                delegation_policy: DelegationPolicy {
+                    mode: DelegationMode::Allow,
+                },
+                ..RiskProfileConfig::default()
+            },
+        );
+        config
+            .risk_profiles
+            .insert("lore".to_string(), RiskProfileConfig::default());
+        for (alias, profile) in [
+            ("aaa", "shared"),
+            ("aaatools", "shared"),
+            ("aaalore", "lore"),
+        ] {
+            config.agents.insert(
+                alias.to_string(),
+                AliasedAgentConfig {
+                    risk_profile: profile.into(),
+                    model_provider: "ollama.default".into(),
+                    ..AliasedAgentConfig::default()
+                },
+            );
+        }
+        Arc::new(config)
+    }
+
+    fn roster_tool(config: Arc<zeroclaw_config::schema::Config>) -> DelegateTool {
+        let caller_policy =
+            Arc::new(SecurityPolicy::for_agent(&config, "aaa").expect("caller policy resolves"));
+        DelegateTool::new(
+            config
+                .agents
+                .iter()
+                .map(|(n, a)| (n.clone(), a.clone()))
+                .collect(),
+            None,
+            caller_policy,
+        )
+        .with_root_config(config)
+        .with_caller_alias("aaa")
+    }
+
+    #[test]
+    fn schema_roster_advertises_same_profile_peer() {
+        let tool = roster_tool(roster_schema_config());
+        let desc = tool.parameters_schema()["properties"]["agent"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(desc.contains("aaatools"), "{desc}");
+        assert!(!desc.contains("aaalore"), "{desc}");
+        assert!(!desc.contains("aaa,") && !desc.ends_with("aaa"), "{desc}");
+    }
+
+    #[test]
+    fn schema_roster_advertises_explicit_cross_profile_target() {
+        let mut config = (*roster_schema_config()).clone();
+        config.agents.get_mut("aaa").unwrap().delegates = vec!["aaalore".to_string()];
+        let tool = roster_tool(Arc::new(config));
+        let desc = tool.parameters_schema()["properties"]["agent"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(desc.contains("aaalore"), "{desc}");
+        assert!(desc.contains("aaatools"), "{desc}");
+    }
+
+    #[test]
+    fn schema_roster_opt_out_hides_peers_keeps_explicit() {
+        let mut config = (*roster_schema_config()).clone();
+        let aaa = config.agents.get_mut("aaa").unwrap();
+        aaa.delegate_same_risk_profile = false;
+        aaa.delegates = vec!["aaalore".to_string()];
+        let tool = roster_tool(Arc::new(config));
+        let desc = tool.parameters_schema()["properties"]["agent"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(desc.contains("aaalore"), "{desc}");
+        assert!(!desc.contains("aaatools"), "{desc}");
+    }
+
     #[tokio::test]
     async fn missing_agent_param() {
         let tool = DelegateTool::new(sample_agents(), None, test_security());
@@ -3090,7 +3201,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_agentic_empty_allowed_tools_uses_parent_tools() {
+    async fn agentic_mode_empty_allowed_tools_inherits_caller_registry() {
+        // Empty allowed_tools now means "inherit": the target runs with the
+        // caller's already-filtered tools instead of being rejected (#7470).
         let config = agentic_agent_config();
         let tool = DelegateTool::new(HashMap::new(), None, test_security())
             .with_runtime_profiles(agentic_runtime_profiles(10))
@@ -3117,6 +3230,32 @@ mod tests {
         assert!(result.success, "got: {:?}", result.error);
         assert!(result.output.contains("(openrouter/model-test, agentic)"));
         assert!(result.output.contains("done"));
+    }
+
+    #[tokio::test]
+    async fn agentic_mode_empty_allowed_tools_empty_registry_errors_gracefully() {
+        let mut agents = HashMap::new();
+        agents.insert("agentic".to_string(), agentic_agent_config());
+
+        let tool = DelegateTool::new(agents, None, test_security())
+            .with_providers_models(agentic_providers_models())
+            .with_runtime_profiles(agentic_runtime_profiles(10))
+            .with_risk_profiles(agentic_risk_profiles(Vec::new()));
+        let result = tool
+            .execute(json!({"agent": "agentic", "prompt": "test"}))
+            .await
+            .unwrap();
+
+        assert!(!result.success);
+        assert!(
+            result
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("no executable tools available from parent registry"),
+            "got: {:?}",
+            result.error
+        );
     }
 
     #[tokio::test]
@@ -4480,8 +4619,8 @@ mod tests {
         config.agents.insert(
             caller_alias.to_string(),
             AliasedAgentConfig {
-                risk_profile: "narrow".to_string(),
-                runtime_profile: "narrow".to_string(),
+                risk_profile: "narrow".into(),
+                runtime_profile: "narrow".into(),
                 model_provider: "ollama.caller".into(),
                 ..AliasedAgentConfig::default()
             },
@@ -4489,8 +4628,8 @@ mod tests {
         config.agents.insert(
             target_alias.to_string(),
             AliasedAgentConfig {
-                risk_profile: pick(target_max_actions > caller_max_actions),
-                runtime_profile: pick(target_max_actions > caller_max_actions),
+                risk_profile: pick(target_max_actions > caller_max_actions).into(),
+                runtime_profile: pick(target_max_actions > caller_max_actions).into(),
                 model_provider: "ollama.target".into(),
                 ..AliasedAgentConfig::default()
             },
@@ -4499,10 +4638,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delegate_rejects_target_on_a_different_risk_profile() {
-        // caller(narrow) is authorized to delegate to target, but target
-        // resolves onto the wider profile. Delegation requires caller and
-        // target to share a risk profile, so the boundary must refuse.
+    async fn delegate_rejects_cross_profile_target_not_in_roster() {
         let config = config_with_two_agents("caller", 5, "target", 50);
         let caller_policy =
             Arc::new(SecurityPolicy::for_agent(&config, "caller").expect("caller policy resolves"));
@@ -4511,16 +4647,80 @@ mod tests {
             delegate_agents.insert(name.clone(), agent.clone());
         }
         let tool = DelegateTool::new(delegate_agents, None, caller_policy)
-            .with_root_config(config.clone());
+            .with_root_config(config.clone())
+            .with_caller_alias("caller");
 
         let err = tool
             .policy_for_target("target")
-            .expect_err("cross-profile target must be rejected at delegate boundary");
+            .expect_err("cross-profile target outside the roster must be rejected");
         let chain = format!("{err:#}");
         assert!(
-            chain.contains("requires the same risk profile as the caller"),
-            "expected same-profile rejection, got: {chain}"
+            chain.contains("not reachable"),
+            "expected not-reachable rejection, got: {chain}"
         );
+    }
+
+    #[tokio::test]
+    async fn delegate_rejects_explicit_cross_profile_target_that_escalates() {
+        // target sits on the wider profile (higher max_actions). Listing it
+        // explicitly clears the reachability gate, but the escalation guard
+        // must still refuse because the target would widen the caller.
+        let config = config_with_two_agents("caller", 5, "target", 50);
+        let mut config = (*config).clone();
+        config
+            .agents
+            .get_mut("caller")
+            .unwrap()
+            .delegates
+            .push("target".to_string());
+        let config = Arc::new(config);
+        let caller_policy =
+            Arc::new(SecurityPolicy::for_agent(&config, "caller").expect("caller policy resolves"));
+        let mut delegate_agents = HashMap::new();
+        for (name, agent) in &config.agents {
+            delegate_agents.insert(name.clone(), agent.clone());
+        }
+        let tool = DelegateTool::new(delegate_agents, None, caller_policy)
+            .with_root_config(config.clone())
+            .with_caller_alias("caller");
+
+        let err = tool
+            .policy_for_target("target")
+            .expect_err("escalating cross-profile delegate must be rejected");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("escalate"),
+            "expected escalation rejection, got: {chain}"
+        );
+    }
+
+    #[tokio::test]
+    async fn delegate_allows_explicit_cross_profile_target_that_narrows() {
+        // target on a narrower profile (lower max_actions) is a valid
+        // explicit delegate: in the roster and non-escalating.
+        let config = config_with_two_agents("caller", 50, "target", 5);
+        let mut config = (*config).clone();
+        config
+            .agents
+            .get_mut("caller")
+            .unwrap()
+            .delegates
+            .push("target".to_string());
+        let config = Arc::new(config);
+        let caller_policy =
+            Arc::new(SecurityPolicy::for_agent(&config, "caller").expect("caller policy resolves"));
+        let mut delegate_agents = HashMap::new();
+        for (name, agent) in &config.agents {
+            delegate_agents.insert(name.clone(), agent.clone());
+        }
+        let tool = DelegateTool::new(delegate_agents, None, caller_policy)
+            .with_root_config(config.clone())
+            .with_caller_alias("caller");
+
+        let resolved = tool
+            .policy_for_target("target")
+            .expect("narrowed explicit cross-profile delegate must resolve");
+        assert_eq!(resolved.risk_profile_name, "narrow");
     }
 
     #[tokio::test]
@@ -4533,7 +4733,8 @@ mod tests {
             delegate_agents.insert(name.clone(), agent.clone());
         }
         let tool = DelegateTool::new(delegate_agents, None, Arc::clone(&caller_policy))
-            .with_root_config(config.clone());
+            .with_root_config(config.clone())
+            .with_caller_alias("caller");
 
         let bucket_key = "shared-budget-test";
         let max = 2u32;
@@ -4586,7 +4787,8 @@ mod tests {
             delegate_agents.insert(name.clone(), agent.clone());
         }
         let tool = DelegateTool::new(delegate_agents, None, Arc::clone(&caller_policy))
-            .with_root_config(config.clone());
+            .with_root_config(config.clone())
+            .with_caller_alias("caller");
 
         let target_policy = tool
             .policy_for_target("target")
@@ -4638,7 +4840,7 @@ mod tests {
         config.agents.insert(
             "caller".to_string(),
             AliasedAgentConfig {
-                risk_profile: "broad".to_string(),
+                risk_profile: "broad".into(),
                 model_provider: "ollama.caller".into(),
                 ..AliasedAgentConfig::default()
             },
@@ -4646,7 +4848,7 @@ mod tests {
         config.agents.insert(
             "target".to_string(),
             AliasedAgentConfig {
-                risk_profile: "narrow".to_string(),
+                risk_profile: "narrow".into(),
                 model_provider: "ollama.target".into(),
                 ..AliasedAgentConfig::default()
             },
@@ -4655,12 +4857,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delegate_rejects_target_on_a_different_risk_profile_even_when_authorized() {
-        // DelegateTool's spawned agentic loop reuses the caller's
-        // parent_tools registry, so a target on a different profile would
-        // silently inherit the caller's allowlist. Even with the caller
-        // authorized to delegate to the target, the same-profile gate must
-        // catch the profile mismatch and refuse to dispatch.
+    async fn delegate_rejects_cross_profile_target_absent_from_roster_even_when_authorized() {
+        // Caller is authorized to delegate (delegation_policy = allow) and
+        // the target is on a narrower profile, but it is not listed in the
+        // caller's delegates roster and is not a same-profile peer, so the
+        // reachability gate must refuse.
         let config = config_with_narrowed_target();
         let caller_policy =
             Arc::new(SecurityPolicy::for_agent(&config, "caller").expect("caller policy resolves"));
@@ -4669,15 +4870,16 @@ mod tests {
             delegate_agents.insert(name.clone(), agent.clone());
         }
         let tool = DelegateTool::new(delegate_agents, None, caller_policy)
-            .with_root_config(config.clone());
+            .with_root_config(config.clone())
+            .with_caller_alias("caller");
 
         let err = tool
             .policy_for_target("target")
-            .expect_err("cross-profile target must be rejected at delegate boundary");
+            .expect_err("cross-profile target outside the roster must be rejected");
         let chain = format!("{err:#}");
         assert!(
-            chain.contains("requires the same risk profile as the caller"),
-            "expected same-profile rejection, got: {chain}"
+            chain.contains("not reachable"),
+            "expected not-reachable rejection, got: {chain}"
         );
     }
 
