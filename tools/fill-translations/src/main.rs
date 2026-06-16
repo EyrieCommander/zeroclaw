@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use xtask::cmd::mdbook::protected::preservation_prompt;
 
 #[derive(Parser)]
 #[command(about = "Fill empty/fuzzy .po entries via a configured model_provider")]
@@ -344,7 +345,7 @@ async fn translate_batch(
     locale: &str,
     batch: &[&str],
 ) -> BatchResult {
-    let system = format!(
+    let base_system = format!(
         "You translate English technical documentation strings to {locale}.\n\
          - Preserve backticks, bold (**text**), inline code, URLs, and escape sequences where \
            they appear in the source, character-for-character.\n\
@@ -359,6 +360,7 @@ async fn translate_batch(
 
     let mut out = Vec::with_capacity(batch.len());
     for source in batch {
+        let system = translation_system_prompt(&base_system, source);
         let content = provider
             .chat_with_system(Some(&system), source, model, None)
             .await
@@ -366,6 +368,13 @@ async fn translate_batch(
         out.push(content.trim().to_string());
     }
     Ok(out)
+}
+
+fn translation_system_prompt(base_system: &str, source: &str) -> String {
+    let Some(preservation) = preservation_prompt(source) else {
+        return base_system.to_string();
+    };
+    format!("{base_system}\n\n{preservation}")
 }
 
 #[tokio::main]

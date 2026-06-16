@@ -352,7 +352,7 @@ msgstr "Markdown"
 
 #: src/channels/matrix.md
 msgid "\"Matrix is configured correctly, checks pass, but the bot does not respond.\""
-msgstr "矩阵配置正确，检查通过，但机器人未响应。"
+msgstr "\"Matrix is configured correctly, checks pass, but the bot does not respond.\""
 
 #: src/developing/extension-examples.md
 msgid "\"Missing 'url' parameter\""
@@ -13995,7 +13995,7 @@ msgstr "Discord、Slack、GitHub 以及大多数 webhook 通道需要入站 HTTP
 
 #: src/channels/overview.md
 msgid "Discord, Slack, Telegram, iMessage, WeChat personal iLink Bot, DingTalk, Lark, QQ, IRC, Mochat, Notion"
-msgstr "Discord、Slack、Telegram、iMessage、微信个人 iLink 机器人、钉钉、飞书、QQ、IRC、Mochat、Notion"
+msgstr "Discord, Slack, Telegram, iMessage, WeChat personal iLink Bot, DingTalk, Lark, QQ, IRC, Mochat, Notion"
 
 #: src/contributing/communication.md
 msgid "Discord: best place to reach the team"
@@ -20207,7 +20207,7 @@ msgstr "L"
 
 #: src/SUMMARY.md src/channels/overview.md src/channels/line.md
 msgid "LINE"
-msgstr "行"
+msgstr "LINE"
 
 #: src/reference/config.md
 msgid "LINE Messaging API channel instances (`[channels.line.<alias>]`)."
@@ -20333,7 +20333,7 @@ msgstr "大型 RFC 通常会跨越多个 PR 并在多个版本中发布。随着
 
 #: src/channels/chat-others.md
 msgid "Lark / Feishu"
-msgstr "飞书"
+msgstr "Lark / Feishu"
 
 #: src/reference/config.md
 msgid "Lark channel instances (`[channels.lark.<alias>]`)."
@@ -21147,7 +21147,7 @@ msgstr "匹配 `\"{board}/{signal}\"`。"
 
 #: src/SUMMARY.md src/channels/overview.md src/channels/matrix.md
 msgid "Matrix"
-msgstr "矩阵"
+msgstr "Matrix"
 
 #: src/ops/network-deployment.md
 msgid "Matrix / Mattermost / Nextcloud Talk"
@@ -21159,7 +21159,7 @@ msgstr "机器人账户的 Matrix 访问令牌。未设置时，该通道将回�
 
 #: src/reference/config.md
 msgid "Matrix channel instances (`[channels.matrix.<alias>]`)."
-msgstr "矩阵通道实例（`[channels.matrix.<alias>]`）。"
+msgstr "Matrix channel instances (`[channels.matrix.<alias>]`)."
 
 #: src/channels/matrix.md
 msgid "Matrix clients that support `formatted_body` render emphasis, lists, and code blocks."
@@ -21183,11 +21183,11 @@ msgstr "Matrix 通过 `stream_mode` 设置来流式传输回复："
 
 #: src/channels/matrix.md
 msgid "Matrix-channel-specific diagnostics:"
-msgstr "矩阵通道特定的诊断："
+msgstr "Matrix-channel-specific diagnostics:"
 
 #: src/ops/troubleshooting.md
 msgid "Matrix: \"unknown device\""
-msgstr "矩阵：“未知设备”"
+msgstr "Matrix: \"unknown device\""
 
 #: src/SUMMARY.md src/channels/overview.md src/channels/mattermost.md
 msgid "Mattermost"
@@ -27955,7 +27955,7 @@ msgstr "Rust 字符串字面量占位符（如 `\"raw error body: {body}\"`）�
 
 #: src/contributing/how-to.md
 msgid "Rustdoc (`///`) changes update the API reference automatically on deploy"
-msgstr "Rustdoc (`/ /`) 在部署时自动更新 API 参考"
+msgstr "Rustdoc (`///`) changes update the API reference automatically on deploy"
 
 #: src/foundations/fnd-003-governance.md
 msgid "S"
@@ -34347,11 +34347,11 @@ msgstr "用户进程"
 
 #: src/hardware/hardware-peripherals-design.md
 msgid "User sends Telegram: _\"What are the readable memory addresses on this USB device?\"_"
-msgstr "“这个 USB 设备上有哪些可读的内存地址？”"
+msgstr "User sends Telegram: _\"What are the readable memory addresses on this USB device?\"_"
 
 #: src/hardware/hardware-peripherals-design.md
 msgid "User sends WhatsApp: _\"Turn on LED on pin 13\"_"
-msgstr "在引脚 13 上开启 LED"
+msgstr "User sends WhatsApp: _\"Turn on LED on pin 13\"_"
 
 #: src/foundations/fnd-001-intentional-architecture.md
 msgid "User wants"
@@ -37190,7 +37190,7 @@ msgstr "[LINE 开发者文档](https://developers.line.biz/en/docs/messaging-api
 
 #: src/channels/overview.md src/channels/chat-others.md
 msgid "[LINE](./line.md)"
-msgstr "[行](./line.md)"
+msgstr "[LINE](./line.md)"
 
 #: src/foundations/fnd-003-governance.md
 msgid "[Label Taxonomy](#9-label-taxonomy)"
@@ -37250,7 +37250,7 @@ msgstr "[维护者 → 概述](../maintainers/index.md)：维护者的日常工�
 
 #: src/channels/overview.md
 msgid "[Matrix](./matrix.md)"
-msgstr "[矩阵](./matrix.md)"
+msgstr "[Matrix](./matrix.md)"
 
 #: src/channels/chat-others.md
 msgid "[Matrix](./matrix.md): E2EE, device verification, Synapse/Dendrite specifics"
@@ -39149,7 +39149,7 @@ msgstr "`\"GOOGLE_VERTEX_API_KEY\"`"
 
 #: src/reference/config.md
 msgid "`\"Input\"`"
-msgstr "`\"输入\"`"
+msgstr "`\"Input\"`"
 
 #: src/reference/config.md
 msgid "`\"OPENAI_API_KEY\"`"
@@ -39161,7 +39161,7 @@ msgstr "`\"POST\"`"
 
 #: src/reference/config.md
 msgid "`\"Result\"`"
-msgstr "`\"结果\"`"
+msgstr "`\"Result\"`"
 
 #: src/reference/config.md
 msgid "`\"STABILITY_API_KEY\"`"
@@ -39169,7 +39169,7 @@ msgstr "`\"STABILITY_API_KEY\"`"
 
 #: src/reference/config.md
 msgid "`\"Status\"`"
-msgstr "`\"状态\"`"
+msgstr "`\"Status\"`"
 
 #: src/reference/config.md
 msgid "`\"ZeroClaw\"`"
@@ -39209,7 +39209,7 @@ msgstr "`\"dall-e-3\"`"
 
 #: src/reference/config.md
 msgid "`\"default\"`"
-msgstr "`\"默认\"`"
+msgstr "`\"default\"`"
 
 #: src/reference/config.md
 msgid "`\"disabled\"`"
@@ -39225,7 +39225,7 @@ msgstr "`\"en\"`"
 
 #: src/reference/config.md
 msgid "`\"en-US\"`"
-msgstr "`\"zh-CN\"`"
+msgstr "`\"en-US\"`"
 
 #: src/reference/config.md
 msgid "`\"fal-ai/flux/schnell\"`"
@@ -39269,7 +39269,7 @@ msgstr "`\"localhost\"`"
 
 #: src/reference/config.md
 msgid "`\"low\"`"
-msgstr "`\"低\"`"
+msgstr "`\"low\"`"
 
 #: src/reference/config.md
 msgid "`\"master\"`"
@@ -39325,7 +39325,7 @@ msgstr "`\"strict\"`"
 
 #: src/reference/config.md
 msgid "`\"supervised\"`"
-msgstr "`\"监督式\"`"
+msgstr "`\"supervised\"`"
 
 #: src/reference/config.md
 msgid "`\"text-embedding-3-small\"`"
@@ -41038,7 +41038,7 @@ msgstr "`[\"*\"]`"
 
 #: src/reference/config.md
 msgid "`[\"Read\",\"Edit\",\"Bash\",\"Write\"]`"
-msgstr "`[\"读取\",\"编辑\",\"Bash\",\"写入\"]`"
+msgstr "`[\"Read\",\"Edit\",\"Bash\",\"Write\"]`"
 
 #: src/reference/config.md
 msgid "`[\"aws\",\"azure\",\"gcp\"]`"
@@ -41050,7 +41050,7 @@ msgstr "`[\"aws-waf\"]`"
 
 #: src/reference/config.md
 msgid "`[\"cache\",\"fts\",\"vector\"]`"
-msgstr "`[\"缓存\",\"全文搜索\",\"向量\"]`"
+msgstr "`[\"cache\",\"fts\",\"vector\"]`"
 
 #: src/reference/config.md
 msgid "`[\"config\",\"memory\",\"audit\",\"knowledge\"]`"
@@ -41198,7 +41198,55 @@ msgid ""
 "      ▼\n"
 "  agent sends reply to user: \"I found two I2C devices: 0x48 and 0x68\"\n"
 "```"
-msgstr "```\n SDK 文件            aardvark-sys            ZeroClaw 核心\n (vendor/)          (crates/)               (src/)\n─────────────────────────────────────────────────────────────────\n\n aardvark.h  ──►  build.rs         boot()\n aardvark.so       (bindgen)    ──►  find_devices()\n                       │                │\n                  bindings.rs           │  vec![0]  （一个适配器）\n                       │                ▼\n                  lib.rs           register(\"aardvark0\")\n                  AardvarkHandle   attach_transport(AardvarkTransport)\n                       │                │\n                       │                ▼\n                       │         ToolRegistry::load()\n                       │           has_aardvark() == true\n                       │           → 加载 aardvark 工具\n                       │\n─────────────────────────────────────────────────────────────────\n\n 用户消息: \"scan the i2c bus\"\n\n  agent 循环\n      │\n      ▼\n  I2cScanTool.call()\n      │\n      ▼\n  resolve_aardvark_device(\"aardvark0\")\n      │  返回 transport Arc\n      ▼\n  AardvarkTransport.send(ZcCommand{ name: \"i2c_scan\" })\n      │\n      ▼\n  AardvarkHandle::open_port(0)    ← 打开 USB 连接\n      │\n      ▼\n  aa_i2c_read(0x08..0x77)         ← 探测每个地址\n      │\n      ▼\n  AardvarkHandle dropped           ← USB 连接关闭\n      │\n      ▼\n  ZcResponse{ output: \"Found: 0x48, 0x68\" }\n      │\n      ▼\n  agent 向用户发送回复: \"I found two I2C devices: 0x48 and 0x68\"\n```"
+msgstr ""
+"```\n"
+" SDK FILES          aardvark-sys            ZeroClaw core\n"
+" (vendor/)          (crates/)               (src/)\n"
+"─────────────────────────────────────────────────────────────────\n"
+"\n"
+" aardvark.h  ──►  build.rs         boot()\n"
+" aardvark.so       (bindgen)    ──►  find_devices()\n"
+"                       │                │\n"
+"                  bindings.rs           │  vec![0]  (one adapter)\n"
+"                       │                ▼\n"
+"                  lib.rs           register(\"aardvark0\")\n"
+"                  AardvarkHandle   attach_transport(AardvarkTransport)\n"
+"                       │                │\n"
+"                       │                ▼\n"
+"                       │         ToolRegistry::load()\n"
+"                       │           has_aardvark() == true\n"
+"                       │           → load aardvark tools\n"
+"                       │\n"
+"─────────────────────────────────────────────────────────────────\n"
+"\n"
+" USER MESSAGE: \"scan the i2c bus\"\n"
+"\n"
+"  agent loop\n"
+"      │\n"
+"      ▼\n"
+"  I2cScanTool.call()\n"
+"      │\n"
+"      ▼\n"
+"  resolve_aardvark_device(\"aardvark0\")\n"
+"      │  returns transport Arc\n"
+"      ▼\n"
+"  AardvarkTransport.send(ZcCommand{ name: \"i2c_scan\" })\n"
+"      │\n"
+"      ▼\n"
+"  AardvarkHandle::open_port(0)    ← opens USB connection\n"
+"      │\n"
+"      ▼\n"
+"  aa_i2c_read(0x08..0x77)         ← probes each address\n"
+"      │\n"
+"      ▼\n"
+"  AardvarkHandle dropped           ← USB connection closed\n"
+"      │\n"
+"      ▼\n"
+"  ZcResponse{ output: \"Found: 0x48, 0x68\" }\n"
+"      │\n"
+"      ▼\n"
+"  agent sends reply to user: \"I found two I2C devices: 0x48 and 0x68\"\n"
+"```"
 
 #: src/foundations/fnd-002-documentation-standards.md
 msgid ""
@@ -41406,7 +41454,7 @@ msgstr ""
 "boot()\n"
 "  ...\n"
 "  aardvark_ports = aardvark_sys::AardvarkHandle::find_devices()\n"
-"  // → 在存根模式下为 []，若连接了一个适配器则为 [0]\n"
+"  // → [] in stub mode, [0] if one adapter is plugged in\n"
 "\n"
 "  for (i, port) in aardvark_ports:\n"
 "    alias = registry.register(\"aardvark\", vid=0x2b76, ...)\n"
@@ -41415,7 +41463,7 @@ msgstr ""
 "    transport = AardvarkTransport::new(port, bitrate=100kHz)\n"
 "    registry.attach_transport(alias, transport, {i2c:true, spi:true, gpio:true})\n"
 "\n"
-"    log \"[registry] aardvark0 就绪 → Total Phase 端口 0\"\n"
+"    log \"[registry] aardvark0 ready → Total Phase port 0\"\n"
 "  ...\n"
 "```"
 
@@ -41545,7 +41593,7 @@ msgstr ""
 "```\n"
 "my-toolkit/\n"
 "  manifest.toml              # capabilities = [\"skill\"]\n"
-"  README.md                  # 可选的 bundle 级概述\n"
+"  README.md                  # optional bundle-level overview\n"
 "  skills/\n"
 "    design-review/\n"
 "      SKILL.md\n"
@@ -41640,38 +41688,38 @@ msgstr ""
 "```\n"
 "send(ZcCommand) → ZcResponse\n"
 "\n"
-"  从 cmd.name 提取命令名称\n"
-"  从 cmd.params（serde_json 值）提取参数\n"
+"  extract command name from cmd.name\n"
+"  extract parameters from cmd.params (serde_json values)\n"
 "\n"
-"  匹配 cmd.name：\n"
+"  match cmd.name:\n"
 "\n"
-"    \"i2c_scan\"   → 打开句柄 → 调用 i2c_scan()\n"
-"                   → 将找到的地址格式化为十六进制列表\n"
-"                   → 返回 ZcResponse{ output: \"0x48, 0x68\" }\n"
+"    \"i2c_scan\"   → open handle → call i2c_scan()\n"
+"                   → format found addresses as hex list\n"
+"                   → return ZcResponse{ output: \"0x48, 0x68\" }\n"
 "\n"
-"    \"i2c_read\"   → 解析 addr（十六进制字符串）+ len（数字）\n"
-"                   → 打开句柄 → i2c_enable(bitrate)\n"
-"                   → 调用 i2c_read(addr, len)\n"
-"                   → 将字节格式化为十六进制\n"
-"                   → 返回 ZcResponse{ output: \"0xAB 0xCD\" }\n"
+"    \"i2c_read\"   → parse addr (hex string) + len (number)\n"
+"                   → open handle → i2c_enable(bitrate)\n"
+"                   → call i2c_read(addr, len)\n"
+"                   → format bytes as hex\n"
+"                   → return ZcResponse{ output: \"0xAB 0xCD\" }\n"
 "\n"
-"    \"i2c_write\"  → 解析 addr + 数据字节\n"
-"                   → 打开句柄 → i2c_write(addr, data)\n"
-"                   → 返回 ZcResponse{ output: \"ok\" }\n"
+"    \"i2c_write\"  → parse addr + data bytes\n"
+"                   → open handle → i2c_write(addr, data)\n"
+"                   → return ZcResponse{ output: \"ok\" }\n"
 "\n"
-"    \"spi_transfer\" → 解析 bytes_hex 字符串 → 解码为 Vec<u8>\n"
-"                     → 打开句柄 → spi_enable(bitrate)\n"
+"    \"spi_transfer\" → parse bytes_hex string → decode to Vec<u8>\n"
+"                     → open handle → spi_enable(bitrate)\n"
 "                     → spi_transfer(bytes)\n"
-"                     → 将接收到的字节格式化为十六进制\n"
+"                     → return received bytes as hex\n"
 "\n"
-"    \"gpio_set\"   → 解析 direction + value 位掩码\n"
-"                   → 打开句柄 → gpio_set(dir, val)\n"
-"                   → 返回 ZcResponse{ output: \"ok\" }\n"
+"    \"gpio_set\"   → parse direction + value bitmasks\n"
+"                   → open handle → gpio_set(dir, val)\n"
+"                   → return ZcResponse{ output: \"ok\" }\n"
 "\n"
-"    \"gpio_get\"   → 打开句柄 → gpio_get()\n"
-"                   → 将位掩码值格式化为字符串\n"
+"    \"gpio_get\"   → open handle → gpio_get()\n"
+"                   → return bitmask value as string\n"
 "\n"
-"  遇到任何 AardvarkError → 返回 ZcResponse{ error: \"...\" }\n"
+"  on any AardvarkError → return ZcResponse{ error: \"...\" }\n"
 "```"
 
 #: src/setup/freebsd.md
@@ -41777,7 +41825,11 @@ msgid ""
 "// tool: sop_advance\n"
 "// args: { \"run_id\": \"<run-id>\", \"status\": \"completed\", \"output\": \"Bumped bzip2 1.0.8 → 1.0.9; source hash re-derived and verified.\" }\n"
 "```"
-msgstr "```jsonc\n// 工具: sop_advance\n// 参数: { \"run_id\": \"<run-id>\", \"status\": \"completed\", \"output\": \"Bumped bzip2 1.0.8 → 1.0.9; source hash re-derived and verified.\" }\n```"
+msgstr ""
+"```jsonc\n"
+"// tool: sop_advance\n"
+"// args: { \"run_id\": \"<run-id>\", \"status\": \"completed\", \"output\": \"Bumped bzip2 1.0.8 → 1.0.9; source hash re-derived and verified.\" }\n"
+"```"
 
 #: src/sop/example.md
 msgid ""
@@ -41785,7 +41837,11 @@ msgid ""
 "// tool: sop_execute\n"
 "// args: { \"name\": \"stagex-update\", \"payload\": \"{\\\"project\\\":{\\\"name\\\":\\\"bzip2\\\"},\\\"version\\\":\\\"1.0.9\\\",\\\"old_version\\\":\\\"1.0.8\\\"}\" }\n"
 "```"
-msgstr "```jsonc\n// 工具：sop_execute\n// 参数：{ \"name\": \"stagex-update\", \"payload\": \"{\\\"project\\\":{\\\"name\\\":\\\"bzip2\\\"},\\\"version\\\":\\\"1.0.9\\\",\\\"old_version\\\":\\\"1.0.8\\\"}\" }\n```"
+msgstr ""
+"```jsonc\n"
+"// tool: sop_execute\n"
+"// args: { \"name\": \"stagex-update\", \"payload\": \"{\\\"project\\\":{\\\"name\\\":\\\"bzip2\\\"},\\\"version\\\":\\\"1.0.9\\\",\\\"old_version\\\":\\\"1.0.8\\\"}\" }\n"
+"```"
 
 #: src/sop/example.md
 msgid ""
@@ -43102,7 +43158,7 @@ msgstr "`component:` 系统的哪个部分？"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`component:kernel` · `component:gateway` · `component:channels` · `component:tools` · `component:memory` · `component:security` · `component:hardware` · `component:docs` · `component:infra`"
-msgstr "`组件:内核` · `组件:网关` · `组件:通道` · `组件:工具` · `组件:内存` · `组件:安全` · `组件:硬件` · `组件:文档` · `组件:基础设施`"
+msgstr "`component:kernel` · `component:gateway` · `component:channels` · `component:tools` · `component:memory` · `component:security` · `component:hardware` · `component:docs` · `component:infra`"
 
 #: src/maintainers/labels.md
 msgid "`composio.rs`"
@@ -49839,7 +49895,7 @@ msgstr "zerocode 会自动查找守护进程的本地端点：在 Unix 上为 `<
 
 #: src/zerocode/environment.md
 msgid "zerocode forwarding (automatic)"
-msgstr "零代码转发（自动）"
+msgstr "zerocode forwarding (automatic)"
 
 #: src/getting-started/zerocode.md src/zerocode/overview.md
 msgid "zerocode is ZeroClaw's terminal interface for managing configuration, chatting with agents, and monitoring your daemon. It connects over a local IPC stream, a Unix domain socket on Unix or a named pipe on Windows, or over WebSocket Secure (WSS) for remote use."

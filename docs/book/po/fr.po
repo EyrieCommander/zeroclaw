@@ -352,7 +352,7 @@ msgstr "\"Markdown\""
 
 #: src/channels/matrix.md
 msgid "\"Matrix is configured correctly, checks pass, but the bot does not respond.\""
-msgstr "« La matrice est configurée correctement, les vérifications passent, mais le bot ne répond pas. »"
+msgstr "\"Matrix is configured correctly, checks pass, but the bot does not respond.\""
 
 #: src/developing/extension-examples.md
 msgid "\"Missing 'url' parameter\""
@@ -4093,7 +4093,7 @@ msgstr "**Mise en réseau.** `-p 42617:42617` publie la passerelle via le pont d
 
 #: src/contributing/pr-review-protocol.md
 msgid "**Never approve over another reviewer's active `CHANGES_REQUESTED`.** Resolve the prior block first."
-msgstr "**Ne validez jamais une demande de modifications en attente d’un autre réviseur.** Résolvez d’abord le blocage précédent."
+msgstr "**Never approve over another reviewer's active `CHANGES_REQUESTED`.** Resolve the prior block first."
 
 #: src/contributing/pr-review-protocol.md
 msgid "**Never merge.** That's a separate decision and a separate skill."
@@ -5234,7 +5234,7 @@ msgstr "**Streaming de la progression vers le parent.** Le parent voit la répon
 
 #: src/channels/acp.md
 msgid "**String:** `\"prompt\": \"Summarise the changes in the last commit.\"`"
-msgstr "`\"prompt\": \"Résume les modifications du dernier commit.\"`"
+msgstr "**String:** `\"prompt\": \"Summarise the changes in the last commit.\"`"
 
 #: src/reference/cli.md
 msgid "**Subcommands:**"
@@ -5630,7 +5630,7 @@ msgstr "**Utilisation :** `zeroclaw channel <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw channel add <CHANNEL_TYPE> <CONFIG>`"
-msgstr "**Utilisation :** `zeroclaw channel add <TYPE_DE_CANAL> <CONFIG>`"
+msgstr "**Usage:** `zeroclaw channel add <CHANNEL_TYPE> <CONFIG>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw channel bind-telegram <IDENTITY>`"
@@ -11991,7 +11991,7 @@ msgstr "ClawdTalk (SIP en temps réel)"
 
 #: src/channels/voice.md
 msgid "ClawdTalk shortcuts several of these by keeping the audio stream live; regular `voice_call` incurs STT + LLM + TTS sequentially."
-msgstr "ClawdTalk simplifie plusieurs de ces étapes en maintenant le flux audio en direct ; un appel vocal standard implique STT + LLM + TTS de manière séquentielle."
+msgstr "ClawdTalk shortcuts several of these by keeping the audio stream live; regular `voice_call` incurs STT + LLM + TTS sequentially."
 
 #: src/reference/config.md
 msgid "ClawdTalk voice channel instances (`[channels.clawdtalk.<alias>]`)."
@@ -21155,7 +21155,7 @@ msgstr "Correspond à `\"{board}/{signal}\"`."
 
 #: src/SUMMARY.md src/channels/overview.md src/channels/matrix.md
 msgid "Matrix"
-msgstr "Matrice"
+msgstr "Matrix"
 
 #: src/ops/network-deployment.md
 msgid "Matrix / Mattermost / Nextcloud Talk"
@@ -21191,11 +21191,11 @@ msgstr "Matrix diffuse les réponses en continu via le paramètre `stream_mode` 
 
 #: src/channels/matrix.md
 msgid "Matrix-channel-specific diagnostics:"
-msgstr "Diagnostics spécifiques au canal de la matrice :"
+msgstr "Matrix-channel-specific diagnostics:"
 
 #: src/ops/troubleshooting.md
 msgid "Matrix: \"unknown device\""
-msgstr "Matrice : « périphérique inconnu »"
+msgstr "Matrix: \"unknown device\""
 
 #: src/SUMMARY.md src/channels/overview.md src/channels/mattermost.md
 msgid "Mattermost"
@@ -32455,7 +32455,7 @@ msgstr "L'outil vérifie deux conditions de protection dans l'ordre :"
 
 #: src/agents/delegation.md
 msgid "The tool constructs `AgentRunOverrides { security, memory: None, is_subagent: true }` and awaits `crate::agent::run` (`crates/zeroclaw-runtime/src/agent/loop_.rs`, `pub async fn run`) inside a tracing scope keyed `subagent-<uuid>`. The parent's `tool` execution **blocks** until the child returns."
-msgstr "L"
+msgstr "The tool constructs `AgentRunOverrides { security, memory: None, is_subagent: true }` and awaits `crate::agent::run` (`crates/zeroclaw-runtime/src/agent/loop_.rs`, `pub async fn run`) inside a tracing scope keyed `subagent-<uuid>`. The parent's `tool` execution **blocks** until the child returns."
 
 #: src/security/tool-receipts.md
 msgid "The tool result (with the receipt) is fed back to the model."
@@ -36563,7 +36563,7 @@ msgstr "ZeroClaw a besoin de trois choses :"
 
 #: src/channels/line.md
 msgid "ZeroClaw not running, or port not reachable"
-msgstr "ZéroClaw ne s'exécute pas, ou le port n'est pas accessible"
+msgstr "ZeroClaw not running, or port not reachable"
 
 #: src/hardware/arduino-uno-q-setup.md
 msgid "ZeroClaw on Arduino Uno Q: Step-by-Step Guide"
@@ -37258,7 +37258,7 @@ msgstr "[Mainteneurs → Vue d'ensemble](../maintainers/index.md) : ce que font 
 
 #: src/channels/overview.md
 msgid "[Matrix](./matrix.md)"
-msgstr "[Matrice](./matrix.md)"
+msgstr "[Matrix](./matrix.md)"
 
 #: src/channels/chat-others.md
 msgid "[Matrix](./matrix.md): E2EE, device verification, Synapse/Dendrite specifics"
@@ -39157,7 +39157,7 @@ msgstr "`\"GOOGLE_VERTEX_API_KEY\"`"
 
 #: src/reference/config.md
 msgid "`\"Input\"`"
-msgstr "`\"Entrée\"`"
+msgstr "`\"Input\"`"
 
 #: src/reference/config.md
 msgid "`\"OPENAI_API_KEY\"`"
@@ -39169,7 +39169,7 @@ msgstr "`\"POST\"`"
 
 #: src/reference/config.md
 msgid "`\"Result\"`"
-msgstr "`\"Résultat\"`"
+msgstr "`\"Result\"`"
 
 #: src/reference/config.md
 msgid "`\"STABILITY_API_KEY\"`"
@@ -39177,7 +39177,7 @@ msgstr "`\"STABILITY_API_KEY\"`"
 
 #: src/reference/config.md
 msgid "`\"Status\"`"
-msgstr "`\"Statut\"`"
+msgstr "`\"Status\"`"
 
 #: src/reference/config.md
 msgid "`\"ZeroClaw\"`"
@@ -39189,7 +39189,7 @@ msgstr "`\"agent_browser\"`"
 
 #: src/reference/config.md
 msgid "`\"alloy\"`"
-msgstr "`\"alliage\"`"
+msgstr "`\"alloy\"`"
 
 #: src/reference/config.md
 msgid "`\"alpine:3.20\"`"
@@ -39221,7 +39221,7 @@ msgstr "`\"default\"`"
 
 #: src/reference/config.md
 msgid "`\"disabled\"`"
-msgstr "`\"désactivé\"`"
+msgstr "`\"disabled\"`"
 
 #: src/reference/config.md
 msgid "`\"duckduckgo\"`"
@@ -39233,7 +39233,7 @@ msgstr "`\"en\"`"
 
 #: src/reference/config.md
 msgid "`\"en-US\"`"
-msgstr "`\"fr-FR\"`"
+msgstr "`\"en-US\"`"
 
 #: src/reference/config.md
 msgid "`\"fal-ai/flux/schnell\"`"
@@ -39277,7 +39277,7 @@ msgstr "`\"localhost\"`"
 
 #: src/reference/config.md
 msgid "`\"low\"`"
-msgstr "`\"faible\"`"
+msgstr "`\"low\"`"
 
 #: src/reference/config.md
 msgid "`\"master\"`"
@@ -39293,11 +39293,11 @@ msgstr "`\"mp3\"`"
 
 #: src/reference/config.md
 msgid "`\"native\"`"
-msgstr "`\"natif\"`"
+msgstr "`\"native\"`"
 
 #: src/reference/config.md
 msgid "`\"none\"`"
-msgstr "`\"aucun\"`"
+msgstr "`\"none\"`"
 
 #: src/reference/config.md
 msgid "`\"nova-2\"`"
@@ -39333,7 +39333,7 @@ msgstr "`\"strict\"`"
 
 #: src/reference/config.md
 msgid "`\"supervised\"`"
-msgstr "`\"supervisé\"`"
+msgstr "`\"supervised\"`"
 
 #: src/reference/config.md
 msgid "`\"text-embedding-3-small\"`"
@@ -40806,7 +40806,7 @@ msgstr "`LINE: Message de <userId> rejetée par la politique`"
 
 #: src/channels/line.md
 msgid "`LINE: audio message ignored (transcription not configured)`"
-msgstr "`MESSAGE AUDIO ignoré (transcription non configurée)`"
+msgstr "`LINE: audio message ignored (transcription not configured)`"
 
 #: src/channels/line.md
 msgid "`LINE: invalid X-Line-Signature`"
@@ -41054,7 +41054,7 @@ msgstr "`[\"*\"]`"
 
 #: src/reference/config.md
 msgid "`[\"Read\",\"Edit\",\"Bash\",\"Write\"]`"
-msgstr "`[\"Lire\",\"Modifier\",\"Bash\",\"Écrire\"]`"
+msgstr "`[\"Read\",\"Edit\",\"Bash\",\"Write\"]`"
 
 #: src/reference/config.md
 msgid "`[\"aws\",\"azure\",\"gcp\"]`"
@@ -41216,14 +41216,14 @@ msgid ""
 "```"
 msgstr ""
 "```\n"
-" FICHIERS SDK       aardvark-sys            noyau ZeroClaw\n"
+" SDK FILES          aardvark-sys            ZeroClaw core\n"
 " (vendor/)          (crates/)               (src/)\n"
 "─────────────────────────────────────────────────────────────────\n"
 "\n"
 " aardvark.h  ──►  build.rs         boot()\n"
 " aardvark.so       (bindgen)    ──►  find_devices()\n"
 "                       │                │\n"
-"                  bindings.rs           │  vec![0]  (un adaptateur)\n"
+"                  bindings.rs           │  vec![0]  (one adapter)\n"
 "                       │                ▼\n"
 "                  lib.rs           register(\"aardvark0\")\n"
 "                  AardvarkHandle   attach_transport(AardvarkTransport)\n"
@@ -41231,37 +41231,37 @@ msgstr ""
 "                       │                ▼\n"
 "                       │         ToolRegistry::load()\n"
 "                       │           has_aardvark() == true\n"
-"                       │           → charger les outils aardvark\n"
+"                       │           → load aardvark tools\n"
 "                       │\n"
 "─────────────────────────────────────────────────────────────────\n"
 "\n"
-" MESSAGE UTILISATEUR : « scanne le bus i2c »\n"
+" USER MESSAGE: \"scan the i2c bus\"\n"
 "\n"
-"  boucle de l'agent\n"
+"  agent loop\n"
 "      │\n"
 "      ▼\n"
 "  I2cScanTool.call()\n"
 "      │\n"
 "      ▼\n"
 "  resolve_aardvark_device(\"aardvark0\")\n"
-"      │  retourne l'Arc du transport\n"
+"      │  returns transport Arc\n"
 "      ▼\n"
 "  AardvarkTransport.send(ZcCommand{ name: \"i2c_scan\" })\n"
 "      │\n"
 "      ▼\n"
-"  AardvarkHandle::open_port(0)    ← ouvre la connexion USB\n"
+"  AardvarkHandle::open_port(0)    ← opens USB connection\n"
 "      │\n"
 "      ▼\n"
-"  aa_i2c_read(0x08..0x77)         ← sonde chaque adresse\n"
+"  aa_i2c_read(0x08..0x77)         ← probes each address\n"
 "      │\n"
 "      ▼\n"
-"  AardvarkHandle libéré (drop)     ← connexion USB fermée\n"
+"  AardvarkHandle dropped           ← USB connection closed\n"
 "      │\n"
 "      ▼\n"
 "  ZcResponse{ output: \"Found: 0x48, 0x68\" }\n"
 "      │\n"
 "      ▼\n"
-"  l'agent envoie la réponse à l'utilisateur : « J'ai trouvé deux périphériques I2C : 0x48 et 0x68 »\n"
+"  agent sends reply to user: \"I found two I2C devices: 0x48 and 0x68\"\n"
 "```"
 
 #: src/foundations/fnd-002-documentation-standards.md
@@ -41472,7 +41472,7 @@ msgstr ""
 "boot()\n"
 "  ...\n"
 "  aardvark_ports = aardvark_sys::AardvarkHandle::find_devices()\n"
-"  // → [] en mode stub, [0] si un adaptateur est branché\n"
+"  // → [] in stub mode, [0] if one adapter is plugged in\n"
 "\n"
 "  for (i, port) in aardvark_ports:\n"
 "    alias = registry.register(\"aardvark\", vid=0x2b76, ...)\n"
@@ -41481,7 +41481,7 @@ msgstr ""
 "    transport = AardvarkTransport::new(port, bitrate=100kHz)\n"
 "    registry.attach_transport(alias, transport, {i2c:true, spi:true, gpio:true})\n"
 "\n"
-"    log \"[registry] aardvark0 prêt → Port Total Phase 0\"\n"
+"    log \"[registry] aardvark0 ready → Total Phase port 0\"\n"
 "  ...\n"
 "```"
 
@@ -41611,7 +41611,7 @@ msgstr ""
 "```\n"
 "my-toolkit/\n"
 "  manifest.toml              # capabilities = [\"skill\"]\n"
-"  README.md                  # aperçu optionnel au niveau du bundle\n"
+"  README.md                  # optional bundle-level overview\n"
 "  skills/\n"
 "    design-review/\n"
 "      SKILL.md\n"
@@ -41706,38 +41706,38 @@ msgstr ""
 "```\n"
 "send(ZcCommand) → ZcResponse\n"
 "\n"
-"  extraire le nom de la commande depuis cmd.name\n"
-"  extraire les paramètres depuis cmd.params (valeurs serde_json)\n"
+"  extract command name from cmd.name\n"
+"  extract parameters from cmd.params (serde_json values)\n"
 "\n"
-"  correspondre à cmd.name :\n"
+"  match cmd.name:\n"
 "\n"
-"    \"i2c_scan\"   → ouvrir le handle → appeler i2c_scan()\n"
-"                   → formater les adresses trouvées sous forme de liste hexadécimale\n"
-"                   → retourner ZcResponse{ output: \"0x48, 0x68\" }\n"
+"    \"i2c_scan\"   → open handle → call i2c_scan()\n"
+"                   → format found addresses as hex list\n"
+"                   → return ZcResponse{ output: \"0x48, 0x68\" }\n"
 "\n"
-"    \"i2c_read\"   → analyser addr (chaîne hexadécimale) + len (nombre)\n"
-"                   → ouvrir le handle → i2c_enable(bitrate)\n"
-"                   → appeler i2c_read(addr, len)\n"
-"                   → formater les octets en hexadécimal\n"
-"                   → retourner ZcResponse{ output: \"0xAB 0xCD\" }\n"
+"    \"i2c_read\"   → parse addr (hex string) + len (number)\n"
+"                   → open handle → i2c_enable(bitrate)\n"
+"                   → call i2c_read(addr, len)\n"
+"                   → format bytes as hex\n"
+"                   → return ZcResponse{ output: \"0xAB 0xCD\" }\n"
 "\n"
-"    \"i2c_write\"  → analyser addr + les octets de données\n"
-"                   → ouvrir le handle → i2c_write(addr, data)\n"
-"                   → retourner ZcResponse{ output: \"ok\" }\n"
+"    \"i2c_write\"  → parse addr + data bytes\n"
+"                   → open handle → i2c_write(addr, data)\n"
+"                   → return ZcResponse{ output: \"ok\" }\n"
 "\n"
-"    \"spi_transfer\" → analyser la chaîne bytes_hex → décoder en Vec<u8>\n"
-"                     → ouvrir le handle → spi_enable(bitrate)\n"
+"    \"spi_transfer\" → parse bytes_hex string → decode to Vec<u8>\n"
+"                     → open handle → spi_enable(bitrate)\n"
 "                     → spi_transfer(bytes)\n"
-"                     → retourner les octets reçus en hexadécimal\n"
+"                     → return received bytes as hex\n"
 "\n"
-"    \"gpio_set\"   → analyser les masques de bits direction + valeur\n"
-"                   → ouvrir le handle → gpio_set(dir, val)\n"
-"                   → retourner ZcResponse{ output: \"ok\" }\n"
+"    \"gpio_set\"   → parse direction + value bitmasks\n"
+"                   → open handle → gpio_set(dir, val)\n"
+"                   → return ZcResponse{ output: \"ok\" }\n"
 "\n"
-"    \"gpio_get\"   → ouvrir le handle → gpio_get()\n"
-"                   → retourner la valeur du masque de bits sous forme de chaîne\n"
+"    \"gpio_get\"   → open handle → gpio_get()\n"
+"                   → return bitmask value as string\n"
 "\n"
-"  en cas d'erreur AardvarkError → retourner ZcResponse{ error: \"...\" }\n"
+"  on any AardvarkError → return ZcResponse{ error: \"...\" }\n"
 "```"
 
 #: src/setup/freebsd.md
@@ -41881,7 +41881,7 @@ msgid ""
 msgstr ""
 "```jsonc\n"
 "// tool: sop_advance\n"
-"// args: { \"run_id\": \"<run-id>\", \"status\": \"completed\", \"output\": \"Passage de bzip2 1.0.8 → 1.0.9 ; hachage de la source recalculé et vérifié.\" }\n"
+"// args: { \"run_id\": \"<run-id>\", \"status\": \"completed\", \"output\": \"Bumped bzip2 1.0.8 → 1.0.9; source hash re-derived and verified.\" }\n"
 "```"
 
 #: src/sop/example.md
@@ -43296,7 +43296,7 @@ msgstr "`component:` Quelle partie du système ?"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`component:kernel` · `component:gateway` · `component:channels` · `component:tools` · `component:memory` · `component:security` · `component:hardware` · `component:docs` · `component:infra`"
-msgstr "`composant:kernel` · `composant:gateway` · `composant:channels` · `composant:tools` · `composant:memory` · `composant:security` · `composant:hardware` · `composant:docs` · `composant:infra`"
+msgstr "`component:kernel` · `component:gateway` · `component:channels` · `component:tools` · `component:memory` · `component:security` · `component:hardware` · `component:docs` · `component:infra`"
 
 #: src/maintainers/labels.md
 msgid "`composio.rs`"
@@ -43879,7 +43879,7 @@ msgstr "`docs/book/src/contributing/` ou par crate"
 
 #: src/foundations/fnd-002-documentation-standards.md
 msgid "`docs/book/src/foundations/`"
-msgstr "`docs/book/src/fondations/`"
+msgstr "`docs/book/src/foundations/`"
 
 #: src/contributing/pr-review-protocol.md
 msgid "`docs/book/src/foundations/fnd-001-intentional-architecture.md`"
@@ -44256,7 +44256,7 @@ msgstr "`fill` génère `<locale>/<domain>.ftl` pour chaque racine de catalogue 
 
 #: src/hardware/aardvark.md
 msgid "`find_devices()`"
-msgstr "`trouver_appareils()`"
+msgstr "`find_devices()`"
 
 #: src/reference/config.md
 msgid "`firecrawl`"
@@ -45831,7 +45831,7 @@ msgstr "`priority:` Quel est le degré d'urgence ?"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`priority:critical`"
-msgstr "`priorité : critique`"
+msgstr "`priority:critical`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`priority:high`"
@@ -45839,11 +45839,11 @@ msgstr "`priority:high`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`priority:low`"
-msgstr "`priorité : basse`"
+msgstr "`priority:low`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`priority:medium`"
-msgstr "`priorité : moyenne`"
+msgstr "`priority:medium`"
 
 #: src/reference/config.md
 msgid "`probe_target`"
@@ -45883,7 +45883,7 @@ msgstr "`provider:bedrock`"
 
 #: src/maintainers/labels.md
 msgid "`provider:claude-code`"
-msgstr "`fournisseur:claude-code`"
+msgstr "`provider:claude-code`"
 
 #: src/maintainers/labels.md
 msgid "`provider:compatible`"
@@ -45899,7 +45899,7 @@ msgstr "`provider:gemini`"
 
 #: src/maintainers/labels.md
 msgid "`provider:glm`"
-msgstr "`fournisseur:glm`"
+msgstr "`provider:glm`"
 
 #: src/maintainers/labels.md
 msgid "`provider:kilocli`"
@@ -45907,7 +45907,7 @@ msgstr "`provider:kilocli`"
 
 #: src/maintainers/labels.md
 msgid "`provider:ollama`"
-msgstr "`fournisseur:ollama`"
+msgstr "`provider:ollama`"
 
 #: src/maintainers/labels.md
 msgid "`provider:openai`"
@@ -46035,7 +46035,7 @@ msgstr "`quickstart` — Quickstart — créez un agent fonctionnel de bout en b
 
 #: src/maintainers/reviewer-playbook.md src/maintainers/labels.md
 msgid "`r:needs-repro`"
-msgstr "`r:besoin-de-reproduction`"
+msgstr "`r:needs-repro`"
 
 #: src/maintainers/reviewer-playbook.md src/maintainers/labels.md
 msgid "`r:support`"
@@ -46291,7 +46291,7 @@ msgstr "`rfc:` Statut spécifique aux RFC"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`rfc:accepted` · `rfc:rejected` · `rfc:revision-requested`"
-msgstr "`rfc:accepté` · `rfc:rejeté` · `rfc:révision-demandée`"
+msgstr "`rfc:accepted` · `rfc:rejected` · `rfc:revision-requested`"
 
 #: src/maintainers/reviewer-playbook.md src/maintainers/labels.md
 msgid "`risk: high`"
@@ -47236,12 +47236,12 @@ msgstr "`status:` Où en est-on dans le processus ?"
 #: src/foundations/fnd-003-governance.md src/maintainers/reviewer-playbook.md
 #: src/maintainers/labels.md
 msgid "`status:accepted`"
-msgstr "`status:accepté`"
+msgstr "`status:accepted`"
 
 #: src/foundations/fnd-003-governance.md src/maintainers/reviewer-playbook.md
 #: src/maintainers/labels.md
 msgid "`status:blocked`"
-msgstr "`status:bloqué`"
+msgstr "`status:blocked`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`status:discussion`"
@@ -47249,20 +47249,20 @@ msgstr "`status:discussion`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`status:good-first-issue`"
-msgstr "`status:bonne-première-problématique`"
+msgstr "`status:good-first-issue`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`status:help-wanted`"
-msgstr "`status:besoin-d-aide`"
+msgstr "`status:help-wanted`"
 
 #: src/foundations/fnd-003-governance.md src/maintainers/reviewer-playbook.md
 #: src/maintainers/labels.md
 msgid "`status:in-progress`"
-msgstr "`status:en-cours`"
+msgstr "`status:in-progress`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`status:needs-triage`"
-msgstr "`status:besoin-de-triage`"
+msgstr "`status:needs-triage`"
 
 #: src/foundations/fnd-003-governance.md src/maintainers/reviewer-playbook.md
 #: src/maintainers/labels.md

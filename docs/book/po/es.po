@@ -352,7 +352,7 @@ msgstr "\"Markdown\""
 
 #: src/channels/matrix.md
 msgid "\"Matrix is configured correctly, checks pass, but the bot does not respond.\""
-msgstr "La matriz está configurada correctamente, las verificaciones pasan, pero el bot no responde."
+msgstr "\"Matrix is configured correctly, checks pass, but the bot does not respond.\""
 
 #: src/developing/extension-examples.md
 msgid "\"Missing 'url' parameter\""
@@ -5231,7 +5231,7 @@ msgstr "**Transmisión del progreso de vuelta al elemento principal.** El elemen
 
 #: src/channels/acp.md
 msgid "**String:** `\"prompt\": \"Summarise the changes in the last commit.\"`"
-msgstr "`\"prompt\": \"Resume los cambios del último commit.\"`"
+msgstr "**String:** `\"prompt\": \"Summarise the changes in the last commit.\"`"
 
 #: src/reference/cli.md
 msgid "**Subcommands:**"
@@ -5567,7 +5567,7 @@ msgstr "**Uso:** Flashee `firmware/esp32` en el ESP32, agregue `board = \"esp32\
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw [OPTIONS] <COMMAND>`"
-msgstr "**Uso:** `zeroclaw [OPCIONES] <COMANDO>`"
+msgstr "**Usage:** `zeroclaw [OPTIONS] <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw acp [OPTIONS]`"
@@ -5579,7 +5579,7 @@ msgstr "**Uso:** `zeroclaw agent [OPTIONS] --agent <AGENT>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw auth <COMMAND>`"
-msgstr "**Uso:** `zeroclaw auth <COMANDO>`"
+msgstr "**Usage:** `zeroclaw auth <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw auth list`"
@@ -5623,11 +5623,11 @@ msgstr "**Uso:** `zeroclaw browse [PATH]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw channel <COMMAND>`"
-msgstr "**Uso:** `zeroclaw channel <COMANDO>`"
+msgstr "**Usage:** `zeroclaw channel <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw channel add <CHANNEL_TYPE> <CONFIG>`"
-msgstr "**Uso:** `zeroclaw channel add <TIPO_CANAL> <CONFIG>`"
+msgstr "**Usage:** `zeroclaw channel add <CHANNEL_TYPE> <CONFIG>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw channel bind-telegram <IDENTITY>`"
@@ -5659,7 +5659,7 @@ msgstr "**Uso:** `zeroclaw completions <SHELL>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw config <COMMAND>`"
-msgstr "**Uso:** `zeroclaw config <COMANDO>`"
+msgstr "**Usage:** `zeroclaw config <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw config docs`"
@@ -5703,7 +5703,7 @@ msgstr "**Uso:** `zeroclaw config set peripherals.datasheet-dir docs/datasheets`
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw cron <COMMAND>`"
-msgstr "**Uso:** `zeroclaw cron <COMANDO>`"
+msgstr "**Usage:** `zeroclaw cron <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw cron add [OPTIONS] --agent <AGENT_ALIAS> <EXPRESSION> <COMMAND>`"
@@ -5751,11 +5751,11 @@ msgstr "**Uso:** `zeroclaw desktop [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw doctor [COMMAND]`"
-msgstr "**Uso:** `zeroclaw doctor [COMANDO]`"
+msgstr "**Usage:** `zeroclaw doctor [COMMAND]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw doctor models [OPTIONS]`"
-msgstr "**Uso:** `zeroclaw doctor models [OPCIONES]`"
+msgstr "**Usage:** `zeroclaw doctor models [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw doctor traces [OPTIONS]`"
@@ -5763,11 +5763,11 @@ msgstr "**Uso:** `zeroclaw doctor traces [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw estop [OPTIONS] [COMMAND]`"
-msgstr "**Uso:** `zeroclaw estop [OPCIONES] [COMANDO]`"
+msgstr "**Usage:** `zeroclaw estop [OPTIONS] [COMMAND]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw estop resume [OPTIONS]`"
-msgstr "**Uso:** `zeroclaw estop resume [OPCIONES]`"
+msgstr "**Usage:** `zeroclaw estop resume [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw estop status`"
@@ -5775,7 +5775,7 @@ msgstr "**Uso:** `zeroclaw estop status`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw gateway [COMMAND]`"
-msgstr "**Uso:** `zeroclaw gateway [COMANDO]`"
+msgstr "**Usage:** `zeroclaw gateway [COMMAND]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw gateway get-paircode [OPTIONS]`"
@@ -5791,7 +5791,7 @@ msgstr "**Uso:** `zeroclaw gateway start [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw hardware <COMMAND>`"
-msgstr "**Uso:** `zeroclaw hardware <COMANDO>`"
+msgstr "**Usage:** `zeroclaw hardware <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw hardware discover`"
@@ -5799,7 +5799,7 @@ msgstr "**Uso:** `zeroclaw hardware discover`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw hardware info [OPTIONS]`"
-msgstr "**Uso:** `zeroclaw hardware info [OPCIONES]`"
+msgstr "**Usage:** `zeroclaw hardware info [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw hardware introspect <PATH>`"
@@ -5807,7 +5807,7 @@ msgstr "**Uso:** `zeroclaw hardware introspect <PATH>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw integrations <COMMAND>`"
-msgstr "**Uso:** `zeroclaw integrations <COMANDO>`"
+msgstr "**Usage:** `zeroclaw integrations <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw integrations info <NAME>`"
@@ -5823,11 +5823,11 @@ msgstr "**Uso:** `zeroclaw locales fetch [OPTIONS] <LOCALE>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw memory <COMMAND>`"
-msgstr "**Uso:** `zeroclaw memory <COMANDO>`"
+msgstr "**Usage:** `zeroclaw memory <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw memory clear [OPTIONS]`"
-msgstr "**Uso:** `zeroclaw memory clear [OPCIONES]`"
+msgstr "**Usage:** `zeroclaw memory clear [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw memory get <KEY>`"
@@ -5835,7 +5835,7 @@ msgstr "**Uso:** `zeroclaw memory get <KEY>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw memory list [OPTIONS]`"
-msgstr "**Uso:** `zeroclaw memory list [OPCIONES]`"
+msgstr "**Usage:** `zeroclaw memory list [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw memory reindex`"
@@ -5847,7 +5847,7 @@ msgstr "**Uso:** `zeroclaw memory stats`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw migrate <COMMAND>`"
-msgstr "**Uso:** `zeroclaw migrate <COMANDO>`"
+msgstr "**Usage:** `zeroclaw migrate <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw migrate openclaw [OPTIONS]`"
@@ -5855,7 +5855,7 @@ msgstr "**Uso:** `zeroclaw migrate openclaw [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw models <COMMAND>`"
-msgstr "**Uso:** `zeroclaw models <COMANDO>`"
+msgstr "**Usage:** `zeroclaw models <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw models list [OPTIONS]`"
@@ -5955,7 +5955,7 @@ msgstr "**Uso:** `zeroclaw onboard tunnel`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw peripheral <COMMAND>`"
-msgstr "**Uso:** `zeroclaw peripheral <COMANDO>`"
+msgstr "**Usage:** `zeroclaw peripheral <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw peripheral add <BOARD> <PATH>`"
@@ -5963,7 +5963,7 @@ msgstr "**Uso:** `zeroclaw peripheral add <BOARD> <PATH>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw peripheral flash [OPTIONS]`"
-msgstr "**Uso:** `zeroclaw peripheral flash [OPCIONES]`"
+msgstr "**Usage:** `zeroclaw peripheral flash [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw peripheral flash-nucleo`"
@@ -5975,7 +5975,7 @@ msgstr "**Uso:** `zeroclaw peripheral list`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw peripheral setup-uno-q [OPTIONS]`"
-msgstr "**Uso:** `zeroclaw peripheral setup-uno-q [OPCIONES]`"
+msgstr "**Usage:** `zeroclaw peripheral setup-uno-q [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw providers`"
@@ -5987,11 +5987,11 @@ msgstr "**Uso:** `zeroclaw quickstart [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw self-test [OPTIONS]`"
-msgstr "**Uso:** `zeroclaw self-test [OPCIONES]`"
+msgstr "**Usage:** `zeroclaw self-test [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw service [OPTIONS] <COMMAND>`"
-msgstr "**Uso:** `zeroclaw service [OPTIONS] <COMANDO>`"
+msgstr "**Usage:** `zeroclaw service [OPTIONS] <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw service install`"
@@ -5999,7 +5999,7 @@ msgstr "**Uso:** `zeroclaw service install`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw service logs [OPTIONS]`"
-msgstr "**Uso:** `zeroclaw service logs [OPCIONES]`"
+msgstr "**Usage:** `zeroclaw service logs [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw service restart`"
@@ -6023,7 +6023,7 @@ msgstr "**Uso:** `zeroclaw service uninstall`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw skills <COMMAND>`"
-msgstr "**Uso:** `zeroclaw skills <COMANDO>`"
+msgstr "**Usage:** `zeroclaw skills <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw skills add [OPTIONS] <NAME>`"
@@ -6075,7 +6075,7 @@ msgstr "**Uso:** `zeroclaw skills test [OPTIONS] [NAME]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw sop <COMMAND>`"
-msgstr "**Uso:** `zeroclaw sop <COMANDO>`"
+msgstr "**Usage:** `zeroclaw sop <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw sop list`"
@@ -20212,7 +20212,7 @@ msgstr "L"
 
 #: src/SUMMARY.md src/channels/overview.md src/channels/line.md
 msgid "LINE"
-msgstr "LÍNEA"
+msgstr "LINE"
 
 #: src/reference/config.md
 msgid "LINE Messaging API channel instances (`[channels.line.<alias>]`)."
@@ -21152,7 +21152,7 @@ msgstr "Coincide con `\"{board}/{signal}\"`."
 
 #: src/SUMMARY.md src/channels/overview.md src/channels/matrix.md
 msgid "Matrix"
-msgstr "Matriz"
+msgstr "Matrix"
 
 #: src/ops/network-deployment.md
 msgid "Matrix / Mattermost / Nextcloud Talk"
@@ -21192,7 +21192,7 @@ msgstr "Diagnósticos específicos del canal de Matrix:"
 
 #: src/ops/troubleshooting.md
 msgid "Matrix: \"unknown device\""
-msgstr "Matriz: \"dispositivo desconocido\""
+msgstr "Matrix: \"unknown device\""
 
 #: src/SUMMARY.md src/channels/overview.md src/channels/mattermost.md
 msgid "Mattermost"
@@ -22705,7 +22705,7 @@ msgstr "Observabilidad"
 
 #: src/reference/config.md
 msgid "Observability backend configuration (`[observability]` section)."
-msgstr "Configuración del backend de observabilidad (sección `[observabilidad]`)."
+msgstr "Observability backend configuration (`[observability]` section)."
 
 #: src/foundations/fnd-006-zero-compromise-in-practice.md
 msgid "Observability discipline"
@@ -27960,7 +27960,7 @@ msgstr "Los marcadores de posición en literales de cadena de Rust como `\"raw e
 
 #: src/contributing/how-to.md
 msgid "Rustdoc (`///`) changes update the API reference automatically on deploy"
-msgstr "Rustdoc (`/ /`) actualiza automáticamente la referencia de la API durante el despliegue."
+msgstr "Rustdoc (`///`) changes update the API reference automatically on deploy"
 
 #: src/foundations/fnd-003-governance.md
 msgid "S"
@@ -34352,11 +34352,11 @@ msgstr "Procesos de usuario"
 
 #: src/hardware/hardware-peripherals-design.md
 msgid "User sends Telegram: _\"What are the readable memory addresses on this USB device?\"_"
-msgstr "¿Cuáles son las direcciones de memoria legibles en este dispositivo USB?"
+msgstr "User sends Telegram: _\"What are the readable memory addresses on this USB device?\"_"
 
 #: src/hardware/hardware-peripherals-design.md
 msgid "User sends WhatsApp: _\"Turn on LED on pin 13\"_"
-msgstr "\"Enciende el LED en el pin 13\""
+msgstr "User sends WhatsApp: _\"Turn on LED on pin 13\"_"
 
 #: src/foundations/fnd-001-intentional-architecture.md
 msgid "User wants"
@@ -39154,7 +39154,7 @@ msgstr "`\"GOOGLE_VERTEX_API_KEY\"`"
 
 #: src/reference/config.md
 msgid "`\"Input\"`"
-msgstr "`\"Entrada\"`"
+msgstr "`\"Input\"`"
 
 #: src/reference/config.md
 msgid "`\"OPENAI_API_KEY\"`"
@@ -39166,7 +39166,7 @@ msgstr "`\"POST\"`"
 
 #: src/reference/config.md
 msgid "`\"Result\"`"
-msgstr "`\"Resultado\"`"
+msgstr "`\"Result\"`"
 
 #: src/reference/config.md
 msgid "`\"STABILITY_API_KEY\"`"
@@ -39174,7 +39174,7 @@ msgstr "`\"STABILITY_API_KEY\"`"
 
 #: src/reference/config.md
 msgid "`\"Status\"`"
-msgstr "`\"Estado\"`"
+msgstr "`\"Status\"`"
 
 #: src/reference/config.md
 msgid "`\"ZeroClaw\"`"
@@ -39186,7 +39186,7 @@ msgstr "`\"agent_browser\"`"
 
 #: src/reference/config.md
 msgid "`\"alloy\"`"
-msgstr "`\"aleación\"`"
+msgstr "`\"alloy\"`"
 
 #: src/reference/config.md
 msgid "`\"alpine:3.20\"`"
@@ -39214,7 +39214,7 @@ msgstr "`\"dall-e-3\"`"
 
 #: src/reference/config.md
 msgid "`\"default\"`"
-msgstr "`\"predeterminado\"`"
+msgstr "`\"default\"`"
 
 #: src/reference/config.md
 msgid "`\"disabled\"`"
@@ -39230,7 +39230,7 @@ msgstr "`\"en\"`"
 
 #: src/reference/config.md
 msgid "`\"en-US\"`"
-msgstr "`\"es-ES\"`"
+msgstr "`\"en-US\"`"
 
 #: src/reference/config.md
 msgid "`\"fal-ai/flux/schnell\"`"
@@ -39274,7 +39274,7 @@ msgstr "`\"localhost\"`"
 
 #: src/reference/config.md
 msgid "`\"low\"`"
-msgstr "`\"bajo\"`"
+msgstr "`\"low\"`"
 
 #: src/reference/config.md
 msgid "`\"master\"`"
@@ -39290,7 +39290,7 @@ msgstr "`\"mp3\"`"
 
 #: src/reference/config.md
 msgid "`\"native\"`"
-msgstr "`\"nativo\"`"
+msgstr "`\"native\"`"
 
 #: src/reference/config.md
 msgid "`\"none\"`"
@@ -39330,7 +39330,7 @@ msgstr "`\"strict\"`"
 
 #: src/reference/config.md
 msgid "`\"supervised\"`"
-msgstr "`\"supervisado\"`"
+msgstr "`\"supervised\"`"
 
 #: src/reference/config.md
 msgid "`\"text-embedding-3-small\"`"
@@ -41051,7 +41051,7 @@ msgstr "`[\"*\"]`"
 
 #: src/reference/config.md
 msgid "`[\"Read\",\"Edit\",\"Bash\",\"Write\"]`"
-msgstr "`[\"Leer\",\"Editar\",\"Bash\",\"Escribir\"]`"
+msgstr "`[\"Read\",\"Edit\",\"Bash\",\"Write\"]`"
 
 #: src/reference/config.md
 msgid "`[\"aws\",\"azure\",\"gcp\"]`"
@@ -41087,7 +41087,7 @@ msgstr "`[\"shell\",\"file_write\",\"browser_open\",\"browser\",\"memory_forget\
 
 #: src/reference/config.md
 msgid "`[\"stability\",\"imagen\",\"dalle\",\"flux\"]`"
-msgstr "`[\"estabilidad\",\"imagen\",\"dalle\",\"flux\"]`"
+msgstr "`[\"stability\",\"imagen\",\"dalle\",\"flux\"]`"
 
 #: src/reference/config.md
 msgid "`[\"terraform\"]`"
@@ -41151,7 +41151,7 @@ msgstr "`[skills].allow_scripts`"
 
 #: src/channels/line.md
 msgid "`[transcription]` not configured"
-msgstr "`[transcripción]` no configurado"
+msgstr "`[transcription]` not configured"
 
 #: src/architecture/rpc-socket.md
 msgid "`\\\\.\\pipe\\zeroclaw-<hash>` where `<hash>` is derived from `data_dir`"
@@ -41213,14 +41213,14 @@ msgid ""
 "```"
 msgstr ""
 "```\n"
-" ARCHIVOS SDK       aardvark-sys            núcleo de ZeroClaw\n"
+" SDK FILES          aardvark-sys            ZeroClaw core\n"
 " (vendor/)          (crates/)               (src/)\n"
 "─────────────────────────────────────────────────────────────────\n"
 "\n"
 " aardvark.h  ──►  build.rs         boot()\n"
 " aardvark.so       (bindgen)    ──►  find_devices()\n"
 "                       │                │\n"
-"                  bindings.rs           │  vec![0]  (un adaptador)\n"
+"                  bindings.rs           │  vec![0]  (one adapter)\n"
 "                       │                ▼\n"
 "                  lib.rs           register(\"aardvark0\")\n"
 "                  AardvarkHandle   attach_transport(AardvarkTransport)\n"
@@ -41228,37 +41228,37 @@ msgstr ""
 "                       │                ▼\n"
 "                       │         ToolRegistry::load()\n"
 "                       │           has_aardvark() == true\n"
-"                       │           → carga las herramientas de aardvark\n"
+"                       │           → load aardvark tools\n"
 "                       │\n"
 "─────────────────────────────────────────────────────────────────\n"
 "\n"
-" MENSAJE DEL USUARIO: \"escanea el bus i2c\"\n"
+" USER MESSAGE: \"scan the i2c bus\"\n"
 "\n"
-"  bucle del agente\n"
+"  agent loop\n"
 "      │\n"
 "      ▼\n"
 "  I2cScanTool.call()\n"
 "      │\n"
 "      ▼\n"
 "  resolve_aardvark_device(\"aardvark0\")\n"
-"      │  devuelve el Arc del transporte\n"
+"      │  returns transport Arc\n"
 "      ▼\n"
 "  AardvarkTransport.send(ZcCommand{ name: \"i2c_scan\" })\n"
 "      │\n"
 "      ▼\n"
-"  AardvarkHandle::open_port(0)    ← abre la conexión USB\n"
+"  AardvarkHandle::open_port(0)    ← opens USB connection\n"
 "      │\n"
 "      ▼\n"
-"  aa_i2c_read(0x08..0x77)         ← sondea cada dirección\n"
+"  aa_i2c_read(0x08..0x77)         ← probes each address\n"
 "      │\n"
 "      ▼\n"
-"  AardvarkHandle liberado (drop)   ← conexión USB cerrada\n"
+"  AardvarkHandle dropped           ← USB connection closed\n"
 "      │\n"
 "      ▼\n"
 "  ZcResponse{ output: \"Found: 0x48, 0x68\" }\n"
 "      │\n"
 "      ▼\n"
-"  el agente envía la respuesta al usuario: \"Encontré dos dispositivos I2C: 0x48 y 0x68\"\n"
+"  agent sends reply to user: \"I found two I2C devices: 0x48 and 0x68\"\n"
 "```"
 
 #: src/foundations/fnd-002-documentation-standards.md
@@ -41472,7 +41472,7 @@ msgstr ""
 "boot()\n"
 "  ...\n"
 "  aardvark_ports = aardvark_sys::AardvarkHandle::find_devices()\n"
-"  // → [] en modo stub, [0] si hay un adaptador conectado\n"
+"  // → [] in stub mode, [0] if one adapter is plugged in\n"
 "\n"
 "  for (i, port) in aardvark_ports:\n"
 "    alias = registry.register(\"aardvark\", vid=0x2b76, ...)\n"
@@ -41481,7 +41481,7 @@ msgstr ""
 "    transport = AardvarkTransport::new(port, bitrate=100kHz)\n"
 "    registry.attach_transport(alias, transport, {i2c:true, spi:true, gpio:true})\n"
 "\n"
-"    log \"[registry] aardvark0 listo → Puerto 0 de Total Phase\"\n"
+"    log \"[registry] aardvark0 ready → Total Phase port 0\"\n"
 "  ...\n"
 "```"
 
@@ -41570,7 +41570,7 @@ msgid ""
 "```"
 msgstr ""
 "```\n"
-"https://<tu-url-publico>/nextcloud-talk\n"
+"https://<your-public-url>/nextcloud-talk\n"
 "```"
 
 #: src/maintainers/release-runbook.md
@@ -41611,7 +41611,7 @@ msgstr ""
 "```\n"
 "my-toolkit/\n"
 "  manifest.toml              # capabilities = [\"skill\"]\n"
-"  README.md                  # descripción general opcional del paquete\n"
+"  README.md                  # optional bundle-level overview\n"
 "  skills/\n"
 "    design-review/\n"
 "      SKILL.md\n"
@@ -41706,38 +41706,38 @@ msgstr ""
 "```\n"
 "send(ZcCommand) → ZcResponse\n"
 "\n"
-"  extraer el nombre del comando desde cmd.name\n"
-"  extraer los parámetros desde cmd.params (valores serde_json)\n"
+"  extract command name from cmd.name\n"
+"  extract parameters from cmd.params (serde_json values)\n"
 "\n"
-"  coincidir cmd.name:\n"
+"  match cmd.name:\n"
 "\n"
-"    \"i2c_scan\"   → abrir el manejador → llamar a i2c_scan()\n"
-"                   → formatear las direcciones encontradas como lista hexadecimal\n"
-"                   → devolver ZcResponse{ output: \"0x48, 0x68\" }\n"
+"    \"i2c_scan\"   → open handle → call i2c_scan()\n"
+"                   → format found addresses as hex list\n"
+"                   → return ZcResponse{ output: \"0x48, 0x68\" }\n"
 "\n"
-"    \"i2c_read\"   → analizar addr (cadena hexadecimal) + len (número)\n"
-"                   → abrir el manejador → i2c_enable(bitrate)\n"
-"                   → llamar a i2c_read(addr, len)\n"
-"                   → formatear los bytes como hexadecimal\n"
-"                   → devolver ZcResponse{ output: \"0xAB 0xCD\" }\n"
+"    \"i2c_read\"   → parse addr (hex string) + len (number)\n"
+"                   → open handle → i2c_enable(bitrate)\n"
+"                   → call i2c_read(addr, len)\n"
+"                   → format bytes as hex\n"
+"                   → return ZcResponse{ output: \"0xAB 0xCD\" }\n"
 "\n"
-"    \"i2c_write\"  → analizar addr + bytes de datos\n"
-"                   → abrir el manejador → i2c_write(addr, data)\n"
-"                   → devolver ZcResponse{ output: \"ok\" }\n"
+"    \"i2c_write\"  → parse addr + data bytes\n"
+"                   → open handle → i2c_write(addr, data)\n"
+"                   → return ZcResponse{ output: \"ok\" }\n"
 "\n"
-"    \"spi_transfer\" → analizar bytes_hex (cadena) → decodificar a Vec<u8>\n"
-"                     → abrir el manejador → spi_enable(bitrate)\n"
+"    \"spi_transfer\" → parse bytes_hex string → decode to Vec<u8>\n"
+"                     → open handle → spi_enable(bitrate)\n"
 "                     → spi_transfer(bytes)\n"
-"                     → devolver los bytes recibidos como hexadecimal\n"
+"                     → return received bytes as hex\n"
 "\n"
-"    \"gpio_set\"   → analizar máscaras de bits de dirección + valor\n"
-"                   → abrir el manejador → gpio_set(dir, val)\n"
-"                   → devolver ZcResponse{ output: \"ok\" }\n"
+"    \"gpio_set\"   → parse direction + value bitmasks\n"
+"                   → open handle → gpio_set(dir, val)\n"
+"                   → return ZcResponse{ output: \"ok\" }\n"
 "\n"
-"    \"gpio_get\"   → abrir el manejador → gpio_get()\n"
-"                   → devolver el valor de la máscara de bits como cadena\n"
+"    \"gpio_get\"   → open handle → gpio_get()\n"
+"                   → return bitmask value as string\n"
 "\n"
-"  en caso de cualquier AardvarkError → devolver ZcResponse{ error: \"...\" }\n"
+"  on any AardvarkError → return ZcResponse{ error: \"...\" }\n"
 "```"
 
 #: src/setup/freebsd.md
@@ -41881,7 +41881,7 @@ msgid ""
 msgstr ""
 "```jsonc\n"
 "// tool: sop_advance\n"
-"// args: { \"run_id\": \"<run-id>\", \"status\": \"completed\", \"output\": \"Se actualizó bzip2 1.0.8 → 1.0.9; el hash del código fuente se volvió a derivar y se verificó.\" }\n"
+"// args: { \"run_id\": \"<run-id>\", \"status\": \"completed\", \"output\": \"Bumped bzip2 1.0.8 → 1.0.9; source hash re-derived and verified.\" }\n"
 "```"
 
 #: src/sop/example.md
@@ -45831,19 +45831,19 @@ msgstr "`priority:` ¿Qué tan urgente es esto?"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`priority:critical`"
-msgstr "`prioridad:crítica`"
+msgstr "`priority:critical`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`priority:high`"
-msgstr "`prioridad:alta`"
+msgstr "`priority:high`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`priority:low`"
-msgstr "`prioridad:baja`"
+msgstr "`priority:low`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`priority:medium`"
-msgstr "`prioridad:media`"
+msgstr "`priority:medium`"
 
 #: src/reference/config.md
 msgid "`probe_target`"
@@ -45871,7 +45871,7 @@ msgstr "`prompt_injection_mode`"
 
 #: src/maintainers/labels.md
 msgid "`provider:anthropic`"
-msgstr "`proveedor:anthropic`"
+msgstr "`provider:anthropic`"
 
 #: src/maintainers/labels.md
 msgid "`provider:azure-openai`"
@@ -45883,7 +45883,7 @@ msgstr "`provider:bedrock`"
 
 #: src/maintainers/labels.md
 msgid "`provider:claude-code`"
-msgstr "`proveedor:claude-code`"
+msgstr "`provider:claude-code`"
 
 #: src/maintainers/labels.md
 msgid "`provider:compatible`"
@@ -45891,11 +45891,11 @@ msgstr "`provider:compatible`"
 
 #: src/maintainers/labels.md
 msgid "`provider:copilot`"
-msgstr "`proveedor:copilot`"
+msgstr "`provider:copilot`"
 
 #: src/maintainers/labels.md
 msgid "`provider:gemini`"
-msgstr "`proveedor:gemini`"
+msgstr "`provider:gemini`"
 
 #: src/maintainers/labels.md
 msgid "`provider:glm`"
@@ -45903,11 +45903,11 @@ msgstr "`provider:glm`"
 
 #: src/maintainers/labels.md
 msgid "`provider:kilocli`"
-msgstr "`proveedor:kilocli`"
+msgstr "`provider:kilocli`"
 
 #: src/maintainers/labels.md
 msgid "`provider:ollama`"
-msgstr "`proveedor:ollama`"
+msgstr "`provider:ollama`"
 
 #: src/maintainers/labels.md
 msgid "`provider:openai`"
@@ -45915,7 +45915,7 @@ msgstr "`provider:openai`"
 
 #: src/maintainers/labels.md
 msgid "`provider:openrouter`"
-msgstr "`proveedor:openrouter`"
+msgstr "`provider:openrouter`"
 
 #: src/maintainers/labels.md
 msgid "`provider:telnyx`"
@@ -46291,7 +46291,7 @@ msgstr "`rfc:` Estado específico del RFC"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`rfc:accepted` · `rfc:rejected` · `rfc:revision-requested`"
-msgstr "`rfc:aceptado` · `rfc:rechazado` · `rfc:revisión-solicitada`"
+msgstr "`rfc:accepted` · `rfc:rejected` · `rfc:revision-requested`"
 
 #: src/maintainers/reviewer-playbook.md src/maintainers/labels.md
 msgid "`risk: high`"
@@ -46627,7 +46627,7 @@ msgstr "`session/new`"
 
 #: src/architecture/rpc-socket.md src/channels/acp.md
 msgid "`session/prompt`"
-msgstr "`sesión/indicación`"
+msgstr "`session/prompt`"
 
 #: src/architecture/rpc-socket.md
 msgid "`session/prompt` returns the final result when the turn completes. During execution, the daemon sends `session/update` notifications with incremental events:"
@@ -47253,12 +47253,12 @@ msgstr "`status:good-first-issue`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`status:help-wanted`"
-msgstr "`status:se-necesita-ayuda`"
+msgstr "`status:help-wanted`"
 
 #: src/foundations/fnd-003-governance.md src/maintainers/reviewer-playbook.md
 #: src/maintainers/labels.md
 msgid "`status:in-progress`"
-msgstr "`status:en-progreso`"
+msgstr "`status:in-progress`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`status:needs-triage`"
