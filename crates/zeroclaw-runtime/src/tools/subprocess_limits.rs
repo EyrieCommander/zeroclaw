@@ -42,12 +42,13 @@ pub(crate) fn apply_pre_spawn_memory_limit(
         let Some(limit) = memory_limit_bytes(max_memory_mb)? else {
             return Ok(());
         };
-        let limit: libc::rlim_t = limit.try_into().map_err(|_| {
-            io::Error::new(
+        if limit > libc::rlim_t::MAX as u64 {
+            return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "shell_max_memory_mb exceeds platform rlimit capacity",
-            )
-        })?;
+            ));
+        }
+        let limit = limit as libc::rlim_t;
 
         unsafe {
             cmd.as_std_mut().pre_exec(move || {
@@ -113,8 +114,13 @@ pub(crate) fn apply_post_spawn_memory_limit(
                 std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
             )
             .map_err(windows_error)?;
-            AssignProcessToJobObject(job, HANDLE(child.raw_handle() as RawHandle as _))
-                .map_err(windows_error)?;
+            let child_handle: RawHandle = child.raw_handle().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    "Windows child process handle is unavailable",
+                )
+            })?;
+            AssignProcessToJobObject(job, HANDLE(child_handle as _)).map_err(windows_error)?;
         }
         return Ok(guard);
     }
