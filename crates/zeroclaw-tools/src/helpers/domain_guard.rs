@@ -178,10 +178,14 @@ pub(crate) fn is_non_global_v6(v6: std::net::Ipv6Addr) -> bool {
 }
 
 pub(crate) fn is_cloud_metadata_ip(ip: std::net::IpAddr) -> bool {
-    matches!(
-        ip,
-        std::net::IpAddr::V4(v4) if v4 == std::net::Ipv4Addr::new(169, 254, 169, 254)
-    )
+    const EC2_IMDS_V4: std::net::Ipv4Addr = std::net::Ipv4Addr::new(169, 254, 169, 254);
+    const EC2_IMDS_V6: std::net::Ipv6Addr =
+        std::net::Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254);
+
+    match ip {
+        std::net::IpAddr::V4(v4) => v4 == EC2_IMDS_V4,
+        std::net::IpAddr::V6(v6) => v6 == EC2_IMDS_V6,
+    }
 }
 
 pub(crate) fn validate_resolved_ips_are_public(
@@ -449,6 +453,18 @@ mod tests {
         let ips = [std::net::IpAddr::V4(std::net::Ipv4Addr::new(
             169, 254, 169, 254,
         ))];
+        let err = validate_resolved_ips_exclude_metadata("metadata.test", &ips)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("cloud metadata address"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_resolved_ips_blocks_ec2_ipv6_metadata_even_for_private_opt_in() {
+        let ips = ["fd00:ec2::254".parse().unwrap()];
         let err = validate_resolved_ips_exclude_metadata("metadata.test", &ips)
             .unwrap_err()
             .to_string();

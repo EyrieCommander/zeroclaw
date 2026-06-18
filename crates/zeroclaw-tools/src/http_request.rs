@@ -1450,6 +1450,32 @@ api_token = "Bearer from-secret"
     }
 
     #[tokio::test]
+    async fn validate_request_target_blocks_ec2_ipv6_metadata_for_private_carveout() {
+        let tool =
+            test_tool_with_private_allowlist(vec!["example.com"], false, vec!["device.local"]);
+
+        let err = tool
+            .validate_request_target_with_resolver("https://device.local/status", |host, port| {
+                assert_eq!(host, "device.local");
+                assert_eq!(port, 443);
+                async move {
+                    Ok(vec![SocketAddr::new(
+                        IpAddr::V6("fd00:ec2::254".parse().unwrap()),
+                        port,
+                    )])
+                }
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            err.contains("cloud metadata address"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
     async fn validate_request_target_uses_direct_ip_without_dns_lookup() {
         let tool = test_tool_with_private(vec!["*"], true);
 
