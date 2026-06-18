@@ -458,26 +458,12 @@ impl AnthropicModelProvider {
         })
     }
 
-    fn should_skip_internal_pruning_marker(messages: &[ChatMessage], index: usize) -> bool {
-        let Some(msg) = messages.get(index) else {
-            return false;
-        };
-        if msg.is_pruned_tool_exchange_summary() {
-            return true;
-        }
-        msg.is_pruned_context_separator()
-            && index
-                .checked_sub(1)
-                .and_then(|previous| messages.get(previous))
-                .is_some_and(ChatMessage::is_pruned_tool_exchange_summary)
-    }
-
     fn convert_messages(messages: &[ChatMessage]) -> (Option<SystemPrompt>, Vec<NativeMessage>) {
         let mut system_text = None;
         let mut native_messages = Vec::new();
 
         for (index, msg) in messages.iter().enumerate() {
-            if Self::should_skip_internal_pruning_marker(messages, index) {
+            if ChatMessage::should_skip_internal_pruning_marker(messages, index) {
                 continue;
             }
             match msg.role.as_str() {

@@ -2116,26 +2116,12 @@ impl OpenAiCompatibleModelProvider {
     /// - **assistant messages with `tool_calls`** are converted to plain
     ///   text by extracting only the `content` field (or dropped when the
     ///   content is empty).
-    fn should_skip_internal_pruning_marker(messages: &[ChatMessage], index: usize) -> bool {
-        let Some(msg) = messages.get(index) else {
-            return false;
-        };
-        if msg.is_pruned_tool_exchange_summary() {
-            return true;
-        }
-        msg.is_pruned_context_separator()
-            && index
-                .checked_sub(1)
-                .and_then(|previous| messages.get(previous))
-                .is_some_and(ChatMessage::is_pruned_tool_exchange_summary)
-    }
-
     fn strip_native_tool_messages(&self, messages: &[ChatMessage]) -> Vec<ChatMessage> {
         if self.native_tool_calling {
             return messages.to_vec();
         }
         let intermediate = messages.iter().enumerate().filter_map(|(index, msg)| {
-            if Self::should_skip_internal_pruning_marker(messages, index) {
+            if ChatMessage::should_skip_internal_pruning_marker(messages, index) {
                 return None;
             }
             if msg.role == "tool" {

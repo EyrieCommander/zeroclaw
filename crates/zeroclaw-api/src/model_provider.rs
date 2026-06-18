@@ -78,6 +78,26 @@ impl ChatMessage {
     pub fn is_pruned_context_separator(&self) -> bool {
         self.role == "user" && self.content.trim() == PRUNED_CONTEXT_SEPARATOR
     }
+
+    /// Returns true when a provider payload should omit an internal history-pruning marker.
+    ///
+    /// Summaries always drop because they would otherwise reach the model as its
+    /// own prior reply. Separators only drop when they directly follow a summary
+    /// in the input, so a stray separator-shaped user turn is preserved instead
+    /// of silently discarding possible user content.
+    pub fn should_skip_internal_pruning_marker(messages: &[Self], index: usize) -> bool {
+        let Some(msg) = messages.get(index) else {
+            return false;
+        };
+        if msg.is_pruned_tool_exchange_summary() {
+            return true;
+        }
+        msg.is_pruned_context_separator()
+            && index
+                .checked_sub(1)
+                .and_then(|previous| messages.get(previous))
+                .is_some_and(Self::is_pruned_tool_exchange_summary)
+    }
 }
 
 /// A tool call requested by the LLM.
