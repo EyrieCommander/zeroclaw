@@ -217,6 +217,7 @@ fn stderr_mentions_memory_exhaustion(stderr: &str) -> bool {
     lower.contains("cannot allocate memory")
         || lower.contains("out of memory")
         || lower.contains("memory allocation")
+        || lower.contains("memoryerror")
         || lower.contains("not enough memory")
 }
 
@@ -280,6 +281,24 @@ mod tests {
             Some(
                 "memory limit exceeded: subprocess exceeded shell_max_memory_mb=64; stderr: fatal: cannot allocate memory"
             )
+        );
+    }
+
+    #[cfg(any(all(unix, not(target_os = "macos")), windows))]
+    #[test]
+    fn classifies_language_runtime_memory_error_stderr() {
+        let error = memory_limit_exceeded_error(
+            failing_status(),
+            "Traceback (most recent call last):\nMemoryError\n",
+            64,
+        );
+
+        assert!(
+            error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("memory limit exceeded"),
+            "expected structured memory error, got: {error:?}"
         );
     }
 
