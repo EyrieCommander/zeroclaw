@@ -1286,7 +1286,7 @@ pub async fn handle_delete_plan(
         path: s.path.clone(),
         raw_value: s.raw_value.clone(),
     };
-    let Some(kind) = parse_alias_kind(&q.path) else {
+    let Some(kind) = zeroclaw_config::alias_refs::alias_kind_for_map_path(&q.path) else {
         // Non-aliased section (e.g. `mcp.servers`): generic key removal with no
         // reference cascade — nothing to preview.
         return axum::Json(DeletePlanResponse {
@@ -1349,42 +1349,6 @@ pub struct RenameMapKeyResponse {
     pub warnings: Vec<String>,
 }
 
-/// Parse a rename `path` (the map-keyed *section*) into the typed
-/// [`AliasKind`](zeroclaw_config::alias_refs::AliasKind) whose rename needs the
-/// reference-rewrite cascade. Returns `None` for non-aliased sections (e.g.
-/// `mcp.servers`), which fall back to the generic key-swap rename.
-fn parse_alias_kind(path: &str) -> Option<zeroclaw_config::alias_refs::AliasKind> {
-    use zeroclaw_config::alias_refs::{AliasKind, ProviderCategory};
-    if path == "agents" {
-        return Some(AliasKind::Agent);
-    }
-    if let Some(rest) = path.strip_prefix("providers.") {
-        let (cat, family) = rest.split_once('.')?;
-        if family.is_empty() || family.contains('.') {
-            return None;
-        }
-        let category = match cat {
-            "models" => ProviderCategory::Models,
-            "tts" => ProviderCategory::Tts,
-            "transcription" => ProviderCategory::Transcription,
-            _ => return None,
-        };
-        return Some(AliasKind::Provider {
-            category,
-            family: family.to_string(),
-        });
-    }
-    if let Some(ty) = path.strip_prefix("channels.") {
-        if ty.is_empty() || ty.contains('.') {
-            return None;
-        }
-        return Some(AliasKind::Channel {
-            channel_type: ty.to_string(),
-        });
-    }
-    None
-}
-
 /// Map a [`RenameError`](zeroclaw_config::alias_refs::RenameError) to the HTTP
 /// error response (NotFound→404, InvalidName/Reserved→400, PostCondition→500).
 fn rename_error_response(
@@ -1431,7 +1395,7 @@ pub async fn handle_rename_map_key(
 
     let working = state.config.read().clone();
 
-    match parse_alias_kind(&body.path) {
+    match zeroclaw_config::alias_refs::alias_kind_for_map_path(&body.path) {
         Some(zeroclaw_config::alias_refs::AliasKind::Agent) => {
             rename_agent_cascade(&state, working, &body).await
         }
