@@ -11483,6 +11483,57 @@ api_key = "anthropic-key"
     }
 
     #[test]
+    fn proactive_trim_preserves_tool_call_id_envelope_when_shrinking_tool_result() {
+        let original_content = "tool-output ".repeat(500);
+        let envelope = serde_json::json!({
+            "tool_call_id": "call_1",
+            "content": original_content,
+        });
+        let mut turns = vec![
+            ChatMessage::tool(envelope.to_string()),
+            // Recent protected turns stay full-size; only the older tool envelope is shrunk.
+            ChatMessage::user("u1".to_string()),
+            ChatMessage::assistant("a1".to_string()),
+            ChatMessage::user("u2".to_string()),
+            ChatMessage::assistant("a2".to_string()),
+        ];
+        let len_before = turns.len();
+        let total_before: usize = turns.iter().map(|t| t.content.chars().count()).sum();
+        let budget = 2_500;
+        assert!(total_before > budget, "test setup must start over budget");
+
+        let dropped = proactive_trim_turns(&mut turns, budget);
+
+        assert_eq!(
+            dropped, 0,
+            "shrinking the old tool envelope should avoid whole-turn drops"
+        );
+        assert_eq!(turns.len(), len_before, "no whole turn should be removed");
+        let trimmed_envelope: serde_json::Value =
+            serde_json::from_str(&turns[0].content).expect("trimmed tool content remains JSON");
+        assert_eq!(
+            trimmed_envelope
+                .get("tool_call_id")
+                .and_then(serde_json::Value::as_str),
+            Some("call_1"),
+            "tool_call_id must survive proactive trim"
+        );
+        let trimmed_content = trimmed_envelope
+            .get("content")
+            .and_then(serde_json::Value::as_str)
+            .expect("trimmed envelope keeps string content");
+        assert!(
+            trimmed_content.chars().count() < original_content.chars().count(),
+            "only the envelope content should be shortened"
+        );
+        let total_after: usize = turns.iter().map(|t| t.content.chars().count()).sum();
+        assert!(
+            total_after <= budget,
+            "must be within budget after trimming the envelope content: {total_after}"
+        );
+    }
+
+    #[test]
     fn append_sender_turn_stores_single_turn_per_call() {
         let sender = "telegram_u2".to_string();
         let ctx = ChannelRuntimeContext {
