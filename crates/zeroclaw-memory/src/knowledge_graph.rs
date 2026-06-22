@@ -326,6 +326,7 @@ impl KnowledgeGraph {
         limit: usize,
     ) -> anyhow::Result<Vec<SearchResult>> {
         let conn = self.conn.lock();
+        let limit = sql_limit(limit)?;
 
         // Sanitize FTS query: escape double quotes, wrap tokens in quotes.
         let sanitized: String = query
@@ -393,19 +394,26 @@ impl KnowledgeGraph {
     }
 
     /// Find nodes reached by edges leaving the given node.
-    pub fn find_outbound(&self, node_id: &str) -> anyhow::Result<Vec<(KnowledgeNode, Relation)>> {
+    pub fn find_outbound(
+        &self,
+        node_id: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<(KnowledgeNode, Relation)>> {
         let conn = self.conn.lock();
+        let limit = sql_limit(limit)?;
         let mut stmt = conn.prepare(
             "SELECT n.id, n.node_type, n.title, n.content, n.tags,
                     n.created_at, n.updated_at, n.source_project,
                     e.relation
              FROM edges e
              JOIN nodes n ON n.id = e.to_id
-             WHERE e.from_id = ?1",
+             WHERE e.from_id = ?1
+             ORDER BY n.created_at DESC, n.id ASC
+             LIMIT ?2",
         )?;
 
         let mut results = Vec::new();
-        let mut rows = stmt.query(params![node_id])?;
+        let mut rows = stmt.query(params![node_id, limit])?;
         while let Some(row) = rows.next()? {
             let node = row_to_node(row)?;
             let relation_str: String = row.get(8)?;
@@ -416,19 +424,26 @@ impl KnowledgeGraph {
     }
 
     /// Find nodes with edges pointing to the given node.
-    pub fn find_inbound(&self, node_id: &str) -> anyhow::Result<Vec<(KnowledgeNode, Relation)>> {
+    pub fn find_inbound(
+        &self,
+        node_id: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<(KnowledgeNode, Relation)>> {
         let conn = self.conn.lock();
+        let limit = sql_limit(limit)?;
         let mut stmt = conn.prepare(
             "SELECT n.id, n.node_type, n.title, n.content, n.tags,
                     n.created_at, n.updated_at, n.source_project,
                     e.relation
              FROM edges e
              JOIN nodes n ON n.id = e.from_id
-             WHERE e.to_id = ?1",
+             WHERE e.to_id = ?1
+             ORDER BY n.created_at DESC, n.id ASC
+             LIMIT ?2",
         )?;
 
         let mut results = Vec::new();
-        let mut rows = stmt.query(params![node_id])?;
+        let mut rows = stmt.query(params![node_id, limit])?;
         while let Some(row) = rows.next()? {
             let node = row_to_node(row)?;
             let relation_str: String = row.get(8)?;
@@ -445,6 +460,7 @@ impl KnowledgeGraph {
         limit: usize,
     ) -> anyhow::Result<Vec<KnowledgeNode>> {
         let conn = self.conn.lock();
+        let limit = sql_limit(limit)?;
         let mut stmt = conn.prepare(
             "SELECT id, node_type, title, content, tags, created_at, updated_at, source_project
              FROM nodes WHERE node_type = ?1 ORDER BY updated_at DESC LIMIT ?2",
@@ -467,13 +483,14 @@ impl KnowledgeGraph {
         limit: usize,
     ) -> anyhow::Result<Vec<KnowledgeNode>> {
         let conn = self.conn.lock();
+        let limit = sql_limit(limit)?;
         let mut stmt = conn.prepare(
             "SELECT n.id, n.node_type, n.title, n.content, n.tags,
                     n.created_at, n.updated_at, n.source_project
              FROM edges e
              JOIN nodes n ON n.id = e.to_id
              WHERE e.from_id = ?1 AND e.relation = ?2 AND n.node_type = ?3
-             ORDER BY n.created_at DESC
+             ORDER BY n.created_at DESC, n.id ASC
              LIMIT ?4",
         )?;
 
@@ -482,7 +499,40 @@ impl KnowledgeGraph {
             node_id,
             relation.as_str(),
             node_type.as_str(),
-            limit as i64
+            limit
+        ])?;
+        while let Some(row) = rows.next()? {
+            results.push(row_to_node(row)?);
+        }
+        Ok(results)
+    }
+
+    /// Find inbound nodes matching a relation and node type.
+    pub fn find_inbound_by_relation_and_type(
+        &self,
+        node_id: &str,
+        relation: Relation,
+        node_type: NodeType,
+        limit: usize,
+    ) -> anyhow::Result<Vec<KnowledgeNode>> {
+        let conn = self.conn.lock();
+        let limit = sql_limit(limit)?;
+        let mut stmt = conn.prepare(
+            "SELECT n.id, n.node_type, n.title, n.content, n.tags,
+                    n.created_at, n.updated_at, n.source_project
+             FROM edges e
+             JOIN nodes n ON n.id = e.from_id
+             WHERE e.to_id = ?1 AND e.relation = ?2 AND n.node_type = ?3
+             ORDER BY n.created_at DESC, n.id ASC
+             LIMIT ?4",
+        )?;
+
+        let mut results = Vec::new();
+        let mut rows = stmt.query(params![
+            node_id,
+            relation.as_str(),
+            node_type.as_str(),
+            limit
         ])?;
         while let Some(row) = rows.next()? {
             results.push(row_to_node(row)?);
@@ -675,6 +725,10 @@ fn row_to_node(row: &rusqlite::Row<'_>) -> anyhow::Result<KnowledgeNode> {
     })
 }
 
+fn sql_limit(limit: usize) -> anyhow::Result<i64> {
+    i64::try_from(limit).context("knowledge graph query limit exceeds SQLite range")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -744,7 +798,7 @@ mod tests {
         graph.add_edge(&id1, &id2, Relation::Uses).unwrap();
 
         // Outbound: from id1 → id2
-        let outbound = graph.find_outbound(&id1).unwrap();
+        let outbound = graph.find_outbound(&id1, 10).unwrap();
         assert!(
             outbound
                 .iter()
@@ -752,7 +806,7 @@ mod tests {
         );
 
         // Inbound: id2 sees id1 via the same edge
-        let inbound = graph.find_inbound(&id2).unwrap();
+        let inbound = graph.find_inbound(&id2, 10).unwrap();
         assert!(
             inbound
                 .iter()
@@ -1048,7 +1102,7 @@ mod tests {
         assert_eq!(interactions.len(), 1);
         assert_eq!(interactions[0].id, interaction);
 
-        let inbound = graph.find_inbound(&client).unwrap();
+        let inbound = graph.find_inbound(&client, 10).unwrap();
         assert!(
             inbound
                 .iter()
@@ -1059,6 +1113,11 @@ mod tests {
                 .iter()
                 .any(|(node, relation)| node.id == expert && *relation == Relation::ManagesClient)
         );
+        let contacts = graph
+            .find_inbound_by_relation_and_type(&client, Relation::ContactOf, NodeType::Contact, 10)
+            .unwrap();
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].id, contact);
 
         let (nodes, edges) = graph.get_subgraph(&client, 1).unwrap();
         assert_eq!(nodes.len(), 4);

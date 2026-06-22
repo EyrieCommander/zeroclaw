@@ -1,8 +1,6 @@
 //! Knowledge management tool for capturing, searching, and reusing expertise.
 //!
-//! Exposes the knowledge graph to the agent via the `Tool` trait with actions:
-//! capture, search, relate, suggest, expert_find, lessons_extract, graph_stats,
-//! graph_neighbors, client_network, interaction_log.
+//! Exposes the knowledge graph to the agent via the `Tool` trait.
 
 use async_trait::async_trait;
 use serde_json::json;
@@ -11,6 +9,10 @@ use zeroclaw_api::tool::{Tool, ToolResult};
 use zeroclaw_memory::knowledge_graph::{KnowledgeGraph, NodeType, Relation};
 
 const CLIENT_NETWORK_INTERACTION_LIMIT: usize = 20;
+const CLIENT_NETWORK_ENTITY_LIMIT: usize = 100;
+const DEFAULT_GRAPH_NEIGHBOR_LIMIT: usize = 25;
+const DEFAULT_INTERACTION_LOG_LIMIT: usize = 20;
+const MAX_KNOWLEDGE_RESULT_LIMIT: usize = 100;
 
 const KNOWLEDGE_ACTIONS: &[&str] = &[
     "capture",
@@ -43,7 +45,7 @@ impl Tool for KnowledgeTool {
     }
 
     fn description(&self) -> &str {
-        "Manage a knowledge graph of architecture decisions, solution patterns, lessons learned, experts, and relationship links. Actions: capture, search, relate, suggest, expert_find, lessons_extract, graph_stats, graph_neighbors, client_network, interaction_log."
+        "Manage a knowledge graph of architecture decisions, solution patterns, lessons learned, experts, and relationship links."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -105,6 +107,7 @@ impl Tool for KnowledgeTool {
                 "limit": {
                     "type": "integer",
                     "minimum": 1,
+                    "maximum": MAX_KNOWLEDGE_RESULT_LIMIT,
                     "description": "Maximum number of results to return (for graph_neighbors, interaction_log)"
                 },
                 "filters": {
@@ -574,12 +577,7 @@ impl KnowledgeTool {
                 });
             }
         };
-        let limit = args
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .and_then(|v| usize::try_from(v).ok())
-            .unwrap_or(25)
-            .max(1);
+        let limit = bounded_limit(args, DEFAULT_GRAPH_NEIGHBOR_LIMIT);
 
         let root = match self.graph.get_node(node_id)? {
             Some(root) => root,
@@ -592,10 +590,8 @@ impl KnowledgeTool {
             }
         };
 
-        let mut outbound = self.graph.find_outbound(node_id)?;
-        let mut inbound = self.graph.find_inbound(node_id)?;
-        outbound.truncate(limit);
-        inbound.truncate(limit);
+        let outbound = self.graph.find_outbound(node_id, limit)?;
+        let inbound = self.graph.find_inbound(node_id, limit)?;
 
         let outbound: Vec<_> = outbound
             .iter()
@@ -638,22 +634,27 @@ impl KnowledgeTool {
                 });
             }
         };
-        let inbound = self.graph.find_inbound(&client.id)?;
+        let contacts = self.graph.find_inbound_by_relation_and_type(
+            &client.id,
+            Relation::ContactOf,
+            NodeType::Contact,
+            CLIENT_NETWORK_ENTITY_LIMIT,
+        )?;
+        let managers = self.graph.find_inbound_by_relation_and_type(
+            &client.id,
+            Relation::ManagesClient,
+            NodeType::Expert,
+            CLIENT_NETWORK_ENTITY_LIMIT,
+        )?;
 
-        let contacts: Vec<_> = inbound
+        let contacts: Vec<_> = contacts
             .iter()
-            .filter(|(node, relation)| {
-                node.node_type == NodeType::Contact && *relation == Relation::ContactOf
-            })
-            .map(|(node, _)| json!({"id": &node.id, "name": &node.title, "tags": &node.tags}))
+            .map(|node| json!({"id": &node.id, "name": &node.title, "tags": &node.tags}))
             .collect();
 
-        let managers: Vec<_> = inbound
+        let managers: Vec<_> = managers
             .iter()
-            .filter(|(node, relation)| {
-                node.node_type == NodeType::Expert && *relation == Relation::ManagesClient
-            })
-            .map(|(node, _)| {
+            .map(|node| {
                 json!({
                     "id": &node.id,
                     "type": node.node_type,
@@ -706,12 +707,7 @@ impl KnowledgeTool {
                 });
             }
         };
-        let limit = args
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .and_then(|v| usize::try_from(v).ok())
-            .unwrap_or(20)
-            .max(1);
+        let limit = bounded_limit(args, DEFAULT_INTERACTION_LOG_LIMIT);
 
         let interactions = self.client_interactions(&client.id, limit)?;
 
@@ -796,6 +792,18 @@ fn neighbor_json(
         "content_preview": truncate_str(&node.content, 200),
         "tags": &node.tags,
     })
+}
+
+fn bounded_limit(args: &serde_json::Value, default: usize) -> usize {
+    let default = default.clamp(1, MAX_KNOWLEDGE_RESULT_LIMIT);
+    args.get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|limit| {
+            usize::try_from(limit)
+                .unwrap_or(MAX_KNOWLEDGE_RESULT_LIMIT)
+                .clamp(1, MAX_KNOWLEDGE_RESULT_LIMIT)
+        })
+        .unwrap_or(default)
 }
 
 fn truncate_str(s: &str, max_len: usize) -> String {
@@ -961,21 +969,22 @@ mod tests {
         let tool = KnowledgeTool::new(graph);
 
         assert_eq!(tool.name(), "knowledge");
+        assert!(tool.description().contains("relationship links"));
+        assert!(!tool.description().contains("graph_neighbors"));
+        assert!(!tool.description().contains("client_network"));
+
         let schema = tool.parameters_schema();
         assert!(schema["properties"]["action"].is_object());
-        assert!(
-            schema["properties"]["action"]["enum"]
-                .as_array()
-                .unwrap()
-                .contains(&json!("graph_neighbors"))
-        );
-        assert!(
-            schema["properties"]["action"]["enum"]
-                .as_array()
-                .unwrap()
-                .contains(&json!("client_network"))
-        );
+        let actions = schema["properties"]["action"]["enum"].as_array().unwrap();
+        assert_eq!(actions.len(), KNOWLEDGE_ACTIONS.len());
+        for action in KNOWLEDGE_ACTIONS {
+            assert!(actions.contains(&json!(action)));
+        }
         assert!(schema["properties"]["node_id"].is_object());
+        assert_eq!(
+            schema["properties"]["limit"]["maximum"],
+            MAX_KNOWLEDGE_RESULT_LIMIT
+        );
         assert!(
             schema["properties"]["node_type"]["enum"]
                 .as_array()
@@ -1031,6 +1040,56 @@ mod tests {
         assert_eq!(output["outbound"][0]["relation"], "uses");
         assert_eq!(output["inbound"][0]["title"], "Audit requirements");
         assert_eq!(output["inbound"][0]["relation"], "applies_to");
+    }
+
+    #[tokio::test]
+    async fn graph_neighbors_orders_and_limits_each_direction_in_storage() {
+        let (_tmp, tool) = test_tool();
+
+        let pattern_id = capture_node(
+            &tool,
+            "pattern",
+            "Event sourcing",
+            "Persist events and rebuild state from them",
+        )
+        .await;
+        let old_outbound =
+            capture_node(&tool, "technology", "Old queue", "First outbound neighbor").await;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let new_outbound = capture_node(
+            &tool,
+            "technology",
+            "New stream",
+            "Latest outbound neighbor",
+        )
+        .await;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let old_inbound =
+            capture_node(&tool, "lesson", "Old lesson", "First inbound neighbor").await;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let new_inbound =
+            capture_node(&tool, "lesson", "New lesson", "Latest inbound neighbor").await;
+
+        relate_nodes(&tool, &pattern_id, &old_outbound, "uses").await;
+        relate_nodes(&tool, &pattern_id, &new_outbound, "uses").await;
+        relate_nodes(&tool, &old_inbound, &pattern_id, "applies_to").await;
+        relate_nodes(&tool, &new_inbound, &pattern_id, "applies_to").await;
+
+        let result = tool
+            .execute(json!({
+                "action": "graph_neighbors",
+                "node_id": pattern_id,
+                "limit": 1
+            }))
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        let output: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(output["outbound_count"], 1);
+        assert_eq!(output["inbound_count"], 1);
+        assert_eq!(output["outbound"][0]["title"], "New stream");
+        assert_eq!(output["inbound"][0]["title"], "New lesson");
     }
 
     #[tokio::test]
@@ -1130,6 +1189,22 @@ mod tests {
         assert_eq!(output["count"], 2);
         assert_eq!(output["interactions"][0]["title"], "Third call");
         assert_eq!(output["interactions"][1]["title"], "Second call");
+    }
+
+    #[test]
+    fn bounded_limit_clamps_user_values() {
+        assert_eq!(
+            bounded_limit(&json!({}), DEFAULT_INTERACTION_LOG_LIMIT),
+            DEFAULT_INTERACTION_LOG_LIMIT
+        );
+        assert_eq!(
+            bounded_limit(&json!({ "limit": 0 }), DEFAULT_INTERACTION_LOG_LIMIT),
+            1
+        );
+        assert_eq!(
+            bounded_limit(&json!({ "limit": u64::MAX }), DEFAULT_INTERACTION_LOG_LIMIT),
+            MAX_KNOWLEDGE_RESULT_LIMIT
+        );
     }
 
     #[tokio::test]
