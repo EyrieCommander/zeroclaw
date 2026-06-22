@@ -4,7 +4,6 @@ use std::path::Path;
 use std::time::Duration;
 
 const SOURCE: &str = "dev/ci/container-base-images.toml";
-const NODE_VERSION_SOURCE: &str = ".nvmrc";
 const NODE_SUITE: &str = "bookworm-slim";
 const INDEX_ACCEPT: &str = "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json";
 
@@ -75,31 +74,6 @@ fn client() -> anyhow::Result<reqwest::blocking::Client> {
 #[derive(Deserialize)]
 struct Token {
     token: String,
-}
-
-fn node_tag_from_policy(root: &Path, zone: &str) -> anyhow::Result<String> {
-    let major =
-        node_major_policy(root).with_context(|| format!("{zone}: resolve Node major policy"))?;
-    Ok(format!("{major}-{NODE_SUITE}"))
-}
-
-fn node_major_policy(root: &Path) -> anyhow::Result<u32> {
-    let raw = std::fs::read_to_string(root.join(NODE_VERSION_SOURCE))
-        .with_context(|| format!("read {NODE_VERSION_SOURCE}"))?;
-    parse_node_major_policy(&raw)
-        .with_context(|| format!("{NODE_VERSION_SOURCE}: expected a non-zero Node major version"))
-}
-
-fn parse_node_major_policy(raw: &str) -> Option<u32> {
-    let version = raw.trim();
-    let version = version.strip_prefix('v').unwrap_or(version);
-    let major = version.split('.').next()?;
-    major
-        .chars()
-        .all(|c| c.is_ascii_digit())
-        .then(|| major.parse::<u32>().ok())
-        .flatten()
-        .filter(|major| *major > 0)
 }
 
 fn node_major_for_suite(tag: &str) -> Option<u32> {
@@ -197,13 +171,11 @@ pub fn refresh_source(root: &Path) -> anyhow::Result<()> {
     let client = client()?;
     let mut src = load(root)?;
     for img in &mut src.image {
-        let tag = if img.discover {
-            node_tag_from_policy(root, &img.zone)?
-        } else {
-            img.tag
-                .clone()
-                .with_context(|| format!("{}: non-discover row must set a tag", img.zone))?
-        };
+        let tag = img
+            .tag
+            .clone()
+            .with_context(|| format!("{}: row must set a tag", img.zone))?;
+        validate_node_tag_policy(img, &tag)?;
         let digest = resolve_digest(&client, img.registry, &img.repo, &tag)?;
         img.tag = Some(tag);
         img.digest = Some(digest);
@@ -215,10 +187,11 @@ pub fn refresh_source(root: &Path) -> anyhow::Result<()> {
 
 const SOURCE_HEADER: &str = "# Canonical container base-image pins for the generated container surfaces\n\
 # (Dockerfile, Dockerfile.debian). Edit registry/repo/image_ref/tag here; `tag`\n\
-# and `digest` are rewritten live by `cargo generate installers`. A row with\n\
-# discover=true derives its tag from the repo root .nvmrc, then refreshes its\n\
-# digest live from the registry. StageX pins in the Containerfile are\n\
-# excluded on purpose: digest-only, reproducible-build intent, no tag to follow.\n\n";
+# records the intended policy and `digest` is rewritten live by `cargo generate\n\
+# installers`. A row with discover=true refreshes the digest for its declared\n\
+# tag from the registry; Node discover rows must use a plain\n\
+# <major>-bookworm-slim tag. StageX pins in the Containerfile are excluded on\n\
+# purpose: digest-only, reproducible-build intent, no tag to follow.\n\n";
 
 fn render_source(src: &Source) -> anyhow::Result<String> {
     let body = toml::to_string_pretty(src).context("serialize source")?;
@@ -234,20 +207,20 @@ pub fn splice_zones(root: &Path, current: &str) -> anyhow::Result<String> {
         if !current.contains(&begin(&img.zone)) {
             continue;
         }
-        let (tag, digest) = resolved(root, img)?;
+        let (tag, digest) = resolved(img)?;
         out = splice(&out, &img.zone, &arg_line(img, tag, digest))?;
     }
     Ok(out)
 }
 
-fn resolved<'a>(root: &Path, img: &'a BaseImage) -> anyhow::Result<(&'a str, &'a str)> {
+fn resolved(img: &BaseImage) -> anyhow::Result<(&str, &str)> {
     let tag = img.tag.as_deref().with_context(|| {
         format!(
             "{}: TOML missing resolved tag; run `cargo generate installers`",
             img.zone
         )
     })?;
-    validate_node_tag_policy(root, img, tag)?;
+    validate_node_tag_policy(img, tag)?;
     let digest = img.digest.as_deref().with_context(|| {
         format!(
             "{}: TOML missing resolved digest; run `cargo generate installers`",
@@ -257,19 +230,12 @@ fn resolved<'a>(root: &Path, img: &'a BaseImage) -> anyhow::Result<(&'a str, &'a
     Ok((tag, digest))
 }
 
-fn validate_node_tag_policy(root: &Path, img: &BaseImage, tag: &str) -> anyhow::Result<()> {
+fn validate_node_tag_policy(img: &BaseImage, tag: &str) -> anyhow::Result<()> {
     if !img.discover {
         return Ok(());
     }
-    let expected = node_major_policy(root)?;
-    let actual = node_major_for_suite(tag)
+    node_major_for_suite(tag)
         .with_context(|| format!("{}: node tag {tag} is not <major>-{NODE_SUITE}", img.zone))?;
-    if actual != expected {
-        anyhow::bail!(
-            "{}: {NODE_VERSION_SOURCE} declares Node major {expected} but tag {tag} resolves to Node major {actual}",
-            img.zone
-        );
-    }
     Ok(())
 }
 
@@ -292,7 +258,7 @@ pub fn check(root: &Path, current: &str) -> anyhow::Result<Vec<String>> {
         if !declares {
             continue;
         }
-        let (tag, digest) = match resolved(root, img) {
+        let (tag, digest) = match resolved(img) {
             Ok(v) => v,
             Err(e) => {
                 drift.push(e.to_string());
@@ -344,10 +310,6 @@ digest = "sha256:{}"
         std::fs::write(dir.join("container-base-images.toml"), source).unwrap();
     }
 
-    fn write_nvmrc(root: &Path, major: u32) {
-        std::fs::write(root.join(".nvmrc"), major.to_string()).unwrap();
-    }
-
     fn fixed(zone: &str) -> BaseImage {
         BaseImage {
             zone: zone.to_string(),
@@ -397,7 +359,7 @@ digest = "sha256:{}"
     #[test]
     fn arg_line_round_trips_through_zone_body() {
         let img = fixed("base-arg-test");
-        let (tag, digest) = resolved(&root(), &img).unwrap();
+        let (tag, digest) = resolved(&img).unwrap();
         let line = arg_line(&img, tag, digest);
         let content = format!("{}\n{line}\n{}\n", begin(&img.zone), end(&img.zone));
         assert_eq!(zone_body(&content, &img.zone).unwrap(), line);
@@ -411,12 +373,11 @@ digest = "sha256:{}"
     }
 
     #[test]
-    fn splice_zones_rejects_node_tag_that_differs_from_nvmrc() {
+    fn splice_zones_rejects_non_plain_node_discover_tag() {
         let temp = tempfile::tempdir().unwrap();
-        write_nvmrc(temp.path(), 24);
-        write_source(temp.path(), &source_with_node_tag("27-bookworm-slim"));
+        write_source(temp.path(), &source_with_node_tag("24.1-bookworm-slim"));
         let content = format!(
-            "{}\nARG ZEROCLAW_BASE_NODE=node:27-bookworm-slim@sha256:{}\n{}\n",
+            "{}\nARG ZEROCLAW_BASE_NODE=node:24.1-bookworm-slim@sha256:{}\n{}\n",
             begin("base-arg-node"),
             "a".repeat(64),
             end("base-arg-node")
@@ -425,8 +386,9 @@ digest = "sha256:{}"
         let err = splice_zones(temp.path(), &content).unwrap_err();
 
         assert!(
-            err.to_string().contains(".nvmrc declares Node major 24"),
-            "expected .nvmrc mismatch error, got {err:#}"
+            err.to_string()
+                .contains("node tag 24.1-bookworm-slim is not <major>-bookworm-slim"),
+            "expected Node tag-shape error, got {err:#}"
         );
     }
 }

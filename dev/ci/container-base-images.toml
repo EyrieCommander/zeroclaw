@@ -1,9 +1,10 @@
 # Canonical container base-image pins for the generated container surfaces
 # (Dockerfile, Dockerfile.debian). Edit registry/repo/image_ref/tag here; `tag`
-# and `digest` are rewritten live by `cargo generate installers`. A row with
-# discover=true derives its tag from the repo root .nvmrc, then refreshes its
-# digest live from the registry. StageX pins in the Containerfile are
-# excluded on purpose: digest-only, reproducible-build intent, no tag to follow.
+# records the intended policy and `digest` is rewritten live by `cargo generate
+# installers`. A row with discover=true refreshes the digest for its declared
+# tag from the registry; Node discover rows must use a plain
+# <major>-bookworm-slim tag. StageX pins in the Containerfile are excluded on
+# purpose: digest-only, reproducible-build intent, no tag to follow.
 
 [[image]]
 zone = "base-arg-node"
