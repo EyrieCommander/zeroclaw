@@ -368,7 +368,7 @@ msgstr "\"Markdown\""
 
 #: src/channels/matrix.md
 msgid "\"Matrix is configured correctly, checks pass, but the bot does not respond.\""
-msgstr "La matriz está configurada correctamente, las verificaciones pasan, pero el bot no responde."
+msgstr "Matrix está configurada correctamente, las verificaciones pasan, pero el bot no responde."
 
 #: src/developing/extension-examples.md
 msgid "\"Missing 'url' parameter\""
@@ -5660,7 +5660,7 @@ msgstr "**Uso:** Flashee `firmware/esp32` en el ESP32, agregue `board = \"esp32\
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw [OPTIONS] <COMMAND>`"
-msgstr "**Uso:** `zeroclaw [OPCIONES] <COMANDO>`"
+msgstr "**Uso:** `zeroclaw [OPTIONS] <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw acp [OPTIONS]`"
@@ -5692,7 +5692,7 @@ msgstr "**Uso:** `zeroclaw agents rename <FROM> <TO>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw auth <COMMAND>`"
-msgstr "**Uso:** `zeroclaw auth <COMANDO>`"
+msgstr "**Uso:** `zeroclaw auth <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw auth list`"
@@ -5736,11 +5736,11 @@ msgstr "**Uso:** `zeroclaw browse [PATH]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw channel <COMMAND>`"
-msgstr "**Uso:** `zeroclaw channel <COMANDO>`"
+msgstr "**Uso:** `zeroclaw channel <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw channel add <CHANNEL_TYPE> <CONFIG>`"
-msgstr "**Uso:** `zeroclaw channel add <TIPO_CANAL> <CONFIG>`"
+msgstr "**Uso:** `zeroclaw channel add <CHANNEL_TYPE> <CONFIG>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw channel bind-telegram <IDENTITY>`"
@@ -5792,7 +5792,7 @@ msgstr "**Uso:** `zeroclaw completions <SHELL>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw config <COMMAND>`"
-msgstr "**Uso:** `zeroclaw config <COMANDO>`"
+msgstr "**Uso:** `zeroclaw config <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw config docs`"
@@ -5836,7 +5836,7 @@ msgstr "**Uso:** `zeroclaw config set peripherals.datasheet-dir docs/datasheets`
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw cron <COMMAND>`"
-msgstr "**Uso:** `zeroclaw cron <COMANDO>`"
+msgstr "**Uso:** `zeroclaw cron <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw cron add [OPTIONS] --agent <AGENT_ALIAS> <EXPRESSION> <COMMAND>`"
@@ -5884,11 +5884,11 @@ msgstr "**Uso:** `zeroclaw desktop [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw doctor [COMMAND]`"
-msgstr "**Uso:** `zeroclaw doctor [COMANDO]`"
+msgstr "**Uso:** `zeroclaw doctor [COMMAND]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw doctor models [OPTIONS]`"
-msgstr "**Uso:** `zeroclaw doctor models [OPCIONES]`"
+msgstr "**Uso:** `zeroclaw doctor models [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw doctor traces [OPTIONS]`"
@@ -5896,11 +5896,11 @@ msgstr "**Uso:** `zeroclaw doctor traces [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw estop [OPTIONS] [COMMAND]`"
-msgstr "**Uso:** `zeroclaw estop [OPCIONES] [COMANDO]`"
+msgstr "**Uso:** `zeroclaw estop [OPTIONS] [COMMAND]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw estop resume [OPTIONS]`"
-msgstr "**Uso:** `zeroclaw estop resume [OPCIONES]`"
+msgstr "**Uso:** `zeroclaw estop resume [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw estop status`"
@@ -5908,7 +5908,7 @@ msgstr "**Uso:** `zeroclaw estop status`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw gateway [COMMAND]`"
-msgstr "**Uso:** `zeroclaw gateway [COMANDO]`"
+msgstr "**Uso:** `zeroclaw gateway [COMMAND]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw gateway get-paircode [OPTIONS]`"
@@ -5924,7 +5924,7 @@ msgstr "**Uso:** `zeroclaw gateway start [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw hardware <COMMAND>`"
-msgstr "**Uso:** `zeroclaw hardware <COMANDO>`"
+msgstr "**Uso:** `zeroclaw hardware <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw hardware discover`"
@@ -5932,7 +5932,7 @@ msgstr "**Uso:** `zeroclaw hardware discover`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw hardware info [OPTIONS]`"
-msgstr "**Uso:** `zeroclaw hardware info [OPCIONES]`"
+msgstr "**Uso:** `zeroclaw hardware info [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw hardware introspect <PATH>`"
@@ -5940,7 +5940,7 @@ msgstr "**Uso:** `zeroclaw hardware introspect <PATH>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw integrations <COMMAND>`"
-msgstr "**Uso:** `zeroclaw integrations <COMANDO>`"
+msgstr "**Uso:** `zeroclaw integrations <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw integrations info <NAME>`"
@@ -5956,11 +5956,11 @@ msgstr "**Uso:** `zeroclaw locales fetch [OPTIONS] <LOCALE>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw memory <COMMAND>`"
-msgstr "**Uso:** `zeroclaw memory <COMANDO>`"
+msgstr "**Uso:** `zeroclaw memory <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw memory clear [OPTIONS]`"
-msgstr "**Uso:** `zeroclaw memory clear [OPCIONES]`"
+msgstr "**Uso:** `zeroclaw memory clear [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw memory get <KEY>`"
@@ -5968,7 +5968,7 @@ msgstr "**Uso:** `zeroclaw memory get <KEY>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw memory list [OPTIONS]`"
-msgstr "**Uso:** `zeroclaw memory list [OPCIONES]`"
+msgstr "**Uso:** `zeroclaw memory list [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw memory reindex`"
@@ -5980,7 +5980,7 @@ msgstr "**Uso:** `zeroclaw memory stats`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw migrate <COMMAND>`"
-msgstr "**Uso:** `zeroclaw migrate <COMANDO>`"
+msgstr "**Uso:** `zeroclaw migrate <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw migrate openclaw [OPTIONS]`"
@@ -5988,7 +5988,7 @@ msgstr "**Uso:** `zeroclaw migrate openclaw [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw models <COMMAND>`"
-msgstr "**Uso:** `zeroclaw models <COMANDO>`"
+msgstr "**Uso:** `zeroclaw models <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw models list [OPTIONS]`"
@@ -6092,7 +6092,7 @@ msgstr "**Uso:** `zeroclaw onboard tunnel`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw peripheral <COMMAND>`"
-msgstr "**Uso:** `zeroclaw peripheral <COMANDO>`"
+msgstr "**Uso:** `zeroclaw peripheral <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw peripheral add <BOARD> <PATH>`"
@@ -6100,7 +6100,7 @@ msgstr "**Uso:** `zeroclaw peripheral add <BOARD> <PATH>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw peripheral flash [OPTIONS]`"
-msgstr "**Uso:** `zeroclaw peripheral flash [OPCIONES]`"
+msgstr "**Uso:** `zeroclaw peripheral flash [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw peripheral flash-nucleo`"
@@ -6112,7 +6112,7 @@ msgstr "**Uso:** `zeroclaw peripheral list`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw peripheral setup-uno-q [OPTIONS]`"
-msgstr "**Uso:** `zeroclaw peripheral setup-uno-q [OPCIONES]`"
+msgstr "**Uso:** `zeroclaw peripheral setup-uno-q [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw providers [COMMAND]`"
@@ -6140,11 +6140,11 @@ msgstr "**Uso:** `zeroclaw quickstart [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw self-test [OPTIONS]`"
-msgstr "**Uso:** `zeroclaw self-test [OPCIONES]`"
+msgstr "**Uso:** `zeroclaw self-test [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw service [OPTIONS] <COMMAND>`"
-msgstr "**Uso:** `zeroclaw service [OPTIONS] <COMANDO>`"
+msgstr "**Uso:** `zeroclaw service [OPTIONS] <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw service install`"
@@ -6152,7 +6152,7 @@ msgstr "**Uso:** `zeroclaw service install`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw service logs [OPTIONS]`"
-msgstr "**Uso:** `zeroclaw service logs [OPCIONES]`"
+msgstr "**Uso:** `zeroclaw service logs [OPTIONS]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw service restart`"
@@ -6176,7 +6176,7 @@ msgstr "**Uso:** `zeroclaw service uninstall`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw skills <COMMAND>`"
-msgstr "**Uso:** `zeroclaw skills <COMANDO>`"
+msgstr "**Uso:** `zeroclaw skills <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw skills add [OPTIONS] <NAME>`"
@@ -6232,7 +6232,7 @@ msgstr "**Uso:** `zeroclaw skills test [OPTIONS] [NAME]`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw sop <COMMAND>`"
-msgstr "**Uso:** `zeroclaw sop <COMANDO>`"
+msgstr "**Uso:** `zeroclaw sop <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw sop list`"
@@ -17480,7 +17480,7 @@ msgstr "Recolectar diagnósticos y abrir un problema:"
 
 #: src/reference/config.md
 msgid "Gemini CLI tool configuration (`[gemini_cli]` section)."
-msgstr "Configuración de la herramienta CLI de Gemini (sección `[gemini_cli]`)."
+msgstr "Configuración de la herramienta Gemini CLI (sección `[gemini_cli]`)."
 
 #: src/providers/catalog.md
 msgid "Gemini CLI: slot `gemini_cli`"
@@ -20786,7 +20786,7 @@ msgstr "L"
 
 #: src/SUMMARY.md src/channels/overview.md src/channels/line.md
 msgid "LINE"
-msgstr "LÍNEA"
+msgstr "LINE"
 
 #: src/reference/config.md
 msgid "LINE Messaging API channel instances (`[channels.line.<alias>]`)."
@@ -21758,7 +21758,7 @@ msgstr "Coincide con `\"{board}/{signal}\"`."
 
 #: src/SUMMARY.md src/channels/overview.md src/channels/matrix.md
 msgid "Matrix"
-msgstr "Matriz"
+msgstr "Matrix"
 
 #: src/ops/network-deployment.md
 msgid "Matrix / Mattermost / Nextcloud Talk"
@@ -21798,7 +21798,7 @@ msgstr "Diagnósticos específicos del canal de Matrix:"
 
 #: src/ops/troubleshooting.md
 msgid "Matrix: \"unknown device\""
-msgstr "Matriz: \"dispositivo desconocido\""
+msgstr "Matrix: \"dispositivo desconocido\""
 
 #: src/SUMMARY.md src/channels/overview.md src/channels/mattermost.md
 msgid "Mattermost"
@@ -23367,7 +23367,7 @@ msgstr "Observabilidad"
 
 #: src/reference/config.md
 msgid "Observability backend configuration (`[observability]` section)."
-msgstr "Configuración del backend de observabilidad (sección `[observabilidad]`)."
+msgstr "Configuración del backend de observabilidad (sección `[observability]`)."
 
 #: src/foundations/fnd-006-zero-compromise-in-practice.md
 msgid "Observability discipline"
@@ -29933,11 +29933,11 @@ msgstr "Firmar eventos con HMAC para evidencia de integridad"
 #: src/SUMMARY.md src/channels/overview.md src/channels/line.md
 #: src/channels/signal.md src/maintainers/pr-workflow.md
 msgid "Signal"
-msgstr "Señal"
+msgstr "Signal"
 
 #: src/ops/network-deployment.md
 msgid "Signal (`signal-cli-rest-api`)"
-msgstr "Señal (`signal-cli-rest-api`)"
+msgstr "Signal (`signal-cli-rest-api`)"
 
 #: src/reference/config.md
 msgid "Signal channel instances (`[channels.signal.<alias>]`)."
@@ -35423,11 +35423,11 @@ msgstr "Procesos de usuario"
 
 #: src/hardware/hardware-peripherals-design.md
 msgid "User sends Telegram: _\"What are the readable memory addresses on this USB device?\"_"
-msgstr "¿Cuáles son las direcciones de memoria legibles en este dispositivo USB?"
+msgstr "El usuario envía por Telegram: _\"¿Cuáles son las direcciones de memoria legibles en este dispositivo USB?\"_"
 
 #: src/hardware/hardware-peripherals-design.md
 msgid "User sends WhatsApp: _\"Turn on LED on pin 13\"_"
-msgstr "\"Enciende el LED en el pin 13\""
+msgstr "El usuario envía por WhatsApp: _\"Enciende el LED en el pin 13\"_"
 
 #: src/foundations/fnd-001-intentional-architecture.md
 msgid "User wants"
@@ -41790,10 +41790,7 @@ msgstr "`<FAMILY>` — Familia del proveedor (p. ej. anthropic, openai, elevenla
 
 #: src/reference/cli.md
 msgid "`<FROM>`"
-msgstr ""
-"El formato de cadena de origen está incompleto. Solo veo la etiqueta de apertura `<FROM>` sin contenido para traducir.\n"
-"\n"
-"Por favor, proporciona la cadena de texto completa que necesitas traducir al español, incluyendo el contenido entre las etiquetas."
+msgstr "`<FROM>`"
 
 #: src/reference/cli.md
 msgid "`<FROM>` — Current alias"
@@ -42381,7 +42378,7 @@ msgstr "`[\"*\"]`"
 
 #: src/reference/config.md
 msgid "`[\"Read\",\"Edit\",\"Bash\",\"Write\"]`"
-msgstr "`[\"Leer\",\"Editar\",\"Bash\",\"Escribir\"]`"
+msgstr "`[\"Read\",\"Edit\",\"Bash\",\"Write\"]`"
 
 #: src/reference/config.md
 msgid "`[\"aws\",\"azure\",\"gcp\"]`"
@@ -42417,7 +42414,7 @@ msgstr "`[\"shell\",\"file_write\",\"browser_open\",\"browser\",\"memory_forget\
 
 #: src/reference/config.md
 msgid "`[\"stability\",\"imagen\",\"dalle\",\"flux\"]`"
-msgstr "`[\"estabilidad\",\"imagen\",\"dalle\",\"flux\"]`"
+msgstr "`[\"stability\",\"imagen\",\"dalle\",\"flux\"]`"
 
 #: src/reference/config.md
 msgid "`[\"terraform\"]`"
@@ -42485,7 +42482,7 @@ msgstr "`[skills].allow_scripts`"
 
 #: src/channels/line.md
 msgid "`[transcription]` not configured"
-msgstr "`[transcripción]` no configurado"
+msgstr "`[transcription]` no configurado"
 
 #: src/architecture/rpc-socket.md
 msgid "`\\\\.\\pipe\\zeroclaw-<hash>` where `<hash>` is derived from `data_dir`"
@@ -42902,7 +42899,10 @@ msgid ""
 "```\n"
 "https://<your-public-url>/nextcloud-talk/<alias>\n"
 "```"
-msgstr "https://<your-public-url>/nextcloud-talk/<alias>"
+msgstr ""
+"```\n"
+"https://<your-public-url>/nextcloud-talk/<alias>\n"
+"```"
 
 #: src/maintainers/release-runbook.md
 msgid ""
@@ -47544,19 +47544,19 @@ msgstr "`priority:` ¿Qué tan urgente es esto?"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`priority:critical`"
-msgstr "`prioridad:crítica`"
+msgstr "`priority:critical`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`priority:high`"
-msgstr "`prioridad:alta`"
+msgstr "`priority:high`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`priority:low`"
-msgstr "`prioridad:baja`"
+msgstr "`priority:low`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`priority:medium`"
-msgstr "`prioridad:media`"
+msgstr "`priority:medium`"
 
 #: src/reference/config.md
 msgid "`probe_target`"
@@ -47584,7 +47584,7 @@ msgstr "`prompt_injection_mode`"
 
 #: src/maintainers/labels.md
 msgid "`provider:anthropic`"
-msgstr "`proveedor:anthropic`"
+msgstr "`provider:anthropic`"
 
 #: src/maintainers/labels.md
 msgid "`provider:azure-openai`"
@@ -47596,7 +47596,7 @@ msgstr "`provider:bedrock`"
 
 #: src/maintainers/labels.md
 msgid "`provider:claude-code`"
-msgstr "`proveedor:claude-code`"
+msgstr "`provider:claude-code`"
 
 #: src/maintainers/labels.md
 msgid "`provider:compatible`"
@@ -47604,11 +47604,11 @@ msgstr "`provider:compatible`"
 
 #: src/maintainers/labels.md
 msgid "`provider:copilot`"
-msgstr "`proveedor:copilot`"
+msgstr "`provider:copilot`"
 
 #: src/maintainers/labels.md
 msgid "`provider:gemini`"
-msgstr "`proveedor:gemini`"
+msgstr "`provider:gemini`"
 
 #: src/maintainers/labels.md
 msgid "`provider:glm`"
@@ -47616,11 +47616,11 @@ msgstr "`provider:glm`"
 
 #: src/maintainers/labels.md
 msgid "`provider:kilocli`"
-msgstr "`proveedor:kilocli`"
+msgstr "`provider:kilocli`"
 
 #: src/maintainers/labels.md
 msgid "`provider:ollama`"
-msgstr "`proveedor:ollama`"
+msgstr "`provider:ollama`"
 
 #: src/maintainers/labels.md
 msgid "`provider:openai`"
@@ -47628,7 +47628,7 @@ msgstr "`provider:openai`"
 
 #: src/maintainers/labels.md
 msgid "`provider:openrouter`"
-msgstr "`proveedor:openrouter`"
+msgstr "`provider:openrouter`"
 
 #: src/maintainers/labels.md
 msgid "`provider:telnyx`"
@@ -48990,12 +48990,12 @@ msgstr "`status:good-first-issue`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`status:help-wanted`"
-msgstr "`status:se-necesita-ayuda`"
+msgstr "`status:help-wanted`"
 
 #: src/foundations/fnd-003-governance.md src/maintainers/reviewer-playbook.md
 #: src/maintainers/labels.md
 msgid "`status:in-progress`"
-msgstr "`status:en-progreso`"
+msgstr "`status:in-progress`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`status:needs-triage`"

@@ -368,7 +368,7 @@ msgstr "\"Markdown\""
 
 #: src/channels/matrix.md
 msgid "\"Matrix is configured correctly, checks pass, but the bot does not respond.\""
-msgstr "« La matrice est configurée correctement, les vérifications passent, mais le bot ne répond pas. »"
+msgstr "« La Matrix est configurée correctement, les vérifications passent, mais le bot ne répond pas. »"
 
 #: src/developing/extension-examples.md
 msgid "\"Missing 'url' parameter\""
@@ -4159,7 +4159,7 @@ msgstr "**Mise en réseau.** `-p 42617:42617` publie la passerelle via le pont d
 
 #: src/contributing/pr-review-protocol.md
 msgid "**Never approve over another reviewer's active `CHANGES_REQUESTED`.** Resolve the prior block first."
-msgstr "**Ne validez jamais une demande de modifications en attente d’un autre réviseur.** Résolvez d’abord le blocage précédent."
+msgstr "**N’approuvez jamais par-dessus un `CHANGES_REQUESTED` actif d’un autre réviseur.** Résolvez d’abord le blocage précédent."
 
 #: src/contributing/pr-review-protocol.md
 msgid "**Never merge.** That's a separate decision and a separate skill."
@@ -5740,7 +5740,7 @@ msgstr "**Utilisation :** `zeroclaw channel <COMMAND>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw channel add <CHANNEL_TYPE> <CONFIG>`"
-msgstr "**Utilisation :** `zeroclaw channel add <TYPE_DE_CANAL> <CONFIG>`"
+msgstr "**Utilisation :** `zeroclaw channel add <CHANNEL_TYPE> <CONFIG>`"
 
 #: src/reference/cli.md
 msgid "**Usage:** `zeroclaw channel bind-telegram <IDENTITY>`"
@@ -12278,7 +12278,7 @@ msgstr "ClawdTalk (SIP en temps réel)"
 
 #: src/channels/voice.md
 msgid "ClawdTalk shortcuts several of these by keeping the audio stream live; regular `voice_call` incurs STT + LLM + TTS sequentially."
-msgstr "ClawdTalk simplifie plusieurs de ces étapes en maintenant le flux audio en direct ; un appel vocal standard implique STT + LLM + TTS de manière séquentielle."
+msgstr "ClawdTalk simplifie plusieurs de ces étapes en maintenant le flux audio en direct ; `voice_call` implique STT + LLM + TTS de manière séquentielle."
 
 #: src/reference/config.md
 msgid "ClawdTalk voice channel instances (`[channels.clawdtalk.<alias>]`)."
@@ -12995,7 +12995,7 @@ msgstr "Envisagez l’introduction de cycles à durée limitée (deux ou quatre 
 
 #: src/channels/email.md
 msgid "Consider the Gmail Push channel below for real-time delivery instead of polling."
-msgstr "Considérez le canal de poussée Gmail ci-dessous pour une livraison en temps réel au lieu d’un sondage."
+msgstr "Envisagez le canal Gmail Push ci-dessous pour une livraison en temps réel au lieu d’un sondage."
 
 #: src/foundations/fnd-006-zero-compromise-in-practice.md
 msgid "Consider two log messages. Both compile. Both pass CI. Both are syntactically correct."
@@ -17480,7 +17480,7 @@ msgstr "Collecter les diagnostics et ouvrir un ticket :"
 
 #: src/reference/config.md
 msgid "Gemini CLI tool configuration (`[gemini_cli]` section)."
-msgstr "Configuration de l'outil CLI Gemini (section `[gemini_cli]`)."
+msgstr "Configuration de l'outil Gemini CLI (section `[gemini_cli]`)."
 
 #: src/providers/catalog.md
 msgid "Gemini CLI: slot `gemini_cli`"
@@ -21758,7 +21758,7 @@ msgstr "Correspond à `\"{board}/{signal}\"`."
 
 #: src/SUMMARY.md src/channels/overview.md src/channels/matrix.md
 msgid "Matrix"
-msgstr "Matrice"
+msgstr "Matrix"
 
 #: src/ops/network-deployment.md
 msgid "Matrix / Mattermost / Nextcloud Talk"
@@ -21794,11 +21794,11 @@ msgstr "Matrix diffuse les réponses en continu via le paramètre `stream_mode` 
 
 #: src/channels/matrix.md
 msgid "Matrix-channel-specific diagnostics:"
-msgstr "Diagnostics spécifiques au canal de la matrice :"
+msgstr "Diagnostics propres au canal Matrix :"
 
 #: src/ops/troubleshooting.md
 msgid "Matrix: \"unknown device\""
-msgstr "Matrice : « périphérique inconnu »"
+msgstr "Matrix : « périphérique inconnu »"
 
 #: src/SUMMARY.md src/channels/overview.md src/channels/mattermost.md
 msgid "Mattermost"
@@ -33465,7 +33465,7 @@ msgstr "L'outil vérifie deux conditions de protection dans l'ordre :"
 
 #: src/agents/delegation.md
 msgid "The tool constructs `AgentRunOverrides { security, memory: None, is_subagent: true }` and awaits `crate::agent::run` (`crates/zeroclaw-runtime/src/agent/loop_.rs`, `pub async fn run`) inside a tracing scope keyed `subagent-<uuid>`. The parent's `tool` execution **blocks** until the child returns."
-msgstr "L"
+msgstr "L’outil construit `AgentRunOverrides { security, memory: None, is_subagent: true }` et attend `crate::agent::run` (`crates/zeroclaw-runtime/src/agent/loop_.rs`, `pub async fn run`) dans une portée de trace associée à `subagent-<uuid>`. L’exécution du `tool` parent **bloque** jusqu’au retour de l’enfant."
 
 #: src/security/tool-receipts.md
 msgid "The tool result (with the receipt) is fed back to the model."
@@ -37675,7 +37675,7 @@ msgstr "ZeroClaw a besoin de trois choses :"
 
 #: src/channels/line.md
 msgid "ZeroClaw not running, or port not reachable"
-msgstr "ZéroClaw ne s'exécute pas, ou le port n'est pas accessible"
+msgstr "ZeroClaw ne s'exécute pas, ou le port n'est pas accessible"
 
 #: src/hardware/arduino-uno-q-setup.md
 msgid "ZeroClaw on Arduino Uno Q: Step-by-Step Guide"
@@ -38402,7 +38402,7 @@ msgstr "[Mainteneurs → Vue d'ensemble](../maintainers/index.md) : ce que font 
 
 #: src/channels/overview.md
 msgid "[Matrix](./matrix.md)"
-msgstr "[Matrice](./matrix.md)"
+msgstr "[Matrix](./matrix.md)"
 
 #: src/channels/chat-others.md
 msgid "[Matrix](./matrix.md): E2EE, device verification, Synapse/Dendrite specifics"
@@ -42130,7 +42130,7 @@ msgstr "`LINE: Message de <userId> rejetée par la politique`"
 
 #: src/channels/line.md
 msgid "`LINE: audio message ignored (transcription not configured)`"
-msgstr "`MESSAGE AUDIO ignoré (transcription non configurée)`"
+msgstr "`LINE: audio message ignored (transcription not configured)`"
 
 #: src/channels/line.md
 msgid "`LINE: invalid X-Line-Signature`"
@@ -42378,7 +42378,7 @@ msgstr "`[\"*\"]`"
 
 #: src/reference/config.md
 msgid "`[\"Read\",\"Edit\",\"Bash\",\"Write\"]`"
-msgstr "`[\"Lire\",\"Modifier\",\"Bash\",\"Écrire\"]`"
+msgstr "`[\"Read\",\"Edit\",\"Bash\",\"Write\"]`"
 
 #: src/reference/config.md
 msgid "`[\"aws\",\"azure\",\"gcp\"]`"
@@ -45886,7 +45886,7 @@ msgstr "`fill` génère `<locale>/<domain>.ftl` pour chaque racine de catalogue 
 
 #: src/hardware/aardvark.md
 msgid "`find_devices()`"
-msgstr "`trouver_appareils()`"
+msgstr "`find_devices()`"
 
 #: src/reference/config.md
 msgid "`firecrawl`"
@@ -47541,7 +47541,7 @@ msgstr "`priority:` Quel est le degré d'urgence ?"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`priority:critical`"
-msgstr "`priorité : critique`"
+msgstr "`priority:critical`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`priority:high`"
@@ -47549,11 +47549,11 @@ msgstr "`priority:high`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`priority:low`"
-msgstr "`priorité : basse`"
+msgstr "`priority:low`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`priority:medium`"
-msgstr "`priorité : moyenne`"
+msgstr "`priority:medium`"
 
 #: src/reference/config.md
 msgid "`probe_target`"
@@ -47593,7 +47593,7 @@ msgstr "`provider:bedrock`"
 
 #: src/maintainers/labels.md
 msgid "`provider:claude-code`"
-msgstr "`fournisseur:claude-code`"
+msgstr "`provider:claude-code`"
 
 #: src/maintainers/labels.md
 msgid "`provider:compatible`"
@@ -47609,7 +47609,7 @@ msgstr "`provider:gemini`"
 
 #: src/maintainers/labels.md
 msgid "`provider:glm`"
-msgstr "`fournisseur:glm`"
+msgstr "`provider:glm`"
 
 #: src/maintainers/labels.md
 msgid "`provider:kilocli`"
@@ -47617,7 +47617,7 @@ msgstr "`provider:kilocli`"
 
 #: src/maintainers/labels.md
 msgid "`provider:ollama`"
-msgstr "`fournisseur:ollama`"
+msgstr "`provider:ollama`"
 
 #: src/maintainers/labels.md
 msgid "`provider:openai`"
@@ -47749,7 +47749,7 @@ msgstr "`quickstart` — Démarrage rapide — créez un agent fonctionnel de bo
 
 #: src/maintainers/reviewer-playbook.md src/maintainers/labels.md
 msgid "`r:needs-repro`"
-msgstr "`r:besoin-de-reproduction`"
+msgstr "`r:needs-repro`"
 
 #: src/maintainers/reviewer-playbook.md src/maintainers/labels.md
 msgid "`r:support`"
@@ -48970,12 +48970,12 @@ msgstr "`status:` Où en est-on dans le processus ?"
 #: src/foundations/fnd-003-governance.md src/maintainers/reviewer-playbook.md
 #: src/maintainers/labels.md
 msgid "`status:accepted`"
-msgstr "`status:accepté`"
+msgstr "`status:accepted`"
 
 #: src/foundations/fnd-003-governance.md src/maintainers/reviewer-playbook.md
 #: src/maintainers/labels.md
 msgid "`status:blocked`"
-msgstr "`status:bloqué`"
+msgstr "`status:blocked`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`status:discussion`"
@@ -48983,20 +48983,20 @@ msgstr "`status:discussion`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`status:good-first-issue`"
-msgstr "`status:bonne-première-problématique`"
+msgstr "`status:good-first-issue`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`status:help-wanted`"
-msgstr "`status:besoin-d-aide`"
+msgstr "`status:help-wanted`"
 
 #: src/foundations/fnd-003-governance.md src/maintainers/reviewer-playbook.md
 #: src/maintainers/labels.md
 msgid "`status:in-progress`"
-msgstr "`status:en-cours`"
+msgstr "`status:in-progress`"
 
 #: src/foundations/fnd-003-governance.md
 msgid "`status:needs-triage`"
-msgstr "`status:besoin-de-triage`"
+msgstr "`status:needs-triage`"
 
 #: src/foundations/fnd-003-governance.md src/maintainers/reviewer-playbook.md
 #: src/maintainers/labels.md
