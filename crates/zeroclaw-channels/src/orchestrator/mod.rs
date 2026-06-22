@@ -134,7 +134,10 @@ use zeroclaw_runtime::observability::traits::{ObserverEvent, ObserverMetric};
 use zeroclaw_runtime::observability::{self, Observer};
 use zeroclaw_runtime::platform;
 use zeroclaw_runtime::security::{AutonomyLevel, SecurityPolicy};
-use zeroclaw_runtime::tools::{self, Tool};
+use zeroclaw_runtime::tools::{
+    self, Tool, eager_mcp_tool_allowed, mcp_allowed_tool_count, mcp_tool_access_policy,
+    register_eager_mcp_tool_if_allowed,
+};
 use zeroclaw_runtime::util::truncate_with_ellipsis;
 
 type CronChannelRegistry = Arc<HashMap<String, Arc<dyn Channel>>>;
@@ -1422,6 +1425,23 @@ fn runtime_defaults_from_config(
         api_url: entry.uri.clone(),
         reliability: config.reliability.clone(),
     })
+}
+
+fn channel_effective_tool_names<'a>(
+    tools_registry: &'a [Box<dyn Tool>],
+    risk_profile: &zeroclaw_config::schema::RiskProfileConfig,
+) -> HashSet<&'a str> {
+    tools_registry
+        .iter()
+        .map(|tool| tool.name())
+        .filter(|name| {
+            risk_profile.level == AutonomyLevel::Full
+                || !risk_profile
+                    .excluded_tools
+                    .iter()
+                    .any(|excluded| excluded == *name)
+        })
+        .collect()
 }
 
 fn runtime_config_path(ctx: &ChannelRuntimeContext) -> Option<PathBuf> {
@@ -8885,10 +8905,10 @@ pub async fn start_channels(
         // `file_write` in its native tool specs. Filtering before skill
         // registration is also what lets a scoped elevation wrapper survive:
         // the raw target is removed while the distinct prefixed
-        // `{skill}__{tool}` wrapper is appended later. MCP tools are injected
-        // after this gate and are intentionally exempt (a restrictive allowlist
-        // must not silently drop a server's tools); the risk-profile denylist
-        // still applies to them.
+        // `{skill}__{tool}` wrapper is appended later. MCP tools are initialized
+        // after this built-in filter, then MCP registration and deferred
+        // discovery apply the same SecurityPolicy explicitly so denied MCP tools
+        // do not surface.
         let before_policy_filter_ch = built_tools.len();
         apply_policy_tool_filter(&mut built_tools, Some(security.as_ref()), None);
         if built_tools.len() != before_policy_filter_ch {
@@ -8931,39 +8951,70 @@ pub async fn start_channels(
                     let registry = std::sync::Arc::new(registry);
                     ch_mcp_elevation_arcs =
                         zeroclaw_runtime::tools::collect_mcp_elevation_arcs(&registry).await;
+                    let mcp_policy = mcp_tool_access_policy(security.as_ref(), None);
                     if config.mcp.deferred_loading {
                         let deferred_set =
                             zeroclaw_runtime::tools::DeferredMcpToolSet::from_registry(
                                 std::sync::Arc::clone(&registry),
                             )
                             .await;
+                        let allowed_stub_count = mcp_allowed_tool_count(
+                            deferred_set
+                                .stubs
+                                .iter()
+                                .map(|stub| stub.prefixed_name.as_str()),
+                            mcp_policy.as_ref(),
+                        );
+                        let skipped_stub_count =
+                            deferred_set.len().saturating_sub(allowed_stub_count);
                         ::zeroclaw_log::record!(
                             INFO,
                             ::zeroclaw_log::Event::new(
                                 module_path!(),
                                 ::zeroclaw_log::Action::Note
                             )
-                            .with_attrs(::serde_json::json!({"agent": agent_alias})),
+                            .with_attrs(::serde_json::json!({
+                                "agent": agent_alias,
+                                "discovered": deferred_set.len(),
+                                "allowed": allowed_stub_count,
+                                "skipped_by_policy": skipped_stub_count,
+                            })),
                             &format!(
-                                "MCP deferred: {} tool stub(s) from {} server(s)",
+                                "MCP deferred: {} tool stub(s) discovered from {} server(s), {} allowed, {} skipped by policy",
                                 deferred_set.len(),
-                                registry.server_count()
+                                registry.server_count(),
+                                allowed_stub_count,
+                                skipped_stub_count
                             )
                         );
                         deferred_section =
-                            zeroclaw_runtime::tools::build_deferred_tools_section(&deferred_set);
-                        let activated = std::sync::Arc::new(std::sync::Mutex::new(
-                            zeroclaw_runtime::tools::ActivatedToolSet::new(),
-                        ));
-                        ch_activated_handle = Some(std::sync::Arc::clone(&activated));
-                        built_tools.push(Box::new(zeroclaw_runtime::tools::ToolSearchTool::new(
-                            deferred_set,
-                            activated,
-                        )));
+                            zeroclaw_runtime::tools::build_deferred_tools_section_filtered(
+                                &deferred_set,
+                                mcp_policy.as_ref(),
+                            );
+                        if allowed_stub_count > 0 {
+                            let activated = std::sync::Arc::new(std::sync::Mutex::new(
+                                zeroclaw_runtime::tools::ActivatedToolSet::new(),
+                            ));
+                            ch_activated_handle = Some(std::sync::Arc::clone(&activated));
+                            let mut tool_search = zeroclaw_runtime::tools::ToolSearchTool::new(
+                                deferred_set,
+                                activated,
+                            );
+                            if let Some(policy) = mcp_policy {
+                                tool_search = tool_search.with_access_policy(policy);
+                            }
+                            built_tools.push(Box::new(tool_search));
+                        }
                     } else {
                         let names = registry.tool_names();
                         let mut registered = 0usize;
+                        let mut skipped = 0usize;
                         for name in names {
+                            if !eager_mcp_tool_allowed(&name, mcp_policy.as_ref()) {
+                                skipped += 1;
+                                continue;
+                            }
                             if let Some(def) = registry.get_tool_def(&name).await {
                                 let wrapper: std::sync::Arc<dyn Tool> = std::sync::Arc::new(
                                     zeroclaw_runtime::tools::McpToolWrapper::new(
@@ -8972,12 +9023,14 @@ pub async fn start_channels(
                                         std::sync::Arc::clone(&registry),
                                     ),
                                 );
-                                if let Some(ref handle) = delegate_handle_ch {
-                                    handle.write().push(std::sync::Arc::clone(&wrapper));
+                                if register_eager_mcp_tool_if_allowed(
+                                    wrapper,
+                                    &mut built_tools,
+                                    delegate_handle_ch.as_ref(),
+                                    mcp_policy.as_ref(),
+                                ) {
+                                    registered += 1;
                                 }
-                                built_tools
-                                    .push(Box::new(zeroclaw_runtime::tools::ArcToolRef(wrapper)));
-                                registered += 1;
                             }
                         }
                         ::zeroclaw_log::record!(
@@ -8988,9 +9041,10 @@ pub async fn start_channels(
                             )
                             .with_attrs(::serde_json::json!({"agent": agent_alias})),
                             &format!(
-                                "MCP: {} tool(s) registered from {} server(s)",
+                                "MCP: {} tool(s) registered from {} server(s), {} skipped by policy",
                                 registered,
-                                registry.server_count()
+                                registry.server_count(),
+                                skipped
                             )
                         );
                     }
@@ -9099,17 +9153,8 @@ pub async fn start_channels(
             ));
         }
 
-        // Filter out tools excluded for non-CLI channels so this agent's
-        // system prompt does not advertise them for channel-driven runs.
-        {
-            let active_profile = &risk_profile;
-            let excluded = &active_profile.excluded_tools;
-            if !excluded.is_empty() && active_profile.level != AutonomyLevel::Full {
-                tool_descs.retain(|(name, _)| !excluded.iter().any(|ex| ex == name));
-            }
-        }
-        let effective_tool_names: HashSet<&str> =
-            tools_registry.iter().map(|tool| tool.name()).collect();
+        let effective_tool_names =
+            channel_effective_tool_names(tools_registry.as_ref(), &risk_profile);
         tool_descs.retain(|(name, _)| effective_tool_names.contains(name));
 
         let bootstrap_max_chars = if agent.resolved.compact_context {
@@ -12759,6 +12804,116 @@ BTC is currently around $65,000 based on latest tool output."#
         assert!(
             names.contains(&"file_read"),
             "allowlisted tool must survive the filter; got {names:?}"
+        );
+    }
+
+    #[test]
+    fn channel_text_protocol_omits_excluded_mcp_tools() {
+        let tools_registry: Vec<Box<dyn Tool>> = vec![
+            Box::new(NamedMockTool("aa_mcp__find_items")),
+            Box::new(NamedMockTool("devin_mcp__read_wiki_contents")),
+        ];
+        let risk_profile = zeroclaw_config::schema::RiskProfileConfig {
+            level: AutonomyLevel::ReadOnly,
+            excluded_tools: vec!["aa_mcp__find_items".to_string()],
+            ..zeroclaw_config::schema::RiskProfileConfig::default()
+        };
+
+        let effective_tool_names = channel_effective_tool_names(&tools_registry, &risk_profile);
+        let prompt = build_tool_instructions_for_names(&tools_registry, &effective_tool_names);
+
+        assert!(
+            !prompt.contains("aa_mcp__find_items"),
+            "channel text tool protocol must not advertise excluded MCP tools"
+        );
+        assert!(
+            prompt.contains("devin_mcp__read_wiki_contents"),
+            "allowed MCP tools should remain advertised"
+        );
+    }
+
+    #[tokio::test]
+    async fn channel_deferred_mcp_section_omits_excluded_stubs() {
+        fn mcp_stub(
+            name: &str,
+            description: &str,
+        ) -> zeroclaw_tools::mcp_deferred::DeferredMcpToolStub {
+            zeroclaw_tools::mcp_deferred::DeferredMcpToolStub::new(
+                name.to_string(),
+                zeroclaw_tools::mcp_protocol::McpToolDef {
+                    name: name.to_string(),
+                    description: Some(description.to_string()),
+                    input_schema: serde_json::json!({"type": "object", "properties": {}}),
+                },
+            )
+        }
+
+        let registry = Arc::new(
+            zeroclaw_runtime::tools::McpRegistry::connect_all(&[])
+                .await
+                .expect("empty MCP registry should construct for prompt filtering tests"),
+        );
+        let deferred_set = zeroclaw_tools::mcp_deferred::DeferredMcpToolSet {
+            stubs: vec![
+                mcp_stub("aa_mcp__find_items", "Search items"),
+                mcp_stub("devin_mcp__read_wiki_contents", "Read repository wiki"),
+            ],
+            registry,
+        };
+        let policy = SecurityPolicy {
+            excluded_tools: Some(vec!["aa_mcp__find_items".to_string()]),
+            ..SecurityPolicy::default()
+        };
+        let mcp_policy = mcp_tool_access_policy(&policy, None);
+
+        assert_eq!(
+            mcp_allowed_tool_count(
+                deferred_set
+                    .stubs
+                    .iter()
+                    .map(|stub| stub.prefixed_name.as_str()),
+                mcp_policy.as_ref()
+            ),
+            1,
+            "only policy-admitted deferred MCP stubs should count toward tool_search registration"
+        );
+
+        let section = zeroclaw_runtime::tools::build_deferred_tools_section_filtered(
+            &deferred_set,
+            mcp_policy.as_ref(),
+        );
+        assert!(
+            !section.contains("aa_mcp__find_items"),
+            "deferred MCP prompt section must omit excluded stubs"
+        );
+        assert!(
+            section.contains("devin_mcp__read_wiki_contents"),
+            "deferred MCP prompt section should keep allowed stubs"
+        );
+
+        let deny_all = SecurityPolicy {
+            allowed_tools: Some(vec![]),
+            ..SecurityPolicy::default()
+        };
+        let deny_all_policy = mcp_tool_access_policy(&deny_all, None);
+        assert_eq!(
+            mcp_allowed_tool_count(
+                deferred_set
+                    .stubs
+                    .iter()
+                    .map(|stub| stub.prefixed_name.as_str()),
+                deny_all_policy.as_ref()
+            ),
+            0,
+            "channel path must not register tool_search when policy admits no deferred MCP stubs"
+        );
+        assert!(
+            zeroclaw_runtime::tools::build_deferred_tools_section_filtered(
+                &deferred_set,
+                deny_all_policy.as_ref()
+            )
+            .is_empty(),
+            "channel prompt must not include an empty deferred-tools section when every stub is denied"
         );
     }
 

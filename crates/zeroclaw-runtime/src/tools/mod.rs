@@ -25,6 +25,7 @@ pub mod cron_runs;
 pub mod cron_update;
 pub mod delegate;
 pub mod file_read;
+pub mod mcp_policy;
 pub mod model_switch;
 pub mod read_skill;
 pub mod schedule;
@@ -43,6 +44,10 @@ pub mod spawn_subagent;
 pub mod verifiable_intent;
 
 // Tool types from zeroclaw-tools (direct imports, no shims)
+pub use mcp_policy::{
+    eager_mcp_tool_allowed, mcp_allowed_tool_count, mcp_tool_access_policy,
+    register_eager_mcp_tool_if_allowed,
+};
 pub use zeroclaw_tools::ask_user::AskUserTool;
 pub use zeroclaw_tools::ask_user::ChannelMapHandle;
 pub use zeroclaw_tools::backup_tool::BackupTool;

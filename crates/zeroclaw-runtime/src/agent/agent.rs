@@ -1240,8 +1240,7 @@ impl Agent {
                 Ok(registry) => {
                     let registry = std::sync::Arc::new(registry);
                     mcp_elevation_arcs = tools::collect_mcp_elevation_arcs(&registry).await;
-                    let mcp_policy =
-                        crate::agent::loop_::mcp_tool_access_policy(security.as_ref(), None);
+                    let mcp_policy = crate::tools::mcp_tool_access_policy(security.as_ref(), None);
                     if config.mcp.deferred_loading {
                         let deferred_set = tools::DeferredMcpToolSet::from_registry(
                             std::sync::Arc::clone(&registry),
@@ -1259,7 +1258,7 @@ impl Agent {
                                 registry.server_count()
                             )
                         );
-                        let allowed_stub_count = crate::agent::loop_::mcp_allowed_tool_count(
+                        let allowed_stub_count = crate::tools::mcp_allowed_tool_count(
                             deferred_set
                                 .stubs
                                 .iter()
@@ -1282,10 +1281,7 @@ impl Agent {
                         let mut registered = 0usize;
                         let mut skipped = 0usize;
                         for name in names {
-                            if !crate::agent::loop_::eager_mcp_tool_allowed(
-                                &name,
-                                mcp_policy.as_ref(),
-                            ) {
+                            if !crate::tools::eager_mcp_tool_allowed(&name, mcp_policy.as_ref()) {
                                 skipped += 1;
                                 continue;
                             }
@@ -1296,7 +1292,7 @@ impl Agent {
                                         def,
                                         std::sync::Arc::clone(&registry),
                                     ));
-                                if crate::agent::loop_::register_eager_mcp_tool_if_allowed(
+                                if crate::tools::register_eager_mcp_tool_if_allowed(
                                     wrapper,
                                     &mut tools,
                                     delegate_handle.as_ref(),
