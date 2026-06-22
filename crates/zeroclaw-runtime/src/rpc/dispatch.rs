@@ -3693,6 +3693,87 @@ mod tests {
         assert!(*reload_rx.borrow_and_update());
     }
 
+    #[tokio::test]
+    async fn quickstart_apply_shuts_down_gateway_before_daemon_reload() {
+        use zeroclaw_config::presets::{
+            AgentIdentity, BuilderSubmission, MemoryChoice, ModelProviderChoice, SelectorChoice,
+        };
+        use zeroclaw_infra::session_queue::SessionActorQueue;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config = zeroclaw_config::schema::Config {
+            data_dir: tmp.path().join("workspace"),
+            config_path: tmp.path().join("config.toml"),
+            ..zeroclaw_config::schema::Config::default()
+        };
+        std::fs::create_dir_all(&config.data_dir).unwrap();
+
+        let queue = Arc::new(SessionActorQueue::new(4, 10, 60));
+        let sessions = Arc::new(crate::rpc::session::SessionStore::new(16, queue));
+        let (gateway_shutdown_tx, mut gateway_shutdown_rx) = tokio::sync::watch::channel(false);
+        let (reload_tx, mut reload_rx) = tokio::sync::watch::channel(false);
+        let ctx = RpcContext::minimal_with_reload_controls(
+            config,
+            sessions,
+            Some(gateway_shutdown_tx),
+            Some(reload_tx),
+        );
+        let (tx, _rx) = tokio::sync::mpsc::channel(64);
+        let dispatcher = RpcDispatcher::new(ctx, tx, "test-peer-quickstart-reload:pid=1".into());
+
+        let submission = BuilderSubmission {
+            model_provider: SelectorChoice::Fresh(ModelProviderChoice {
+                provider_type: "anthropic".into(),
+                alias: "anthropic".into(),
+                model: "claude-sonnet-4-5".into(),
+                fields: std::collections::HashMap::from([(
+                    "api_key".to_string(),
+                    "sk-test".to_string(),
+                )]),
+            }),
+            risk_profile: SelectorChoice::Fresh("balanced".into()),
+            runtime_profile: SelectorChoice::Fresh("balanced".into()),
+            memory: SelectorChoice::Fresh(MemoryChoice::Sqlite),
+            channels: vec![],
+            peer_groups: vec![],
+            agent: AgentIdentity {
+                name: "quickstart_bot".into(),
+                system_prompt: "You are helpful.".into(),
+                personality_file: None,
+                personality_files: vec![],
+            },
+        };
+
+        let result = dispatcher
+            .handle_quickstart_apply(&json!({ "submission": submission }))
+            .await
+            .expect("quickstart/apply should accept reload-capable contexts");
+        assert_eq!(
+            result["kind"], "applied",
+            "quickstart/apply result: {result:#?}"
+        );
+        assert_eq!(result["daemon_restarted"], true);
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            gateway_shutdown_rx.changed(),
+        )
+        .await
+        .expect("quickstart/apply must signal gateway shutdown before daemon reload")
+        .expect("gateway shutdown sender should stay alive");
+        assert!(*gateway_shutdown_rx.borrow_and_update());
+        assert!(
+            !*reload_rx.borrow(),
+            "quickstart/apply daemon reload must wait until the gateway listener has been asked to shut down"
+        );
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), reload_rx.changed())
+            .await
+            .expect("quickstart/apply daemon reload should follow gateway shutdown")
+            .expect("reload sender should stay alive");
+        assert!(*reload_rx.borrow_and_update());
+    }
+
     #[test]
     fn doctor_summary_counts_each_severity_bucket() {
         let results = vec![
