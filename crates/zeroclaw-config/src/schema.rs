@@ -5363,8 +5363,9 @@ pub enum SkillsPromptInjectionMode {
 ///
 /// Reuses the same git-clone mechanism as the default `zeroclaw-skills`
 /// registry. Install a skill from it with `registry:<name>/<skill>`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ExternalRegistryKind {
+    #[default]
     Git,
     Unsupported(String),
 }
@@ -5375,12 +5376,6 @@ impl ExternalRegistryKind {
             Self::Git => "git",
             Self::Unsupported(kind) => kind.as_str(),
         }
-    }
-}
-
-impl Default for ExternalRegistryKind {
-    fn default() -> Self {
-        Self::Git
     }
 }
 
