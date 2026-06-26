@@ -302,21 +302,18 @@ pub fn introduced_local_absolute_path(source: &str, translation: &str) -> Option
     }
 
     let source_paths = local_absolute_paths(source);
-    for path in translation_paths {
-        if !source_paths.contains(&path) {
-            return Some(path);
-        }
-    }
-    None
+    translation_paths
+        .into_iter()
+        .find(|path| !source_paths.contains(path))
 }
 
 fn local_absolute_paths(text: &str) -> Vec<String> {
     let mut paths = Vec::new();
     for (idx, _) in text.char_indices() {
-        if starts_local_posix_path(text, idx) || starts_windows_absolute_path(text, idx) {
-            if let Some(path) = extract_path_at(text, idx) {
-                paths.push(path);
-            }
+        if (starts_local_posix_path(text, idx) || starts_windows_absolute_path(text, idx))
+            && let Some(path) = extract_path_at(text, idx)
+        {
+            paths.push(path);
         }
     }
     paths.sort();
