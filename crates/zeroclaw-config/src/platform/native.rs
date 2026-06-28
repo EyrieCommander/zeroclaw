@@ -15,12 +15,16 @@ pub fn windows_cmd_shell_raw_arg(command: &str) -> String {
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+#[cfg(target_os = "windows")]
+const WINDOWS_COMMAND_INTERPRETER: &str = "cmd.exe";
+#[cfg(target_os = "windows")]
+const WINDOWS_COMMAND_EXECUTE_ARG: &str = "/C";
 
 #[cfg(target_os = "windows")]
 pub fn windows_tokio_cmd_shell_command(command: &str) -> tokio::process::Command {
-    let mut process = tokio::process::Command::new("cmd.exe");
+    let mut process = tokio::process::Command::new(WINDOWS_COMMAND_INTERPRETER);
     process
-        .raw_arg("/C")
+        .raw_arg(WINDOWS_COMMAND_EXECUTE_ARG)
         .raw_arg(windows_cmd_shell_raw_arg(command))
         .creation_flags(CREATE_NO_WINDOW);
     process
@@ -30,9 +34,9 @@ pub fn windows_tokio_cmd_shell_command(command: &str) -> tokio::process::Command
 pub fn windows_std_cmd_shell_command(command: &str) -> std::process::Command {
     use std::os::windows::process::CommandExt;
 
-    let mut process = std::process::Command::new("cmd.exe");
+    let mut process = std::process::Command::new(WINDOWS_COMMAND_INTERPRETER);
     process
-        .raw_arg("/C")
+        .raw_arg(WINDOWS_COMMAND_EXECUTE_ARG)
         .raw_arg(windows_cmd_shell_raw_arg(command))
         .creation_flags(CREATE_NO_WINDOW);
     process
