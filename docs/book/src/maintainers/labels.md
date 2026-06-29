@@ -115,7 +115,9 @@ Applied automatically by `pr-path-labeler.yml`. Globs live in `.github/labeler.y
 
 ### Additional component labels
 
-Some base scopes have narrower path-owned labels for maintainer routing. These labels are synchronized by `.github/labeler.yml` when the PR diff touches the listed files.
+Some surfaces have narrower path-owned labels for maintainer routing. These labels are synchronized by `.github/labeler.yml` when the PR diff touches the listed files.
+
+Scoped path labels do not guarantee a same-prefix base label. Because `pr-path-labeler.yml` runs with `sync-labels: true`, maintainers should treat `.github/labeler.yml` as the source of truth for which base and scoped labels a PR receives.
 
 | Label | Matches |
 |---|---|
@@ -129,7 +131,7 @@ Some base scopes have narrower path-owned labels for maintainer routing. These l
 | `security:policy` | runtime security policy, IAM policy, and config policy files |
 | `security:secrets` | runtime and config secrets handling |
 
-Do not apply legacy `observability: runtime_trace` to new issues or PRs. Use base `observability` plus `observability:otel` when the work is about OpenTelemetry tracing, and decide any future runtime-trace-specific canonical label in a separate create/migrate packet.
+Do not apply legacy `observability: runtime_trace` to new issues or PRs. Use `observability:otel` when the work is about OpenTelemetry tracing, add base `observability` only when the issue or PR also matches that base surface, and decide any future runtime-trace-specific canonical label in a separate create/migrate packet.
 
 Gateway subarea labels such as `gateway: api`, `gateway: sse`, `gateway:local_bridge`, and `gateway:webhook_ingress` remain live migration holdbacks. New routing should use base `gateway` until a separate packet either creates canonical no-space/hyphenated sublabels and migrates refs, or collapses those labels into base `gateway`.
 
