@@ -7,6 +7,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
@@ -16,6 +17,8 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::jsonrpc::{self, JsonRpcError, RpcOutbound, field};
 use crate::wire::{ConfigFieldEntry, DoctorRunResult, FsListDirResponse, SectionShape};
+
+const CONFIG_RENAME_TIMEOUT: Duration = Duration::from_secs(120);
 
 // ── Platform local-stream shim ──────────────────────────────────
 
@@ -923,7 +926,7 @@ impl RpcClient {
         self.call_with_timeout(
             method::CONFIG_RENAME_MAP_KEY,
             serde_json::json!({ "path": path, "from": from, "to": to }),
-            std::time::Duration::from_secs(30),
+            CONFIG_RENAME_TIMEOUT,
         )
         .await
     }
@@ -2263,6 +2266,8 @@ mod session_method_tests {
 
     #[tokio::test]
     async fn config_map_key_rename_sends_path_and_aliases() {
+        assert_eq!(CONFIG_RENAME_TIMEOUT, std::time::Duration::from_secs(120));
+
         let (rpc, mut write_rx) = make_rpc();
         let client = RpcClient::with_rpc(rpc.clone());
 
