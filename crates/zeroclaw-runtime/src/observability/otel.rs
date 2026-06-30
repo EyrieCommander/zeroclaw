@@ -1,4 +1,4 @@
-use super::traits::{Observer, ObserverEvent, ObserverMetric};
+use super::traits::{LlmMessageSnapshot, Observer, ObserverEvent, ObserverMetric};
 use opentelemetry::metrics::{Counter, Gauge, Histogram};
 use opentelemetry::trace::{Span, SpanKind, Status, TraceContextExt as _, Tracer};
 use opentelemetry::{Context, KeyValue, global};
@@ -8,6 +8,7 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::SystemTime;
 
 /// OpenTelemetry-backed observer — exports traces and metrics via OTLP.
 pub struct OtelObserver {
@@ -28,6 +29,11 @@ pub struct OtelObserver {
     tokens_used: Counter<u64>,
     active_sessions: Gauge<u64>,
     queue_depth: Gauge<u64>,
+    memory_recall_count: Counter<u64>,
+    memory_recall_duration: Histogram<f64>,
+    memory_store_count: Counter<u64>,
+    rag_retrieve_count: Counter<u64>,
+    rag_retrieve_duration: Histogram<f64>,
 
     // Turn span tracking for parent/child correlation
     active_agent_spans: Mutex<HashMap<String, (global::BoxedSpan, Context)>>,
@@ -168,6 +174,38 @@ impl OtelObserver {
             .with_description("Current message queue depth")
             .build();
 
+        // ── Memory observability instruments (Unit 2 of memory-OTel PR) ──
+        // The OTel SDK's PeriodicReader is non-blocking: aggregations are
+        // updated synchronously in record_event, but export happens on a
+        // background interval. New instruments cannot back-pressure the
+        // runtime hot path under burst writes.
+        let memory_recall_count = meter
+            .u64_counter("zeroclaw.memory.recall.count")
+            .with_description("Total memory.recall calls from the runtime boundary")
+            .build();
+
+        let memory_recall_duration = meter
+            .f64_histogram("zeroclaw.memory.recall.duration")
+            .with_description("memory.recall duration in seconds")
+            .with_unit("s")
+            .build();
+
+        let memory_store_count = meter
+            .u64_counter("zeroclaw.memory.store.count")
+            .with_description("Total memory.store calls from the runtime boundary")
+            .build();
+
+        let rag_retrieve_count = meter
+            .u64_counter("zeroclaw.rag.retrieve.count")
+            .with_description("Total rag.retrieve calls from the runtime boundary")
+            .build();
+
+        let rag_retrieve_duration = meter
+            .f64_histogram("zeroclaw.rag.retrieve.duration")
+            .with_description("rag.retrieve duration in seconds")
+            .with_unit("s")
+            .build();
+
         Ok(Self {
             tracer_provider,
             meter_provider: meter_provider_clone,
@@ -184,6 +222,11 @@ impl OtelObserver {
             tokens_used,
             active_sessions,
             queue_depth,
+            memory_recall_count,
+            memory_recall_duration,
+            memory_store_count,
+            rag_retrieve_count,
+            rag_retrieve_duration,
             active_agent_spans: Mutex::new(HashMap::new()),
         })
     }
@@ -310,6 +353,152 @@ impl Observer for OtelObserver {
             ObserverEvent::TurnComplete
             | ObserverEvent::CacheHit { .. }
             | ObserverEvent::CacheMiss { .. } => {}
+            ObserverEvent::MemoryRecall {
+                query_summary,
+                duration,
+                num_entries,
+                backend,
+                success,
+            } => {
+                let secs = duration.as_secs_f64();
+                let start_time = SystemTime::now()
+                    .checked_sub(*duration)
+                    .unwrap_or(SystemTime::now());
+
+                let mut span_attrs = vec![
+                    // Legacy / ZeroClaw-specific attrs
+                    KeyValue::new("memory.backend", backend.clone()),
+                    KeyValue::new("memory.hits", *num_entries as i64),
+                    KeyValue::new("memory.success", *success),
+                    KeyValue::new("duration_s", secs),
+                    // Partial GenAI-compatible attributes. The retrieval
+                    // operation value is canonical, but the surrounding
+                    // span (`SpanKind::Internal` and the `memory.recall`
+                    // name rather than `{operation} {data_source.id}`) is
+                    // shaped for ZeroClaw / Langfuse compatibility, not
+                    // strict OTel GenAI conformance.
+                    KeyValue::new("gen_ai.operation.name", "retrieval"),
+                    KeyValue::new("gen_ai.system", backend.clone()),
+                ];
+                if let Some(q) = query_summary {
+                    // Langfuse-specific Input/Output pane attrs. Emitting
+                    // both keeps vendor-agnostic backends happy while
+                    // Langfuse renders the query and the hit count in its
+                    // GenAI-aware retrieval view.
+                    span_attrs.push(KeyValue::new("input.value", q.clone()));
+                    span_attrs.push(KeyValue::new(
+                        "output.value",
+                        format!("{} hits", num_entries),
+                    ));
+                }
+
+                let mut span = tracer.build(
+                    opentelemetry::trace::SpanBuilder::from_name("memory.recall")
+                        .with_kind(SpanKind::Internal)
+                        .with_start_time(start_time)
+                        .with_attributes(span_attrs),
+                );
+                if *success {
+                    span.set_status(Status::Ok);
+                } else {
+                    span.set_status(Status::error(""));
+                }
+                span.end();
+
+                let metric_attrs = [KeyValue::new("backend", backend.clone())];
+                self.memory_recall_count.add(1, &metric_attrs);
+                self.memory_recall_duration.record(secs, &metric_attrs);
+            }
+            ObserverEvent::RagRetrieve {
+                query_summary,
+                duration,
+                num_chunks,
+                num_boards,
+            } => {
+                let secs = duration.as_secs_f64();
+                let start_time = SystemTime::now()
+                    .checked_sub(*duration)
+                    .unwrap_or(SystemTime::now());
+
+                // NOTE: `rag.num_chunks` / `rag.num_boards` are
+                // ZeroClaw-specific. OTel GenAI semconv defines
+                // `gen_ai.operation.name = "retrieval"` but no canonical
+                // attribute for chunk count or domain partitioning yet.
+                // Revisit when the GenAI WG publishes retrieval-attribute
+                // extensions.
+                let mut span_attrs = vec![
+                    KeyValue::new("rag.num_chunks", *num_chunks as i64),
+                    KeyValue::new("rag.num_boards", *num_boards as i64),
+                    KeyValue::new("duration_s", secs),
+                    KeyValue::new("gen_ai.operation.name", "retrieval"),
+                    KeyValue::new("gen_ai.system", "zeroclaw_rag"),
+                ];
+                if let Some(q) = query_summary {
+                    span_attrs.push(KeyValue::new("input.value", q.clone()));
+                    span_attrs.push(KeyValue::new(
+                        "output.value",
+                        format!("{} chunks across {} boards", num_chunks, num_boards),
+                    ));
+                }
+
+                let mut span = tracer.build(
+                    opentelemetry::trace::SpanBuilder::from_name("rag.retrieve")
+                        .with_kind(SpanKind::Internal)
+                        .with_start_time(start_time)
+                        .with_attributes(span_attrs),
+                );
+                span.set_status(Status::Ok);
+                span.end();
+
+                self.rag_retrieve_count.add(1, &[]);
+                self.rag_retrieve_duration.record(secs, &[]);
+            }
+            ObserverEvent::MemoryStore {
+                category,
+                backend,
+                duration,
+                success,
+            } => {
+                let secs = duration.as_secs_f64();
+                let start_time = SystemTime::now()
+                    .checked_sub(*duration)
+                    .unwrap_or(SystemTime::now());
+
+                // NOTE: OTel GenAI semconv has no canonical "store"
+                // operation value (canonical: chat, create_agent,
+                // embeddings, execute_tool, generate_content,
+                // invoke_agent, retrieval, text_completion). We omit
+                // `gen_ai.operation.name` and lean on `db.*` conventions
+                // instead.
+                let span_attrs = vec![
+                    KeyValue::new("memory.category", category.clone()),
+                    KeyValue::new("memory.backend", backend.clone()),
+                    KeyValue::new("memory.success", *success),
+                    KeyValue::new("duration_s", secs),
+                    KeyValue::new("db.system", backend.clone()),
+                    KeyValue::new("db.operation", "INSERT"),
+                ];
+
+                let mut span = tracer.build(
+                    opentelemetry::trace::SpanBuilder::from_name("memory.store")
+                        .with_kind(SpanKind::Internal)
+                        .with_start_time(start_time)
+                        .with_attributes(span_attrs),
+                );
+                if *success {
+                    span.set_status(Status::Ok);
+                } else {
+                    span.set_status(Status::error(""));
+                }
+                span.end();
+
+                let metric_attrs = [
+                    KeyValue::new("category", category.clone()),
+                    KeyValue::new("backend", backend.clone()),
+                    KeyValue::new("success", success.to_string()),
+                ];
+                self.memory_store_count.add(1, &metric_attrs);
+            }
             ObserverEvent::LlmResponse {
                 model_provider,
                 model,
@@ -321,6 +510,7 @@ impl Observer for OtelObserver {
                 channel,
                 agent_alias,
                 turn_id,
+                messages,
             } => {
                 let secs = duration.as_secs_f64();
                 let attrs = [
@@ -354,6 +544,7 @@ impl Observer for OtelObserver {
                 if let Some(output) = output_tokens {
                     span_attrs.push(KeyValue::new("gen_ai.usage.output_tokens", *output as i64));
                 }
+                span_attrs.extend(message_attrs(messages));
                 let parent_cx = self.parent_cx_for(turn_id.as_deref());
                 let mut span = tracer.build_with_context(
                     opentelemetry::trace::SpanBuilder::from_name("llm.response")
@@ -374,8 +565,8 @@ impl Observer for OtelObserver {
                 duration,
                 tokens_used,
                 cost_usd,
-                channel: _,
-                agent_alias: _,
+                channel,
+                agent_alias,
                 turn_id,
             } => {
                 if let Some(tid) = turn_id {
@@ -387,6 +578,14 @@ impl Observer for OtelObserver {
                     if let Some((mut span, _)) = entry {
                         let secs = duration.as_secs_f64();
                         span.set_attribute(KeyValue::new("duration_s", secs));
+                        span.set_attribute(KeyValue::new(
+                            "zeroclaw.channel",
+                            channel.clone().unwrap_or_default(),
+                        ));
+                        span.set_attribute(KeyValue::new(
+                            "gen_ai.agent.name",
+                            agent_alias.clone().unwrap_or_default(),
+                        ));
                         if let Some(usage) = tokens_used {
                             span.set_attribute(KeyValue::new(
                                 "gen_ai.usage.input_tokens",
@@ -410,6 +609,7 @@ impl Observer for OtelObserver {
                     &[
                         KeyValue::new("gen_ai.provider.name", model_provider.clone()),
                         KeyValue::new("gen_ai.request.model", model.clone()),
+                        KeyValue::new("gen_ai.agent.name", agent_alias.clone().unwrap_or_default()),
                     ],
                 );
             }
@@ -504,6 +704,9 @@ impl Observer for OtelObserver {
             | ObserverEvent::RecoveryCompleted { .. } => {
                 // DORA deployment events: OTel pass-through not yet implemented.
             }
+            // `ObserverEvent` is `#[non_exhaustive]` — silently ignore any
+            // future variant added by upstream `zeroclaw-api`.
+            _ => {}
         }
     }
 
@@ -569,10 +772,152 @@ impl Observer for OtelObserver {
     }
 }
 
+/// Build the OTel GenAI message-content attributes from a captured snapshot.
+/// Returns an empty vec when there is nothing to emit. Encoding matches the
+/// Langfuse-validated shape: system carried separately, system filtered out of
+/// `input.messages`, output as a single assistant message (text + tool calls).
+fn message_attrs(messages: &Option<LlmMessageSnapshot>) -> Vec<KeyValue> {
+    let Some(snap) = messages else {
+        return Vec::new();
+    };
+    let mut attrs = Vec::new();
+
+    if let Some(sys) = snap.system_instructions.as_ref() {
+        attrs.push(KeyValue::new("gen_ai.system_instructions", sys.clone()));
+    }
+
+    if !snap.input.is_empty() {
+        // `content` stays a plain string (free-form prose); only tool-call `arguments`
+        // (below) are re-parsed into a nested tree — the bce8da324 / Langfuse-validated shape.
+        let input_json = serde_json::to_string(
+            &snap
+                .input
+                .iter()
+                .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".to_string());
+        attrs.push(KeyValue::new("gen_ai.input.messages", input_json));
+    }
+
+    // Output is a single assistant message: text (if any) plus tool calls (if any).
+    let mut output_msg = serde_json::Map::new();
+    output_msg.insert("role".into(), serde_json::Value::String("assistant".into()));
+    if let Some(text) = snap.output_text.as_ref() {
+        output_msg.insert("content".into(), serde_json::Value::String(text.clone()));
+    }
+    if !snap.output_tool_calls.is_empty() {
+        let calls: Vec<serde_json::Value> = snap
+            .output_tool_calls
+            .iter()
+            .map(|tc| {
+                serde_json::json!({
+                    "id": tc.id,
+                    "name": tc.name,
+                    // arguments_json is already JSON text — re-parse so the attribute
+                    // is a nested tree, not a double-encoded string. On malformed JSON,
+                    // fall back to the (scrubbed) raw string rather than silently dropping it.
+                    "arguments": serde_json::from_str::<serde_json::Value>(&tc.arguments_json)
+                        .unwrap_or_else(|_| serde_json::Value::String(tc.arguments_json.clone())),
+                })
+            })
+            .collect();
+        output_msg.insert("tool_calls".into(), serde_json::Value::Array(calls));
+    }
+    if output_msg.contains_key("content") || output_msg.contains_key("tool_calls") {
+        let output_json = serde_json::to_string(&vec![serde_json::Value::Object(output_msg)])
+            .unwrap_or_else(|_| "[]".to_string());
+        attrs.push(KeyValue::new("gen_ai.output.messages", output_json));
+    }
+
+    attrs
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::traits::{LlmMessageSnapshot, MessageSnapshot, ToolCallSnapshot};
     use super::*;
     use std::time::Duration;
+
+    fn attr_value(attrs: &[opentelemetry::KeyValue], key: &str) -> Option<String> {
+        attrs
+            .iter()
+            .find(|kv| kv.key.as_str() == key)
+            .map(|kv| kv.value.as_str().to_string())
+    }
+
+    #[test]
+    fn message_attrs_emits_genai_semconv() {
+        let snap = LlmMessageSnapshot {
+            input: vec![MessageSnapshot {
+                role: "user".into(),
+                content: "hi".into(),
+            }],
+            output_text: Some("hello".into()),
+            output_tool_calls: vec![ToolCallSnapshot {
+                id: "c1".into(),
+                name: "shell".into(),
+                arguments_json: r#"{"cmd":"ls"}"#.into(),
+            }],
+            system_instructions: Some("You are helpful.".into()),
+        };
+        let attrs = message_attrs(&Some(snap));
+
+        assert_eq!(
+            attr_value(&attrs, "gen_ai.system_instructions").as_deref(),
+            Some("You are helpful.")
+        );
+
+        let input: serde_json::Value =
+            serde_json::from_str(&attr_value(&attrs, "gen_ai.input.messages").unwrap()).unwrap();
+        assert_eq!(input[0]["role"], "user");
+        assert_eq!(input[0]["content"], "hi");
+
+        let output: serde_json::Value =
+            serde_json::from_str(&attr_value(&attrs, "gen_ai.output.messages").unwrap()).unwrap();
+        assert_eq!(output[0]["role"], "assistant");
+        assert_eq!(output[0]["content"], "hello");
+        assert_eq!(output[0]["tool_calls"][0]["name"], "shell");
+        assert_eq!(output[0]["tool_calls"][0]["arguments"]["cmd"], "ls");
+    }
+
+    #[test]
+    fn message_attrs_omits_empty_and_handles_none() {
+        // Only system set: input/output omitted.
+        let snap = LlmMessageSnapshot {
+            input: vec![],
+            output_text: None,
+            output_tool_calls: vec![],
+            system_instructions: Some("sys".into()),
+        };
+        let attrs = message_attrs(&Some(snap));
+        let keys: Vec<&str> = attrs.iter().map(|kv| kv.key.as_str()).collect();
+        assert!(keys.contains(&"gen_ai.system_instructions"));
+        assert!(!keys.contains(&"gen_ai.input.messages"));
+        assert!(!keys.contains(&"gen_ai.output.messages"));
+
+        // None → no attrs.
+        assert!(message_attrs(&None).is_empty());
+    }
+
+    #[test]
+    fn message_attrs_malformed_tool_arguments_falls_back_to_string() {
+        let snap = LlmMessageSnapshot {
+            input: vec![],
+            output_text: None,
+            output_tool_calls: vec![ToolCallSnapshot {
+                id: "c1".into(),
+                name: "shell".into(),
+                arguments_json: "not valid json".into(),
+            }],
+            system_instructions: None,
+        };
+        let attrs = message_attrs(&Some(snap));
+        let output: serde_json::Value =
+            serde_json::from_str(&attr_value(&attrs, "gen_ai.output.messages").unwrap()).unwrap();
+        // Malformed arguments fall back to the raw string, not null / dropped.
+        assert_eq!(output[0]["tool_calls"][0]["arguments"], "not valid json");
+    }
 
     // Note: OtelObserver::new() requires an OTLP endpoint.
     // In tests we verify the struct creation fails gracefully
@@ -619,6 +964,7 @@ mod tests {
             error_message: None,
             input_tokens: Some(100),
             output_tokens: Some(50),
+            messages: None,
             channel: None,
             agent_alias: None,
             turn_id: None,
@@ -702,6 +1048,65 @@ mod tests {
         obs.flush();
     }
 
+    /// Regression test for memory observability — the three new memory/RAG
+    /// event variants must accept fully populated payloads without panicking
+    /// and must exercise the optional `query_summary` field on
+    /// `MemoryRecall` and `RagRetrieve` (Some/None). We cannot assert on
+    /// exported span attributes here (OTLP pipeline runs asynchronously),
+    /// but verifying the recording path for all three arms is sufficient
+    /// regression coverage.
+    #[test]
+    fn memory_rag_events_do_not_panic() {
+        let obs = test_observer();
+
+        // MemoryRecall with populated query_summary (Langfuse path).
+        obs.record_event(&ObserverEvent::MemoryRecall {
+            query_summary: Some("what did the user say about coffee".into()),
+            duration: Duration::from_millis(45),
+            num_entries: 7,
+            backend: "sqlite".into(),
+            success: true,
+        });
+        // MemoryRecall failure path with query_summary: None.
+        obs.record_event(&ObserverEvent::MemoryRecall {
+            query_summary: None,
+            duration: Duration::from_millis(12),
+            num_entries: 0,
+            backend: "qdrant".into(),
+            success: false,
+        });
+
+        // RagRetrieve with populated query_summary.
+        obs.record_event(&ObserverEvent::RagRetrieve {
+            query_summary: Some("ESP32-S3 GPIO pinout".into()),
+            duration: Duration::from_millis(120),
+            num_chunks: 12,
+            num_boards: 3,
+        });
+        // RagRetrieve with query_summary: None.
+        obs.record_event(&ObserverEvent::RagRetrieve {
+            query_summary: None,
+            duration: Duration::ZERO,
+            num_chunks: 0,
+            num_boards: 0,
+        });
+
+        // MemoryStore success path.
+        obs.record_event(&ObserverEvent::MemoryStore {
+            category: "conversation".into(),
+            backend: "sqlite".into(),
+            duration: Duration::from_millis(8),
+            success: true,
+        });
+        // MemoryStore failure path.
+        obs.record_event(&ObserverEvent::MemoryStore {
+            category: "fact".into(),
+            backend: "qdrant".into(),
+            duration: Duration::from_millis(3),
+            success: false,
+        });
+    }
+
     /// Regression test for upstream issue #5980 — tool spans must accept a
     /// populated `tool_call_id`, full `arguments`, and `result` without
     /// panicking, including payloads large enough that naive attribute
@@ -769,6 +1174,7 @@ mod tests {
             error_message: Some("404 Not Found".into()),
             input_tokens: None,
             output_tokens: None,
+            messages: None,
             channel: None,
             agent_alias: None,
             turn_id: None,
@@ -831,6 +1237,7 @@ mod tests {
             channel: Some("wss".into()),
             agent_alias: Some("default".into()),
             turn_id: Some("turn-1".into()),
+            messages: None,
         });
         obs.record_event(&ObserverEvent::ToolCallStart {
             tool: "shell".into(),
@@ -910,6 +1317,7 @@ mod tests {
             error_message: None,
             input_tokens: Some(10),
             output_tokens: Some(5),
+            messages: None,
             channel: None,
             agent_alias: None,
             turn_id: None,
