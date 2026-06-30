@@ -26,10 +26,6 @@ const POLL_INTERVAL_SECS: u64 = 5;
 /// of the conversation. Long sessions never load the full history.
 const SESSION_MESSAGES_PAGE_SIZE: usize = 100;
 
-pub(crate) enum DashboardMouseAction {
-    OpenAgentConfig(String),
-}
-
 struct AgentRenameState {
     from: String,
     buf: String,
@@ -147,6 +143,7 @@ pub(crate) struct Dashboard {
     tab_area: Rect,
     list_area: Rect,
     overview_agents_area: Rect,
+    agent_alias_rename_area: Option<Rect>,
     detail_area: Option<Rect>,
     double_click: mouse::DoubleClickTracker,
 }
@@ -194,6 +191,7 @@ impl Dashboard {
             tab_area: Rect::default(),
             list_area: Rect::default(),
             overview_agents_area: Rect::default(),
+            agent_alias_rename_area: None,
             detail_area: None,
             double_click: mouse::DoubleClickTracker::new(),
         }
@@ -213,6 +211,12 @@ impl Dashboard {
         if should_poll {
             self.poll_data().await;
         }
+    }
+
+    pub(crate) fn on_pane_blur(&mut self) {
+        self.agent_rename = None;
+        self.agent_rename_message = None;
+        self.agent_alias_rename_area = None;
     }
 
     async fn poll_data(&mut self) {
@@ -426,6 +430,13 @@ impl Dashboard {
                     crate::i18n::t("zc-dashboard-search-action-cancel")
                 },
             )
+        } else if self.tab == Tab::Agents {
+            let key =
+                crate::keymap::action_key_labels(crate::keymap::DashboardTabAction::RenameAgent)
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "e".to_string());
+            format!("{key}:{}", crate::i18n::t("zc-dashboard-agent-rename-hint"))
         } else {
             String::new()
         };
@@ -452,7 +463,7 @@ impl Dashboard {
             ];
             if let Some(message) = &self.agent_rename_message {
                 let style = match message.level {
-                    DashboardMessageLevel::Info => theme::accent_style(),
+                    DashboardMessageLevel::Info => theme::dim_style(),
                     DashboardMessageLevel::Warn | DashboardMessageLevel::Error => {
                         theme::warn_style()
                     }
@@ -488,7 +499,7 @@ impl Dashboard {
                 && let Some(message) = &self.agent_rename_message
             {
                 let style = match message.level {
-                    DashboardMessageLevel::Info => theme::accent_style(),
+                    DashboardMessageLevel::Info => theme::dim_style(),
                     DashboardMessageLevel::Warn | DashboardMessageLevel::Error => {
                         theme::warn_style()
                     }
@@ -929,6 +940,7 @@ impl Dashboard {
             self.detail_area = Some(hsplit[1]);
         } else {
             self.detail_area = None;
+            self.agent_alias_rename_area = None;
             self.draw_agent_list(frame, area, &filtered);
         }
     }
@@ -982,7 +994,8 @@ impl Dashboard {
         frame.render_stateful_widget(list, area, &mut self.agent_state);
     }
 
-    fn draw_agent_detail(&self, frame: &mut ratatui::Frame, area: Rect) {
+    fn draw_agent_detail(&mut self, frame: &mut ratatui::Frame, area: Rect) {
+        self.agent_alias_rename_area = None;
         let block = Block::default()
             .title(Span::styled(" Agent Detail ", theme::title_style()))
             .borders(Borders::ALL)
@@ -1002,8 +1015,15 @@ impl Dashboard {
         };
 
         let a = &self.agents[idx];
+        if self.detail_scroll == 0 && inner.height > 0 {
+            self.agent_alias_rename_area = Some(Rect::new(inner.x, inner.y, inner.width, 1));
+        }
         let mut lines = vec![
-            detail_line(&crate::i18n::t("zc-dashboard-detail-alias"), &a.alias),
+            detail_action_line(
+                &crate::i18n::t("zc-dashboard-detail-alias"),
+                &a.alias,
+                &crate::i18n::t("zc-dashboard-agent-rename-hint"),
+            ),
             detail_line(
                 &crate::i18n::t("zc-dashboard-detail-enabled"),
                 &if a.enabled {
@@ -2084,11 +2104,7 @@ impl Dashboard {
 
     // ── Mouse handling ───────────────────────────────────────────
 
-    pub(crate) fn handle_mouse(
-        &mut self,
-        evt: MouseEvent,
-        _content_area: Rect,
-    ) -> Option<DashboardMouseAction> {
+    pub(crate) fn handle_mouse(&mut self, evt: MouseEvent, _content_area: Rect) {
         use crossterm::event::MouseButton;
 
         let col = evt.column;
@@ -2096,6 +2112,15 @@ impl Dashboard {
 
         match evt.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                if self.tab == Tab::Agents
+                    && self.agent_rename.is_none()
+                    && let Some(area) = self.agent_alias_rename_area
+                    && mouse::in_rect(col, row, area)
+                {
+                    self.begin_agent_rename();
+                    return;
+                }
+
                 if self.tab == Tab::Overview
                     && mouse::in_rect(col, row, self.overview_agents_area)
                     && let Some(idx) = mouse::list_click_index(
@@ -2106,7 +2131,9 @@ impl Dashboard {
                     )
                     && let Some(agent) = self.agents.get(idx)
                 {
-                    return Some(DashboardMouseAction::OpenAgentConfig(agent.alias.clone()));
+                    let alias = agent.alias.clone();
+                    self.focus_agent(&alias);
+                    return;
                 }
 
                 // Tab bar clicks
@@ -2117,7 +2144,7 @@ impl Dashboard {
                 let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
                 if let Some(idx) = mouse::tab_click_index(col, row, self.tab_area, &label_refs, 3) {
                     self.set_tab(TABS[idx]);
-                    return None;
+                    return;
                 }
 
                 // List clicks
@@ -2160,7 +2187,6 @@ impl Dashboard {
             }
             _ => {}
         }
-        None
     }
 
     // ── Navigation helpers ───────────────────────────────────────
@@ -2190,8 +2216,27 @@ impl Dashboard {
         self.cost_scroll = 0;
         self.agent_rename = None;
         self.agent_rename_message = None;
+        self.agent_alias_rename_area = None;
         // Force immediate data fetch for new tab
         self.last_poll = None;
+    }
+
+    fn focus_agent(&mut self, alias: &str) {
+        self.set_tab(Tab::Agents);
+        self.search_query.clear();
+        self.search_buf.clear();
+        self.search_query_saved.clear();
+
+        let filtered = self.filtered_agent_indices();
+        if let Some(pos) = filtered
+            .iter()
+            .position(|&idx| self.agents[idx].alias == alias)
+        {
+            self.agent_state.select(Some(pos));
+        }
+        self.detail_open = true;
+        self.detail_scroll = 0;
+        self.detail_pct = 50;
     }
 
     fn has_detail_pane(&self) -> bool {
@@ -2362,6 +2407,16 @@ fn detail_line(label: &str, value: &str) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("{label}{}", " ".repeat(pad)), theme::dim_style()),
         Span::styled(value.to_string(), theme::body_style()),
+    ])
+}
+
+fn detail_action_line(label: &str, value: &str, action: &str) -> Line<'static> {
+    let pad = 12usize.saturating_sub(label.len());
+    Line::from(vec![
+        Span::styled(format!("{label}{}", " ".repeat(pad)), theme::dim_style()),
+        Span::styled(value.to_string(), theme::body_style()),
+        Span::styled("  ", theme::dim_style()),
+        Span::styled(format!("[{action}]"), theme::dim_style()),
     ])
 }
 

@@ -172,6 +172,7 @@ zc-dashboard-search-action-cancel = cancel
 zc-dashboard-search-prefix = search:
 zc-dashboard-agent-rename-action-apply = rename
 zc-dashboard-agent-rename-action-cancel = cancel
+zc-dashboard-agent-rename-hint = rename
 zc-dashboard-agent-rename-prefix = rename:
 zc-dashboard-agent-rename-empty = Agent name cannot be empty
 zc-dashboard-agent-rename-unchanged = Agent name unchanged
