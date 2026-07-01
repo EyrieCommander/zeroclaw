@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
-use zeroclaw_api::channel::{Channel, ChannelMessage, SendMessage};
+use zeroclaw_api::channel::{Channel, ChannelConversationScope, ChannelMessage, SendMessage};
 use zeroclaw_config::schema::{StreamMode, WeComWsConfig};
 use zeroclaw_runtime::i18n;
 
@@ -116,7 +116,37 @@ struct ParsedInbound {
 
 #[derive(Debug, Clone)]
 struct ScopeDecision {
-    conversation_scope: String,
+    reply_target: String,
+    conversation_scope: ChannelConversationScope,
+    interruption_scope_id: Option<String>,
+}
+
+impl ScopeDecision {
+    fn channel_message(
+        &self,
+        alias: &str,
+        msg_id: impl Into<String>,
+        sender: impl Into<String>,
+        content: impl Into<String>,
+        thread_ts: Option<String>,
+        explicitly_addressed: bool,
+    ) -> ChannelMessage {
+        ChannelMessage {
+            channel_alias: Some(alias.to_string()),
+            thread_ts,
+            interruption_scope_id: self.interruption_scope_id.clone(),
+            explicitly_addressed,
+            conversation_scope: self.conversation_scope,
+            ..ChannelMessage::new(
+                msg_id,
+                sender,
+                self.reply_target.clone(),
+                content,
+                "wecom_ws",
+                bytes_timestamp_now(),
+            )
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -431,12 +461,12 @@ impl WeComWsChannel {
         evaluate_access_decision(&allowed_users, &self.cfg.allowed_groups, inbound)
     }
 
-    fn compose_content_for_framework_with_bot_hint(
-        &self,
-        inbound: &ParsedInbound,
-        normalized: &str,
-    ) -> String {
-        compose_content_for_framework(inbound, normalized, self.cfg.bot_name.as_deref())
+    fn compose_content_for_framework(&self, inbound: &ParsedInbound, normalized: &str) -> String {
+        compose_content_for_framework(inbound, normalized)
+    }
+
+    fn message_explicitly_addresses_bot(&self, inbound: &ParsedInbound, normalized: &str) -> bool {
+        message_explicitly_addresses_bot(inbound, normalized, self.cfg.bot_name.as_deref())
     }
 
     async fn respond_access_denied(
@@ -630,7 +660,7 @@ impl WeComWsChannel {
         wecom_log_info!(
             "[wecom_ws] from {} in {}: {} (msg_type={}, msg_id={}, aibot_id={})",
             parsed.sender_userid,
-            scopes.conversation_scope,
+            scopes.reply_target,
             preview,
             parsed.msg_type,
             msg_id_str,
@@ -673,22 +703,18 @@ impl WeComWsChannel {
         if is_clear_session_command(&stop_text) {
             wecom_log_info!(
                 "WeCom session cleared: scope={} msg_id={}",
-                scopes.conversation_scope,
+                scopes.reply_target,
                 parsed.msg_id
             );
             let _ = tx
-                .send(ChannelMessage {
-                    channel_alias: Some(self.alias.clone()),
-                    thread_ts: Some(req_id),
-                    ..ChannelMessage::new(
-                        parsed.msg_id.clone(),
-                        parsed.sender_userid.clone(),
-                        scopes.conversation_scope.clone(),
-                        "/new",
-                        "wecom_ws",
-                        bytes_timestamp_now(),
-                    )
-                })
+                .send(scopes.channel_message(
+                    &self.alias,
+                    parsed.msg_id.clone(),
+                    parsed.sender_userid.clone(),
+                    "/new",
+                    Some(req_id),
+                    false,
+                ))
                 .await;
             return;
         }
@@ -701,17 +727,14 @@ impl WeComWsChannel {
                 .ws_queue_respond_msg(&req_id, &stream_id, &msg, true)
                 .await;
             let _ = tx
-                .send(ChannelMessage {
-                    channel_alias: Some(self.alias.clone()),
-                    ..ChannelMessage::new(
-                        parsed.msg_id.clone(),
-                        parsed.sender_userid.clone(),
-                        scopes.conversation_scope.clone(),
-                        "/stop",
-                        "wecom_ws",
-                        bytes_timestamp_now(),
-                    )
-                })
+                .send(scopes.channel_message(
+                    &self.alias,
+                    parsed.msg_id.clone(),
+                    parsed.sender_userid.clone(),
+                    "/stop",
+                    None,
+                    false,
+                ))
                 .await;
             return;
         }
@@ -719,23 +742,19 @@ impl WeComWsChannel {
         if let Some(runtime_command) = extract_runtime_model_switch_command(&stop_text) {
             wecom_log_info!(
                 "WeCom runtime command forwarded: scope={} msg_id={} command={}",
-                scopes.conversation_scope,
+                scopes.reply_target,
                 parsed.msg_id,
                 runtime_command
             );
             let _ = tx
-                .send(ChannelMessage {
-                    channel_alias: Some(self.alias.clone()),
-                    thread_ts: Some(req_id),
-                    ..ChannelMessage::new(
-                        parsed.msg_id.clone(),
-                        parsed.sender_userid.clone(),
-                        scopes.conversation_scope.clone(),
-                        runtime_command,
-                        "wecom_ws",
-                        bytes_timestamp_now(),
-                    )
-                })
+                .send(scopes.channel_message(
+                    &self.alias,
+                    parsed.msg_id.clone(),
+                    parsed.sender_userid.clone(),
+                    runtime_command,
+                    Some(req_id),
+                    false,
+                ))
                 .await;
             return;
         }
@@ -797,29 +816,26 @@ impl WeComWsChannel {
                 NormalizedMessage::Ready(content) => content,
             };
 
-            let composed =
-                channel_self.compose_content_for_framework_with_bot_hint(&inbound, &content);
+            let explicitly_addressed =
+                channel_self.message_explicitly_addresses_bot(&inbound, &content);
+            let composed = channel_self.compose_content_for_framework(&inbound, &content);
 
             wecom_log_info!(
                 "WeCom: forwarding to framework: msg_id={} req_id={} scope={}",
                 inbound.msg_id,
                 req_id,
-                scopes.conversation_scope
+                scopes.reply_target
             );
 
             let _ = tx
-                .send(ChannelMessage {
-                    channel_alias: Some(channel_self.alias.clone()),
-                    thread_ts: Some(req_id),
-                    ..ChannelMessage::new(
-                        inbound.msg_id.clone(),
-                        inbound.sender_userid.clone(),
-                        scopes.conversation_scope.clone(),
-                        composed,
-                        "wecom_ws",
-                        bytes_timestamp_now(),
-                    )
-                })
+                .send(scopes.channel_message(
+                    &channel_self.alias,
+                    inbound.msg_id.clone(),
+                    inbound.sender_userid.clone(),
+                    composed,
+                    Some(req_id),
+                    explicitly_addressed,
+                ))
                 .await;
         });
     }
@@ -1463,6 +1479,10 @@ impl Channel for WeComWsChannel {
         "wecom_ws"
     }
 
+    fn is_direct_message(&self, msg: &ChannelMessage) -> bool {
+        msg.reply_target.starts_with("user--")
+    }
+
     async fn send(&self, message: &SendMessage) -> Result<()> {
         if let Some(req_id) = message
             .thread_ts
@@ -1877,13 +1897,17 @@ fn compute_scopes(inbound: &ParsedInbound) -> ScopeDecision {
             .unwrap_or_else(|| "unknown".to_string());
         let scope = format!("group--{chat_id}");
         return ScopeDecision {
-            conversation_scope: scope,
+            reply_target: scope.clone(),
+            conversation_scope: ChannelConversationScope::ReplyTarget,
+            interruption_scope_id: Some(scope),
         };
     }
 
     let scope = format!("user--{}", inbound.sender_userid);
     ScopeDecision {
-        conversation_scope: scope,
+        reply_target: scope,
+        conversation_scope: ChannelConversationScope::ReplyTarget,
+        interruption_scope_id: None,
     }
 }
 
@@ -2004,41 +2028,28 @@ fn build_access_denied_message(
 
 /// Compose content for framework: quote context (if any) + normalized user text.
 /// Sender prefix and static context are handled by the framework (mod.rs).
-fn compose_content_for_framework(
-    inbound: &ParsedInbound,
-    normalized: &str,
-    bot_name: Option<&str>,
-) -> String {
+fn compose_content_for_framework(inbound: &ParsedInbound, normalized: &str) -> String {
     let quote_context = extract_quote_context(&inbound.raw_payload);
-    let mention_hint = build_group_bot_mention_hint(inbound, normalized, bot_name);
-    let body = match mention_hint {
-        Some(hint) => format!("{hint}\n{normalized}"),
-        None => normalized.to_string(),
-    };
 
     match quote_context {
-        Some(quote) => format!("{quote}\n\n{body}"),
-        None => body,
+        Some(quote) => format!("{quote}\n\n{normalized}"),
+        None => normalized.to_string(),
     }
 }
 
-fn build_group_bot_mention_hint(
+fn message_explicitly_addresses_bot(
     inbound: &ParsedInbound,
     normalized: &str,
     bot_name: Option<&str>,
-) -> Option<String> {
+) -> bool {
     if !inbound.chat_type.eq_ignore_ascii_case("group") {
-        return None;
+        return false;
     }
 
-    let bot_name = bot_name.map(str::trim).filter(|name| !name.is_empty())?;
-    if !text_mentions_bot_name(normalized, bot_name) {
-        return None;
-    }
-
-    Some(format!(
-        "[WeCom group message addressed to this bot via @{bot_name}]"
-    ))
+    bot_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .is_some_and(|bot_name| text_mentions_bot_name(normalized, bot_name))
 }
 
 fn text_mentions_bot_name(text: &str, bot_name: &str) -> bool {
@@ -2052,7 +2063,7 @@ fn text_mentions_bot_name(text: &str, bot_name: &str) -> bool {
         text[after..]
             .chars()
             .next()
-            .is_none_or(|ch| ch.is_whitespace() || ch.is_ascii_punctuation())
+            .is_none_or(|ch| ch.is_whitespace() || !(ch == '_' || ch.is_alphanumeric()))
     })
 }
 
@@ -2643,7 +2654,61 @@ mod tests {
         };
 
         let scopes = compute_scopes(&inbound);
-        assert_eq!(scopes.conversation_scope, "group--g1");
+        assert_eq!(scopes.reply_target, "group--g1");
+        assert_eq!(
+            scopes.conversation_scope,
+            ChannelConversationScope::ReplyTarget
+        );
+        assert_eq!(scopes.interruption_scope_id.as_deref(), Some("group--g1"));
+    }
+
+    #[test]
+    fn scope_uses_reply_target_for_single_chat_without_thread_fragmentation() {
+        let inbound = test_inbound("single", None, "user-1");
+        let scopes = compute_scopes(&inbound);
+
+        assert_eq!(scopes.reply_target, "user--user-1");
+        assert_eq!(
+            scopes.conversation_scope,
+            ChannelConversationScope::ReplyTarget
+        );
+        assert!(scopes.interruption_scope_id.is_none());
+
+        let first = scopes.channel_message(
+            "work",
+            "msg-1",
+            "user-1",
+            "hello",
+            Some("req-1".to_string()),
+            false,
+        );
+        let second = scopes.channel_message(
+            "work",
+            "msg-2",
+            "user-1",
+            "follow up",
+            Some("req-2".to_string()),
+            false,
+        );
+        let clear = scopes.channel_message(
+            "work",
+            "msg-3",
+            "user-1",
+            "/new",
+            Some("req-clear".to_string()),
+            false,
+        );
+
+        let first_key = crate::orchestrator::conversation_history_key(&first);
+        assert_eq!(
+            first_key,
+            crate::orchestrator::conversation_history_key(&second)
+        );
+        assert_eq!(
+            first_key,
+            crate::orchestrator::conversation_history_key(&clear)
+        );
+        assert!(!first_key.contains("req-"));
     }
 
     #[test]
@@ -2702,37 +2767,54 @@ mod tests {
     }
 
     #[test]
-    fn group_bot_mention_hint_marks_addressed_wecom_message() {
+    fn group_bot_mention_sets_structured_addressing_without_content_marker() {
         let inbound = test_inbound("group", Some("group-1"), "user-1");
-        let composed = compose_content_for_framework(&inbound, "@danya say hi", Some("danya"));
+        let composed = compose_content_for_framework(&inbound, "@danya say hi");
 
-        assert!(composed.starts_with("[WeCom group message addressed to this bot via @danya]"));
-        assert!(composed.ends_with("@danya say hi"));
+        assert_eq!(composed, "@danya say hi");
+        assert!(message_explicitly_addresses_bot(
+            &inbound,
+            "@danya say hi",
+            Some("danya")
+        ));
     }
 
     #[test]
-    fn group_bot_mention_hint_omits_non_matching_messages() {
+    fn group_bot_addressing_omits_non_matching_messages() {
         let inbound = test_inbound("group", Some("group-1"), "user-1");
         assert_eq!(
-            compose_content_for_framework(&inbound, "@otherbot say hi", Some("danya")),
+            compose_content_for_framework(&inbound, "@otherbot say hi"),
             "@otherbot say hi"
         );
-        assert_eq!(
-            compose_content_for_framework(&inbound, "@danya say hi", None),
-            "@danya say hi"
-        );
+        assert!(!message_explicitly_addresses_bot(
+            &inbound,
+            "@otherbot say hi",
+            Some("danya")
+        ));
+        assert!(!message_explicitly_addresses_bot(
+            &inbound,
+            "@danya say hi",
+            None
+        ));
 
         let dm = test_inbound("single", None, "user-1");
         assert_eq!(
-            compose_content_for_framework(&dm, "@danya say hi", Some("danya")),
+            compose_content_for_framework(&dm, "@danya say hi"),
             "@danya say hi"
         );
+        assert!(!message_explicitly_addresses_bot(
+            &dm,
+            "@danya say hi",
+            Some("danya")
+        ));
     }
 
     #[test]
     fn text_mentions_bot_name_uses_simple_boundary_check() {
         assert!(text_mentions_bot_name("@danya say hi", "danya"));
         assert!(text_mentions_bot_name("hey @danya, say hi", "danya"));
+        assert!(text_mentions_bot_name("@danya，帮我看一下", "danya"));
+        assert!(text_mentions_bot_name("@danya：帮我看一下", "danya"));
         assert!(!text_mentions_bot_name("@danyabot say hi", "danya"));
     }
 
@@ -3062,6 +3144,16 @@ mod tests {
 
         let partial = WeComWsChannel::new(&test_wecom_ws_config(), Path::new("/tmp")).unwrap();
         assert!(partial.supports_draft_updates());
+    }
+
+    #[test]
+    fn single_chat_reply_target_is_direct_message() {
+        let channel = WeComWsChannel::new(&test_wecom_ws_config(), Path::new("/tmp")).unwrap();
+        let single = ChannelMessage::new("msg-1", "user-1", "user--user-1", "hi", "wecom_ws", 1);
+        let group = ChannelMessage::new("msg-2", "user-1", "group--group-1", "hi", "wecom_ws", 1);
+
+        assert!(channel.is_direct_message(&single));
+        assert!(!channel.is_direct_message(&group));
     }
 
     #[test]

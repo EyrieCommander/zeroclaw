@@ -602,9 +602,6 @@ fn channel_scope(msg: &zeroclaw_api::channel::ChannelMessage) -> String {
 
 pub fn conversation_history_key(msg: &zeroclaw_api::channel::ChannelMessage) -> String {
     let channel_scope = channel_scope(msg);
-    if msg.channel == "wecom_ws" {
-        return sanitize_session_key(&format!("{channel_scope}_{}", msg.reply_target));
-    }
     // reply_target gives per-channel isolation (distinct Discord/Slack
     // channels) and thread_ts gives per-topic isolation in forum groups.
     // Sanitize so the runtime HashMap key matches `SessionStore::list_sessions`
@@ -617,10 +614,7 @@ pub fn conversation_history_key(msg: &zeroclaw_api::channel::ChannelMessage) -> 
         other => other,
     };
     let raw = match (msg.conversation_scope, thread_scope) {
-        (zeroclaw_api::channel::ChannelConversationScope::ReplyTarget, Some(tid)) => {
-            format!("{channel_scope}_{}_{tid}", msg.reply_target)
-        }
-        (zeroclaw_api::channel::ChannelConversationScope::ReplyTarget, None) => {
+        (zeroclaw_api::channel::ChannelConversationScope::ReplyTarget, _) => {
             format!("{channel_scope}_{}", msg.reply_target)
         }
         (zeroclaw_api::channel::ChannelConversationScope::Sender, Some(tid)) => {
@@ -660,20 +654,20 @@ fn followup_thread_id(msg: &zeroclaw_api::channel::ChannelMessage) -> Option<Str
 }
 
 fn interruption_scope_key(msg: &zeroclaw_api::channel::ChannelMessage) -> String {
-    if msg.channel == "wecom_ws" && msg.reply_target.starts_with("group--") {
-        let channel_scope = match &msg.channel_alias {
-            Some(alias) => format!("{}.{}", msg.channel, alias),
-            None => msg.channel.clone(),
-        };
-        return sanitize_session_key(&format!("{channel_scope}_{}", msg.reply_target));
-    }
-
-    match &msg.interruption_scope_id {
-        Some(scope) => format!(
+    match (msg.conversation_scope, msg.interruption_scope_id.as_deref()) {
+        (zeroclaw_api::channel::ChannelConversationScope::ReplyTarget, Some(scope)) => {
+            sanitize_session_key(&format!("{}_{}", channel_scope(msg), scope))
+        }
+        (zeroclaw_api::channel::ChannelConversationScope::ReplyTarget, None) => {
+            sanitize_session_key(&format!("{}_{}", channel_scope(msg), msg.reply_target))
+        }
+        (zeroclaw_api::channel::ChannelConversationScope::Sender, Some(scope)) => format!(
             "{}_{}_{}_{}",
             msg.channel, msg.reply_target, msg.sender, scope
         ),
-        None => format!("{}_{}_{}", msg.channel, msg.reply_target, msg.sender),
+        (zeroclaw_api::channel::ChannelConversationScope::Sender, None) => {
+            format!("{}_{}_{}", msg.channel, msg.reply_target, msg.sender)
+        }
     }
 }
 
@@ -1346,9 +1340,11 @@ fn supports_runtime_model_switch(channel_name: &str) -> bool {
     )
 }
 
-fn is_explicitly_addressed_channel_message(channel_name: &str, content: &str) -> bool {
-    channel_name == "wecom_ws"
-        && content.contains("[WeCom group message addressed to this bot via @")
+fn should_bypass_reply_intent_precheck(
+    msg: &zeroclaw_api::channel::ChannelMessage,
+    direct_message: bool,
+) -> bool {
+    msg.explicitly_addressed || direct_message
 }
 
 fn is_matrix_channel_name(channel_name: &str) -> bool {
@@ -4775,13 +4771,11 @@ async fn process_channel_message_body(
     }
 
     // ── Reply-intent precheck ────────────────────────────────────────
-    let explicit_channel_address =
-        is_explicitly_addressed_channel_message(&msg.channel, &msg.content);
     let direct_message = target_channel
         .as_ref()
         .map(|c| c.is_direct_message(&msg))
         .unwrap_or(false);
-    let classifier_intent = if explicit_channel_address || direct_message {
+    let classifier_intent = if should_bypass_reply_intent_precheck(&msg, direct_message) {
         AssistantChannelOutcome::Reply(String::new())
     } else {
         let (classifier_provider_arc, classifier_model_owned, classifier_temperature): (
@@ -17840,7 +17834,7 @@ BTC is currently around $65,000 based on latest tool output."#
     }
 
     #[test]
-    fn wecom_ws_conversation_history_key_uses_reply_target_scope() {
+    fn reply_target_conversation_history_key_uses_room_scope() {
         let msg = zeroclaw_api::channel::ChannelMessage {
             id: "msg_wecom_ws".into(),
             sender: "zeroclaw_user".into(),
@@ -17850,9 +17844,10 @@ BTC is currently around $65,000 based on latest tool output."#
             channel_alias: Some("work".into()),
             timestamp: 1,
             thread_ts: Some("req-1".into()),
-            interruption_scope_id: None,
+            interruption_scope_id: Some("group--room-1".into()),
             attachments: vec![],
             subject: None,
+            conversation_scope: zeroclaw_api::channel::ChannelConversationScope::ReplyTarget,
 
             ..Default::default()
         };
@@ -18288,19 +18283,21 @@ BTC is currently around $65,000 based on latest tool output."#
     }
 
     #[test]
-    fn explicit_wecom_group_address_bypasses_reply_intent_precheck() {
-        assert!(is_explicitly_addressed_channel_message(
-            "wecom_ws",
-            "[WeCom group message addressed to this bot via @danya]\n@danya say hi"
-        ));
-        assert!(!is_explicitly_addressed_channel_message(
-            "wecom_ws",
-            "@danya say hi"
-        ));
-        assert!(!is_explicitly_addressed_channel_message(
-            "telegram",
-            "[WeCom group message addressed to this bot via @danya]\n@danya say hi"
-        ));
+    fn reply_intent_precheck_uses_structured_addressing_signal() {
+        let marker_only = zeroclaw_api::channel::ChannelMessage {
+            content: "[WeCom group message addressed to this bot via @danya]\n@danya say hi".into(),
+            channel: "wecom_ws".into(),
+            explicitly_addressed: false,
+            ..Default::default()
+        };
+        assert!(!should_bypass_reply_intent_precheck(&marker_only, false));
+        assert!(should_bypass_reply_intent_precheck(&marker_only, true));
+
+        let addressed = zeroclaw_api::channel::ChannelMessage {
+            explicitly_addressed: true,
+            ..marker_only
+        };
+        assert!(should_bypass_reply_intent_precheck(&addressed, false));
     }
 
     #[test]
