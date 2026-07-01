@@ -62,6 +62,7 @@ require_approval_for_medium_risk = true
 block_high_risk_commands         = true
 
 [runtime_profiles.local_small]
+agentic                 = true
 compact_context          = true
 strict_tool_parsing      = true
 max_tool_iterations      = 4

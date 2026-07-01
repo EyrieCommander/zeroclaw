@@ -270,7 +270,7 @@ fn tight_runtime() -> RuntimeProfileConfig {
 
 fn local_small_runtime() -> RuntimeProfileConfig {
     RuntimeProfileConfig {
-        agentic: false,
+        agentic: true,
         max_tool_iterations: 4,
         max_actions_per_hour: 10,
         max_cost_per_day_cents: 100,
@@ -665,7 +665,7 @@ mod tests {
         let preset = runtime_preset("local_small").expect("local_small preset");
         let values = (preset.values)();
 
-        assert!(!values.agentic);
+        assert!(values.agentic);
         assert_eq!(values.max_tool_iterations, 4);
         assert_eq!(values.max_actions_per_hour, 10);
         assert_eq!(values.max_cost_per_day_cents, 100);
