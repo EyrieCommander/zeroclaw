@@ -145,7 +145,7 @@ Each channel gets a `channel:<name>` label in addition to the base `channel` lab
 | Label | Matches |
 |---|---|
 | `channel:acp` | `acp_channel.rs`, `acp_server.rs`, `zeroclaw-acp-bridge.rs`, `acp_session_store.rs`, `channels/acp.md`, selected ACP gateway/app/web entrypoints |
-| `channel:core` | `crates/zeroclaw-api/src/channel.rs`, `crates/zeroclaw-channels/src/orchestrator/**`, `src/channels/mod.rs` |
+| `channel:core` | `crates/zeroclaw-api/src/channel.rs`, `crates/zeroclaw-channels/src/lib.rs`, `crates/zeroclaw-channels/src/orchestrator/**`, `src/channels/mod.rs` |
 | `channel:bluesky` | `bluesky.rs` |
 | `channel:clawdtalk` | `clawdtalk.rs` |
 | `channel:cli` | `cli.rs` |
