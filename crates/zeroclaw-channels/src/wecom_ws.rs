@@ -220,7 +220,7 @@ struct WeComRuntimeConfig {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct WeComWsRuntimePolicy {
-    allowed_users: Vec<String>,
+    direct_userids: Vec<String>,
     allowed_groups: Vec<String>,
     bot_name: Option<String>,
 }
@@ -239,7 +239,7 @@ impl WeComWsRuntimePolicy {
         }
 
         Self {
-            allowed_users,
+            direct_userids: allowed_users,
             allowed_groups: normalize_wecom_allowlist(config.allowed_groups.clone()),
             bot_name: normalize_optional_wecom_identity(config.bot_name.as_deref()),
         }
@@ -490,7 +490,7 @@ impl WeComWsChannel {
 
     fn access_decision(&self, inbound: &ParsedInbound) -> AccessDecision {
         let policy = (self.policy_resolver)();
-        evaluate_access_decision(&policy.allowed_users, &policy.allowed_groups, inbound)
+        evaluate_access_decision(&policy.direct_userids, &policy.allowed_groups, inbound)
     }
 
     fn compose_content_for_framework(&self, inbound: &ParsedInbound, normalized: &str) -> String {
@@ -3135,7 +3135,7 @@ mod tests {
         );
 
         assert_eq!(
-            policy.allowed_users,
+            policy.direct_userids,
             vec!["user-1".to_string(), "external-1".to_string()]
         );
         assert_eq!(policy.allowed_groups, vec!["group-1".to_string()]);
