@@ -1,0 +1,19 @@
+Committed agent renames are shared by the CLI (`zeroclaw agents rename` and `zeroclaw agents create`), the gateway config map-key rename and create handlers, and RPC `config/map-key-rename` and `config/map-key-create`.
+
+The gateway and RPC already resume a rename whose live config has moved from the old alias to the new one when old-alias residue remains. The CLI always rewrites config, so once that commit has landed it reports that the old alias is not configured. Residue checks also treat an unreadable follower as if it were empty.
+
+One runtime-owned recovery contract must be shared by all three surfaces:
+
+- Resolve recovery from live configuration and the canonical durable stores: the default per-alias workspace, memory, cron, ACP sessions, and session attribution.
+- Persist that recovery across the post-commit window, so a retry can resume after the old alias is already gone from config.
+- Resume instead of reporting the alias missing when recovery is still outstanding, or when config already names the new alias and old-alias residue remains in any of those followers.
+- If a configured durable store or the recovery record cannot be read, fail so the same rename can be retried. Do not treat that as empty, and do not clear recovery.
+- Converge the default workspace and owned memory, cron, ACP, and session state idempotently. Attempt every follower. A partial failure stays retryable.
+- Clear recovery only after every follower has been checked and has converged.
+- While recovery is open, refuse to create or reuse the retired alias, even if its residue was removed outside the rename. A different alias may still be created. After a successful converge, reuse is allowed and the recreated agent does not inherit the old rows.
+- A custom or otherwise alias-independent workspace path is not residue. Do not move or delete it.
+- A from-to request with no recovery record, no residue, and readable stores stays not configured: gateway HTTP 404 with "is not configured", CLI text "is not configured", and RPC "alias not found". Do not arm recovery for that case.
+
+Knowledge-graph ownership is out of scope.
+
+The gateway and RPC may still report the rename as committed when a follower lags, but they must keep recovery armed and must not describe an unreadable store as a missing alias. The CLI must exit non-zero until convergence finishes, and that failure must not say the alias is not configured.

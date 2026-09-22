@@ -1,0 +1,1439 @@
+diff --git a/crates/zeroclaw-gateway/src/agent_owned_state.rs b/crates/zeroclaw-gateway/src/agent_owned_state.rs
+index 8bb767838..5b09b8ac5 100644
+--- a/crates/zeroclaw-gateway/src/agent_owned_state.rs
++++ b/crates/zeroclaw-gateway/src/agent_owned_state.rs
+@@ -172,84 +172,3 @@ pub async fn cascade_owned_state(
+ 
+     report
+ }
+-
+-/// What the agent-rename owned-state cascade re-pointed
+-#[derive(Debug, Default, Clone, serde::Serialize)]
+-pub struct RenameStateReport {
+-    pub memory_rows: usize,
+-    pub cron_jobs: usize,
+-    pub acp_sessions: usize,
+-    pub sessions_repointed: usize,
+-    /// Surfaced failures. Non-empty means part of the cascade did NOT complete —
+-    /// those rows were not silently treated as re-pointed.
+-    pub warnings: Vec<String>,
+-}
+-
+-pub async fn cascade_rename_agent(
+-    config: &Config,
+-    mem: &Arc<dyn Memory>,
+-    session_backend: Option<&Arc<dyn SessionBackend>>,
+-    from: &str,
+-    to: &str,
+-) -> RenameStateReport {
+-    let mut warnings: Vec<String> = Vec::new();
+-
+-    let memory_rows = match mem.rename_agent(from, to).await {
+-        Ok(n) => n,
+-        Err(e) => {
+-            warnings.push(format!("memory rename: {e}"));
+-            0
+-        }
+-    };
+-
+-    let cron_jobs = match zeroclaw_runtime::cron::rename_jobs_by_agent(config, from, to) {
+-        Ok(n) => n,
+-        Err(e) => {
+-            warnings.push(format!("cron rename: {e}"));
+-            0
+-        }
+-    };
+-
+-    let acp_sessions = match AcpSessionStore::new(&config.data_dir) {
+-        Ok(store) => match store.rename_sessions_by_agent(from, to) {
+-            Ok(n) => n,
+-            Err(e) => {
+-                warnings.push(format!("acp rename: {e}"));
+-                0
+-            }
+-        },
+-        Err(e) => {
+-            warnings.push(format!("acp store open: {e}"));
+-            0
+-        }
+-    };
+-
+-    let sessions_repointed = match session_backend {
+-        Some(b) => match b.rename_agent_attribution(from, to) {
+-            Ok(n) => n,
+-            Err(e) => {
+-                warnings.push(format!("session attribution rename: {e}"));
+-                0
+-            }
+-        },
+-        None => 0,
+-    };
+-
+-    if !warnings.is_empty() {
+-        ::zeroclaw_log::record!(
+-            WARN,
+-            ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+-                .with_outcome(::zeroclaw_log::EventOutcome::Unknown)
+-                .with_attrs(::serde_json::json!({"from": from, "to": to, "warnings": warnings})),
+-            "rename owned-state cascade completed with warnings (some state may not have been re-pointed)"
+-        );
+-    }
+-
+-    RenameStateReport {
+-        memory_rows,
+-        cron_jobs,
+-        acp_sessions,
+-        sessions_repointed,
+-        warnings,
+-    }
+-}
+diff --git a/crates/zeroclaw-gateway/src/api_config.rs b/crates/zeroclaw-gateway/src/api_config.rs
+index d6e7a65ae..31b4403c1 100644
+--- a/crates/zeroclaw-gateway/src/api_config.rs
++++ b/crates/zeroclaw-gateway/src/api_config.rs
+@@ -1360,6 +1360,25 @@ pub async fn handle_map_key(
+     let path = q.path.clone();
+     let key = q.key.clone();
+ 
++    if path == "agents" {
++        match zeroclaw_runtime::agent_rename_recovery::alias_reuse_blocked(&working.data_dir, &key)
++            .await
++        {
++            Ok(true) => {
++                let alias = key.clone();
++                return recovery_error_response(
++                    &path,
++                    &key,
++                    zeroclaw_runtime::agent_rename_recovery::RenameRecoveryError::UnsafeReuse {
++                        alias,
++                    },
++                );
++            }
++            Ok(false) => {}
++            Err(err) => return recovery_error_response(&path, &key, err),
++        }
++    }
++
+     // Create through the shared guarded boundary so the reserved-agent rule (the
+     // `default` runtime fallback) is enforced once for every surface. Reserved ->
+     // 400 (validation_failed), symmetric with the rename guard; an unknown
+@@ -1628,7 +1647,9 @@ pub async fn handle_rename_map_key(
+ 
+     match zeroclaw_config::alias_refs::alias_kind_for_map_path(&body.path) {
+         Some(zeroclaw_config::alias_refs::AliasKind::Agent) => {
+-            rename_agent_cascade(&state, working, &body, _cfg_guard).await
++            // The cascade keeps config snapshots across awaits. Box it so that
++            // state stays off this task's stack.
++            Box::pin(rename_agent_cascade(&state, working, &body, _cfg_guard)).await
+         }
+         Some(kind) => rename_config_cascade(&state, working, &kind, &body, &_cfg_guard).await,
+         None => {
+@@ -1697,85 +1718,35 @@ async fn rename_config_cascade(
+     .into_response()
+ }
+ 
+-async fn move_renamed_workspace(
+-    old_ws: &std::path::Path,
+-    new_ws: &std::path::Path,
+-) -> Option<String> {
+-    if old_ws == new_ws || !old_ws.exists() {
+-        return None;
+-    }
+-    if let Some(parent) = new_ws.parent() {
+-        let _ = tokio::fs::create_dir_all(parent).await;
+-    }
+-    match tokio::fs::rename(old_ws, new_ws).await {
+-        Ok(()) => None,
+-        Err(err) => {
+-            ::zeroclaw_log::record!(
+-                WARN,
+-                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+-                    .with_outcome(::zeroclaw_log::EventOutcome::Unknown)
+-                    .with_attrs(::serde_json::json!({
+-                        "old": old_ws.display().to_string(),
+-                        "new": new_ws.display().to_string(),
+-                        "err": err.to_string()
+-                    })),
+-                "agent rename: workspace move failed"
+-            );
+-            Some(format!(
+-                "workspace move {} -> {} failed: {err}",
+-                old_ws.display(),
+-                new_ws.display()
+-            ))
+-        }
+-    }
+-}
+-
+-async fn rename_residue_exists(
+-    state: &AppState,
+-    working: &zeroclaw_config::schema::Config,
++fn recovery_error_response(
++    path: &str,
+     from: &str,
+-) -> bool {
+-    // Workspace: the default per-alias dir for `from`. A custom/alias-independent
+-    // path is not moved by the cascade, so it is not residue.
+-    if working.agent_workspace_dir(from).exists() {
+-        return true;
+-    }
+-
+-    // Short-lived clone for the DB-backed stores - never hold the lock across an
+-    // `.await`.
+-    let cfg = state.config.read().clone();
+-
+-    // Cron jobs still owned by `from`.
+-    if zeroclaw_runtime::cron::list_jobs_by_agent(&cfg, from)
+-        .map(|jobs| !jobs.is_empty())
+-        .unwrap_or(false)
+-    {
+-        return true;
+-    }
+-
+-    // ACP sessions (live OR killed) still owned by `from`.
+-    if let Ok(store) = zeroclaw_infra::acp_session_store::AcpSessionStore::new(&cfg.data_dir)
+-        && store
+-            .list_sessions_by_agent(from)
+-            .map(|s| !s.is_empty())
+-            .unwrap_or(false)
+-    {
+-        return true;
+-    }
+-
+-    // Memory rows still attributed to `from`.
+-    if state.mem.count_agent(from).await.unwrap_or(0) > 0 {
+-        return true;
+-    }
++    err: zeroclaw_runtime::agent_rename_recovery::RenameRecoveryError,
++) -> Response {
++    use zeroclaw_runtime::agent_rename_recovery::RenameRecoveryError;
++    let (code, msg) = match err {
++        RenameRecoveryError::NotConfigured { .. } => (
++            ConfigApiCode::PathNotFound,
++            format!("agents.{from} is not configured"),
++        ),
++        RenameRecoveryError::UnsafeReuse { alias } => (
++            ConfigApiCode::ValidationFailed,
++            format!(
++                "alias `{alias}` is stranded by an unfinished agent rename and cannot be reused yet"
++            ),
++        ),
++        other => (ConfigApiCode::InternalError, other.to_string()),
++    };
++    error_response(ConfigApiError::new(code, msg).with_path(format!("{path}.{from}")))
++}
+ 
+-    // Session-metadata attribution still pointing at `from`.
+-    if let Some(backend) = state.session_backend.as_ref()
+-        && backend.count_agent_attribution(from).unwrap_or(0) > 0
+-    {
+-        return true;
++fn follower_stores<'a>(
++    state: &'a AppState,
++) -> zeroclaw_runtime::agent_rename_recovery::FollowerStores<'a> {
++    zeroclaw_runtime::agent_rename_recovery::FollowerStores {
++        memory: Some(state.mem.as_ref()),
++        session_backend: state.session_backend.as_deref(),
+     }
+-
+-    false
+ }
+ 
+ async fn rename_agent_cascade(
+@@ -1785,80 +1756,94 @@ async fn rename_agent_cascade(
+     guard: ConfigWriteGuard,
+ ) -> Response {
+     use zeroclaw_config::alias_refs::{self, AliasKind};
++    use zeroclaw_runtime::agent_rename_recovery::{self, RenameDisposition, RenameRecoveryError};
+     let (from, to) = (&body.from, &body.to);
++    let stores = follower_stores(state);
+ 
+-    // Capture the OLD workspace path while the entry still lives under `from`
+-    // (custom paths are read off the entry, which is about to move).
++    // Capture the old workspace while `from` still exists. A custom path is
++    // read off that entry; after the commit it would fall back to the default.
+     let old_ws = working.agent_workspace_dir(from);
++    let disposition =
++        match agent_rename_recovery::resolve_committed_rename(&working, from, to, &stores).await {
++            Ok(disposition) => disposition,
++            Err(RenameRecoveryError::Incomplete { warnings }) => {
++                return rename_partial_response(body, from, to, 0, false, 0, 0, 0, 0, warnings);
++            }
++            Err(err) => return recovery_error_response(&body.path, from, err),
++        };
+ 
+-    let committed_to = working.agent(from).is_none() && working.agent(to).is_some();
+-    let dirty_count = if committed_to && rename_residue_exists(state, &working, from).await {
+-        0
+-    } else {
++    let dirty_count = if matches!(disposition, RenameDisposition::Fresh { .. }) {
+         match alias_refs::rename_with_cascade(&mut working, &AliasKind::Agent, from, to) {
+             Ok(report) => {
+                 for path in &report.dirty_paths {
+                     working.mark_dirty(path);
+                 }
+                 let dirty_count = report.dirty_paths.len();
+-                if let Err(e) = persist_and_swap(state, working, &guard).await {
+-                    return error_response(e);
++                if let Err(err) = persist_and_swap(state, working, &guard).await {
++                    return error_response(err);
++                }
++                let committed = state.config.read().clone();
++                if let Err(err) =
++                    agent_rename_recovery::arm_committed_rename(&committed, from, to, &old_ws).await
++                {
++                    return recovery_error_response(&body.path, from, err);
+                 }
+                 dirty_count
+             }
+-            Err(e) => return rename_error_response(&body.path, from, e),
++            Err(err) => return rename_error_response(&body.path, from, err),
+         }
++    } else {
++        0
+     };
+-    // Config is committed (saved + swapped, or already committed by a prior
+-    // crashed run). Release before the post-commit side effects below:
+-    // workspace move and the memory/cron/ACP/session-backend cascade can be
+-    // slow or wedge, and holding the lock across them would stall every
+-    // other gateway config write process-wide.
++    // Config is committed. Release before follower I/O so a slow converge
++    // cannot stall every other gateway config write.
+     drop(guard);
+ 
+     let cfg = state.config.read().clone();
+-    // The NEW workspace path off the committed config (the rewritten `to`).
+-    let new_ws = cfg.agent_workspace_dir(to);
+-
+-    // Move the workspace dir. For the default per-alias location this is
+-    // `<install>/agents/<from>/workspace` → `…/<to>/workspace`. A custom
+-    // workspace path is alias-independent, so `old_ws == new_ws` and we skip.
+-    let ws_existed = old_ws != new_ws && old_ws.exists();
+-    let move_warning = move_renamed_workspace(&old_ws, &new_ws).await;
+-    let workspace_moved = ws_existed && move_warning.is_none();
+-    let mut warnings: Vec<String> = Vec::new();
+-    warnings.extend(move_warning);
++    let stores = follower_stores(state);
++    match agent_rename_recovery::converge_committed_rename(&cfg, from, to, &stores).await {
++        Ok(report) => rename_partial_response(
++            body,
++            from,
++            to,
++            dirty_count,
++            report.workspace_moved,
++            report.memory_rows,
++            report.cron_jobs,
++            report.acp_sessions,
++            report.sessions_repointed,
++            Vec::new(),
++        ),
++        Err(RenameRecoveryError::Incomplete { warnings }) => {
++            // Config is `to` and the recovery record stays armed, so a retry
++            // (or the CLI) can finish. Surface the lag instead of hiding it.
++            rename_partial_response(body, from, to, dirty_count, false, 0, 0, 0, 0, warnings)
++        }
++        Err(err) => recovery_error_response(&body.path, from, err),
++    }
++}
+ 
+-    // Re-point owned DB state (memory/cron/acp/session). Best-effort + reported.
+-    let owned = crate::agent_owned_state::cascade_rename_agent(
+-        &cfg,
+-        &state.mem,
+-        state.session_backend.as_ref(),
+-        from,
+-        to,
+-    )
+-    .await;
+-    // Combine the workspace-move warning (if any) with the owned-store warnings
+-    // so every partial failure reaches the caller, not just the server log.
+-    warnings.extend(owned.warnings);
+-
+-    // The config rename committed. A non-empty `warnings` means a post-persist
+-    // side-effect did not follow (config is `to`, some follower lags at `from`,
+-    // re-runnable) - escalate to WARN so that degraded outcome is visible
+-    // operationally instead of buried at INFO.
++fn rename_partial_response(
++    body: &RenameMapKeyBody,
++    from: &str,
++    to: &str,
++    dirty_count: usize,
++    workspace_moved: bool,
++    memory_rows: usize,
++    cron_jobs: usize,
++    acp_sessions: usize,
++    sessions_repointed: usize,
++    warnings: Vec<String>,
++) -> Response {
+     if warnings.is_empty() {
+-        ::zeroclaw_log::record!(INFO, ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_attrs(::serde_json::json!({"from": from, "to": to, "memory": owned.memory_rows, "cron": owned.cron_jobs, "acp": owned.acp_sessions, "sessions": owned.sessions_repointed, "workspace_moved": workspace_moved, "dirty_paths": dirty_count})), "agent renamed with owned-state cascade");
++        ::zeroclaw_log::record!(INFO, ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_attrs(::serde_json::json!({"from": from, "to": to, "memory": memory_rows, "cron": cron_jobs, "acp": acp_sessions, "sessions": sessions_repointed, "workspace_moved": workspace_moved, "dirty_paths": dirty_count})), "agent renamed with owned-state cascade");
+     } else {
+-        ::zeroclaw_log::record!(WARN, ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_attrs(::serde_json::json!({"from": from, "to": to, "memory": owned.memory_rows, "cron": owned.cron_jobs, "acp": owned.acp_sessions, "sessions": owned.sessions_repointed, "workspace_moved": workspace_moved, "dirty_paths": dirty_count, "warnings": warnings})), "agent rename persisted but a post-persist side-effect did not follow; re-issue the rename to converge");
++        ::zeroclaw_log::record!(WARN, ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_attrs(::serde_json::json!({"from": from, "to": to, "memory": memory_rows, "cron": cron_jobs, "acp": acp_sessions, "sessions": sessions_repointed, "workspace_moved": workspace_moved, "dirty_paths": dirty_count, "warnings": warnings})), "agent rename persisted but a post-persist side-effect did not follow; re-issue the rename to converge");
+     }
+-
+-    // Persisted rename. `warnings` carries any post-persist side-effect that did
+-    // not follow, so the split can be remediated rather than reported as a clean
+-    // success (207-style partial success).
+     axum::Json(RenameMapKeyResponse {
+         path: body.path.clone(),
+-        from: from.clone(),
+-        to: to.clone(),
++        from: from.to_string(),
++        to: to.to_string(),
+         renamed: true,
+         warnings,
+     })
+@@ -3397,29 +3382,51 @@ mod tests {
+     #[tokio::test]
+     async fn renamed_workspace_move_failure_is_surfaced() {
+         // A failed workspace move during rename must surface a warning (so the
+-        // caller learns config/DB moved to `to` while the workspace is stranded
+-        // at `from`), not be swallowed as a clean success.
++        // caller learns config moved to `to` while the workspace is stranded
++        // at `from`), not be swallowed as a clean success with an empty warning
++        // list.
+         let tmp = tempfile::tempdir().unwrap();
+-        let old_ws = tmp.path().join("from-ws");
++        let mut config = zeroclaw_config::schema::Config {
++            config_path: tmp.path().join("config.toml"),
++            data_dir: tmp.path().join("data"),
++            ..Default::default()
++        };
++        std::fs::create_dir_all(&config.data_dir).unwrap();
++        config.agents.insert(
++            "from".to_string(),
++            zeroclaw_config::schema::AliasedAgentConfig {
++                risk_profile: "default".into(),
++                ..Default::default()
++            },
++        );
++        config.risk_profiles.entry("default".into()).or_default();
++        config.runtime_profiles.entry("default".into()).or_default();
++        let old_ws = config.agent_workspace_dir("from");
+         std::fs::create_dir_all(&old_ws).unwrap();
+-        // Force the move to fail: new_ws's parent is a FILE, so create_dir_all
+-        // and rename both fail.
+-        let blocker = tmp.path().join("blocker");
++        // Force the move to fail: the destination alias directory is a file,
++        // so creating its workspace parent cannot succeed.
++        let blocker = tmp.path().join("agents").join("to");
++        if let Some(parent) = blocker.parent() {
++            std::fs::create_dir_all(parent).unwrap();
++        }
+         std::fs::write(&blocker, b"x").unwrap();
+-        let new_ws = blocker.join("to-ws");
+ 
+-        let warning = move_renamed_workspace(&old_ws, &new_ws).await;
++        let state = crate::api::test_state(config.clone());
++        let body = RenameMapKeyBody {
++            path: "agents".to_string(),
++            from: "from".to_string(),
++            to: "to".to_string(),
++        };
++        let guard = Arc::clone(&state.config_write_lock).lock_owned().await;
++        let resp = rename_agent_cascade(&state, config, &body, guard).await;
++        let (status, json) = response_json(resp).await;
++        assert!(status.is_success(), "config commit still succeeds");
++        let warnings = json["warnings"].to_string();
+         assert!(
+-            warning.is_some(),
+-            "a failed workspace move must surface a warning"
++            warnings.contains("workspace move"),
++            "a failed workspace move must surface a warning, got {warnings}"
+         );
+-        assert!(warning.unwrap().contains("workspace move"));
+         assert!(old_ws.exists(), "source dir stays put when the move fails");
+-
+-        // Nothing-to-move paths return None (no spurious warning).
+-        assert!(move_renamed_workspace(&old_ws, &old_ws).await.is_none());
+-        let missing = tmp.path().join("does-not-exist");
+-        assert!(move_renamed_workspace(&missing, &new_ws).await.is_none());
+     }
+ 
+     #[tokio::test]
+diff --git a/crates/zeroclaw-runtime/locales/en/cli.ftl b/crates/zeroclaw-runtime/locales/en/cli.ftl
+index fb525fe5a..179578873 100644
+--- a/crates/zeroclaw-runtime/locales/en/cli.ftl
++++ b/crates/zeroclaw-runtime/locales/en/cli.ftl
+@@ -1106,6 +1106,10 @@ cli-alias-deleted = deleted {$section}.{$alias} (scrubbed {$count} reference(s))
+ cli-alias-delete-refused-header = refused: {$count} hard reference(s) block the delete:
+ cli-alias-delete-refused-hint = delete refused — resolve the hard references first
+ cli-alias-not-configured = {$path} is not configured
++cli-alias-rename-recovery-unreadable = committed agent rename could not read {$store}: {$detail}
++cli-alias-rename-recovery-incomplete = committed agent rename did not finish; retry the same rename to converge
++cli-alias-rename-recovery-reuse = alias `{$alias}` is stranded by an unfinished agent rename and cannot be reused yet
++cli-alias-rename-recovery-persist = committed agent rename recovery could not be recorded: {$detail}
+ cli-alias-delete-failed = delete failed: {$error}
+ cli-alias-delete-reserved-default = the `default` agent is reserved and cannot be deleted
+ cli-alias-create-reserved-default = the `default` agent is reserved and cannot be created
+diff --git a/crates/zeroclaw-runtime/src/agent_rename_recovery.rs b/crates/zeroclaw-runtime/src/agent_rename_recovery.rs
+new file mode 100644
+index 000000000..aa7c8d531
+--- /dev/null
++++ b/crates/zeroclaw-runtime/src/agent_rename_recovery.rs
+@@ -0,0 +1,519 @@
++//! Committed agent-rename recovery shared by the CLI, gateway, and RPC.
++//!
++//! A rename persists the configuration alias change before workspace, memory,
++//! cron, ACP, and session followers finish. This module is the one record of
++//! that in-progress rename: callers arm it when the config commit succeeds,
++//! resume from it (or from leftover follower residue) instead of treating the
++//! retired alias as unknown, and delete it only after every configured
++//! follower has been read and converged. While the record is open the retired
++//! alias cannot be created again.
++
++use std::path::{Path, PathBuf};
++
++use serde::{Deserialize, Serialize};
++use zeroclaw_api::memory_traits::Memory;
++use zeroclaw_config::schema::Config;
++use zeroclaw_infra::acp_session_store::AcpSessionStore;
++use zeroclaw_infra::session_backend::SessionBackend;
++
++const JOURNAL_FILE: &str = "agent_rename_recovery.json";
++const UNSUPPORTED_MEMORY_RENAME: &str = "rename_agent not supported by this memory backend";
++
++/// Followers the caller has open. `None` means that store is not configured
++/// on this surface, not that a read failed.
++pub struct FollowerStores<'a> {
++    pub memory: Option<&'a dyn Memory>,
++    pub session_backend: Option<&'a dyn SessionBackend>,
++}
++
++/// What the caller should do with live configuration before converging.
++#[derive(Debug)]
++pub enum RenameDisposition {
++    /// `from` is still configured. Cascade and persist config, arm recovery,
++    /// then converge.
++    Fresh { old_workspace: PathBuf },
++    /// Config already names `to`. Do not rewrite config; converge followers.
++    Resume,
++}
++
++/// Counts from a converge that cleared the recovery record.
++#[derive(Debug, Default)]
++pub struct ConvergeReport {
++    pub memory_rows: usize,
++    pub cron_jobs: usize,
++    pub acp_sessions: usize,
++    pub sessions_repointed: usize,
++    pub workspace_moved: bool,
++}
++
++#[derive(Debug)]
++pub enum RenameRecoveryError {
++    NotConfigured { path: String },
++    Unreadable { store: String, detail: String },
++    UnsafeReuse { alias: String },
++    Incomplete { warnings: Vec<String> },
++    Persist { detail: String },
++}
++
++impl std::fmt::Display for RenameRecoveryError {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        match self {
++            Self::NotConfigured { path } => write!(f, "{path} is not configured"),
++            Self::Unreadable { store, detail } => {
++                write!(
++                    f,
++                    "committed rename recovery could not read {store}: {detail}"
++                )
++            }
++            Self::UnsafeReuse { alias } => write!(
++                f,
++                "alias `{alias}` is stranded by an unfinished agent rename and cannot be reused yet"
++            ),
++            Self::Incomplete { warnings } => write!(
++                f,
++                "committed agent rename did not finish ({})",
++                warnings.join("; ")
++            ),
++            Self::Persist { detail } => {
++                write!(
++                    f,
++                    "committed rename recovery could not be recorded: {detail}"
++                )
++            }
++        }
++    }
++}
++
++impl std::error::Error for RenameRecoveryError {}
++
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
++struct RecoveryRecord {
++    from: String,
++    to: String,
++    old_workspace: String,
++    move_workspace: bool,
++}
++
++#[derive(Debug, Default, Serialize, Deserialize)]
++struct Journal {
++    records: Vec<RecoveryRecord>,
++}
++
++fn journal_path(data_dir: &Path) -> PathBuf {
++    data_dir.join(JOURNAL_FILE)
++}
++
++fn unreadable(store: &str, detail: impl ToString) -> RenameRecoveryError {
++    RenameRecoveryError::Unreadable {
++        store: store.to_string(),
++        detail: detail.to_string(),
++    }
++}
++
++async fn load_journal(data_dir: &Path) -> Result<Journal, RenameRecoveryError> {
++    let path = journal_path(data_dir);
++    match tokio::fs::read(&path).await {
++        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|err| unreadable("recovery", err)),
++        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Journal::default()),
++        Err(err) => Err(unreadable("recovery", err)),
++    }
++}
++
++async fn store_journal(data_dir: &Path, journal: &Journal) -> Result<(), RenameRecoveryError> {
++    if let Err(err) = tokio::fs::create_dir_all(data_dir).await {
++        return Err(RenameRecoveryError::Persist {
++            detail: err.to_string(),
++        });
++    }
++    let path = journal_path(data_dir);
++    let tmp = path.with_extension("json.tmp");
++    let bytes = serde_json::to_vec_pretty(journal).map_err(|err| RenameRecoveryError::Persist {
++        detail: err.to_string(),
++    })?;
++    if let Err(err) = tokio::fs::write(&tmp, &bytes).await {
++        return Err(RenameRecoveryError::Persist {
++            detail: err.to_string(),
++        });
++    }
++    tokio::fs::rename(&tmp, &path)
++        .await
++        .map_err(|err| RenameRecoveryError::Persist {
++            detail: err.to_string(),
++        })
++}
++
++fn upsert(journal: &mut Journal, record: RecoveryRecord) {
++    if let Some(existing) = journal
++        .records
++        .iter_mut()
++        .find(|row| row.from == record.from)
++    {
++        *existing = record;
++    } else {
++        journal.records.push(record);
++    }
++}
++
++/// `true` when `alias` is the retired source of an open committed rename.
++pub async fn alias_reuse_blocked(
++    data_dir: &Path,
++    alias: &str,
++) -> Result<bool, RenameRecoveryError> {
++    let journal = load_journal(data_dir).await?;
++    Ok(journal.records.iter().any(|row| row.from == alias))
++}
++
++/// Remember a committed `from` → `to` rename until followers converge.
++pub async fn arm_committed_rename(
++    config: &Config,
++    from: &str,
++    to: &str,
++    old_workspace: &Path,
++) -> Result<(), RenameRecoveryError> {
++    let new_workspace = config.agent_workspace_dir(to);
++    let record = RecoveryRecord {
++        from: from.to_string(),
++        to: to.to_string(),
++        old_workspace: old_workspace.display().to_string(),
++        move_workspace: old_workspace != new_workspace.as_path(),
++    };
++    let mut journal = load_journal(&config.data_dir).await?;
++    upsert(&mut journal, record);
++    store_journal(&config.data_dir, &journal).await
++}
++
++async fn clear_record(config: &Config, from: &str, to: &str) -> Result<(), RenameRecoveryError> {
++    let mut journal = load_journal(&config.data_dir).await?;
++    let before = journal.records.len();
++    journal
++        .records
++        .retain(|row| !(row.from == from && row.to == to));
++    if journal.records.len() == before {
++        return Ok(());
++    }
++    if journal.records.is_empty() {
++        let path = journal_path(&config.data_dir);
++        match tokio::fs::remove_file(&path).await {
++            Ok(()) => Ok(()),
++            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
++            Err(err) => Err(RenameRecoveryError::Persist {
++                detail: err.to_string(),
++            }),
++        }
++    } else {
++        store_journal(&config.data_dir, &journal).await
++    }
++}
++
++/// Residue and readability of the followers a committed rename must move.
++///
++/// An unreadable configured store is an error. It is not "no residue".
++async fn probe_followers(
++    config: &Config,
++    from: &str,
++    stores: &FollowerStores<'_>,
++) -> Result<bool, RenameRecoveryError> {
++    let mut residue = config.agent_workspace_dir(from).exists();
++
++    match crate::cron::list_jobs_by_agent(config, from) {
++        Ok(jobs) if !jobs.is_empty() => residue = true,
++        Ok(_) => {}
++        Err(err) => return Err(unreadable("cron", err)),
++    }
++
++    if let Some(memory) = stores.memory {
++        match memory.count_agent(from).await {
++            Ok(0) => {}
++            Ok(_) => residue = true,
++            Err(err) => return Err(unreadable("memory", err)),
++        }
++    }
++
++    let acp_db = config.data_dir.join("sessions").join("acp-sessions.db");
++    if acp_db.exists() {
++        match AcpSessionStore::new(&config.data_dir) {
++            Ok(store) => match store.list_sessions_by_agent(from) {
++                Ok(rows) if !rows.is_empty() => residue = true,
++                Ok(_) => {}
++                Err(err) => return Err(unreadable("acp", err)),
++            },
++            Err(err) => return Err(unreadable("acp", err)),
++        }
++    }
++
++    if let Some(backend) = stores.session_backend {
++        match backend.count_agent_attribution(from) {
++            Ok(0) => {}
++            Ok(_) => residue = true,
++            Err(err) => return Err(unreadable("sessions", err)),
++        }
++    }
++
++    Ok(residue)
++}
++
++fn fresh(config: &Config, from: &str) -> RenameDisposition {
++    RenameDisposition::Fresh {
++        old_workspace: config.agent_workspace_dir(from),
++    }
++}
++
++/// Decide whether `from` → `to` is a new rename, a resume, or a hard failure.
++pub async fn resolve_committed_rename(
++    config: &Config,
++    from: &str,
++    to: &str,
++    stores: &FollowerStores<'_>,
++) -> Result<RenameDisposition, RenameRecoveryError> {
++    let journal = load_journal(&config.data_dir).await?;
++    if journal
++        .records
++        .iter()
++        .any(|row| row.from == to && row.from != from)
++    {
++        return Err(RenameRecoveryError::UnsafeReuse {
++            alias: to.to_string(),
++        });
++    }
++
++    if let Some(record) = journal.records.iter().find(|row| row.from == from).cloned() {
++        return resolve_open_record(config, from, to, &record);
++    }
++
++    if config.agent(from).is_some() {
++        return Ok(fresh(config, from));
++    }
++    if config.agent(to).is_none() {
++        return Err(RenameRecoveryError::NotConfigured {
++            path: format!("agents.{from}"),
++        });
++    }
++
++    // Config already committed `to` and there is no journal yet. Residue or an
++    // unreadable store still belongs to this rename; a clean readable scan does
++    // not.
++    match probe_followers(config, from, stores).await {
++        Ok(false) => Err(RenameRecoveryError::NotConfigured {
++            path: format!("agents.{from}"),
++        }),
++        Ok(true) => {
++            let old_workspace = config.agent_workspace_dir(from);
++            arm_committed_rename(config, from, to, &old_workspace).await?;
++            Ok(RenameDisposition::Resume)
++        }
++        Err(err) => {
++            let old_workspace = config.agent_workspace_dir(from);
++            arm_committed_rename(config, from, to, &old_workspace).await?;
++            Err(err)
++        }
++    }
++}
++
++fn resolve_open_record(
++    config: &Config,
++    from: &str,
++    to: &str,
++    record: &RecoveryRecord,
++) -> Result<RenameDisposition, RenameRecoveryError> {
++    let from_live = config.agent(from).is_some();
++    let to_live = config.agent(to).is_some();
++    let recorded_to_live = config.agent(&record.to).is_some();
++
++    if record.to != to {
++        // The config commit has not landed, so a different target is still a
++        // fresh rename and replaces the uncommitted record.
++        if from_live && !recorded_to_live && !to_live {
++            return Ok(fresh(config, from));
++        }
++        return Err(RenameRecoveryError::UnsafeReuse {
++            alias: from.to_string(),
++        });
++    }
++
++    if from_live && to_live {
++        return Err(RenameRecoveryError::UnsafeReuse {
++            alias: from.to_string(),
++        });
++    }
++    if from_live && !to_live {
++        return Ok(RenameDisposition::Fresh {
++            old_workspace: PathBuf::from(&record.old_workspace),
++        });
++    }
++    if !to_live {
++        return Err(unreadable(
++            "recovery",
++            "committed rename target is missing from live configuration",
++        ));
++    }
++    Ok(RenameDisposition::Resume)
++}
++
++fn memory_skips_agents(err: &anyhow::Error) -> bool {
++    err.to_string().contains(UNSUPPORTED_MEMORY_RENAME)
++}
++
++async fn converge_memory(
++    stores: &FollowerStores<'_>,
++    from: &str,
++    to: &str,
++    warnings: &mut Vec<String>,
++) -> usize {
++    let Some(memory) = stores.memory else {
++        return 0;
++    };
++    let pending = match memory.count_agent(from).await {
++        Ok(count) => count,
++        Err(err) => {
++            warnings.push(format!("memory count: {err}"));
++            return 0;
++        }
++    };
++    // Nothing attributed to `from`. Skip the backend call: a zero-row rename is
++    // not always a no-op (sqlite drops an empty destination alias row).
++    if pending == 0 {
++        return 0;
++    }
++    match memory.rename_agent(from, to).await {
++        Ok(rows) => rows,
++        Err(err) if memory_skips_agents(&err) => 0,
++        Err(err) => {
++            warnings.push(format!("memory rename: {err}"));
++            0
++        }
++    }
++}
++
++fn converge_cron(config: &Config, from: &str, to: &str, warnings: &mut Vec<String>) -> usize {
++    match crate::cron::rename_jobs_by_agent(config, from, to) {
++        Ok(rows) => rows,
++        Err(err) => {
++            warnings.push(format!("cron rename: {err}"));
++            0
++        }
++    }
++}
++
++fn converge_acp(config: &Config, from: &str, to: &str, warnings: &mut Vec<String>) -> usize {
++    match AcpSessionStore::new(&config.data_dir) {
++        Ok(store) => match store.rename_sessions_by_agent(from, to) {
++            Ok(rows) => rows,
++            Err(err) => {
++                warnings.push(format!("acp rename: {err}"));
++                0
++            }
++        },
++        Err(err) => {
++            warnings.push(format!("acp store open: {err}"));
++            0
++        }
++    }
++}
++
++fn converge_sessions(
++    stores: &FollowerStores<'_>,
++    from: &str,
++    to: &str,
++    warnings: &mut Vec<String>,
++) -> usize {
++    let Some(backend) = stores.session_backend else {
++        return 0;
++    };
++    match backend.rename_agent_attribution(from, to) {
++        Ok(rows) => rows,
++        Err(err) => {
++            warnings.push(format!("session attribution rename: {err}"));
++            0
++        }
++    }
++}
++
++async fn relocate_workspace(old_workspace: &Path, new_workspace: &Path) -> Result<bool, String> {
++    if !old_workspace.exists() {
++        return Ok(false);
++    }
++    if let Some(parent) = new_workspace.parent()
++        && let Err(err) = tokio::fs::create_dir_all(parent).await
++    {
++        return Err(format!(
++            "workspace move {} -> {} failed: {err}",
++            old_workspace.display(),
++            new_workspace.display()
++        ));
++    }
++    match tokio::fs::rename(old_workspace, new_workspace).await {
++        Ok(()) => Ok(true),
++        Err(err) => Err(format!(
++            "workspace move {} -> {} failed: {err}",
++            old_workspace.display(),
++            new_workspace.display()
++        )),
++    }
++}
++
++/// Move the default workspace and re-point owned followers. Idempotent.
++///
++/// The recovery record is removed only when every configured follower was
++/// readable and no old-alias residue remains.
++pub async fn converge_committed_rename(
++    config: &Config,
++    from: &str,
++    to: &str,
++    stores: &FollowerStores<'_>,
++) -> Result<ConvergeReport, RenameRecoveryError> {
++    let journal = load_journal(&config.data_dir).await?;
++    let record = journal
++        .records
++        .iter()
++        .find(|row| row.from == from && row.to == to)
++        .cloned();
++    let new_workspace = config.agent_workspace_dir(to);
++    let (old_workspace, move_workspace) = if let Some(record) = &record {
++        (PathBuf::from(&record.old_workspace), record.move_workspace)
++    } else {
++        let old_workspace = config.agent_workspace_dir(from);
++        let move_workspace = old_workspace != new_workspace;
++        (old_workspace, move_workspace)
++    };
++
++    let mut warnings = Vec::new();
++    let workspace_moved = if move_workspace {
++        match relocate_workspace(&old_workspace, &new_workspace).await {
++            Ok(moved) => moved,
++            Err(err) => {
++                warnings.push(err);
++                false
++            }
++        }
++    } else {
++        false
++    };
++
++    let memory_rows = converge_memory(stores, from, to, &mut warnings).await;
++    let cron_jobs = converge_cron(config, from, to, &mut warnings);
++    let acp_sessions = converge_acp(config, from, to, &mut warnings);
++    let sessions_repointed = converge_sessions(stores, from, to, &mut warnings);
++
++    if warnings.is_empty() {
++        match probe_followers(config, from, stores).await {
++            Ok(false) => {}
++            Ok(true) => {
++                warnings.push("owned state still attributes rows to the retired alias".to_string());
++            }
++            Err(err) => return Err(err),
++        }
++    }
++
++    if !warnings.is_empty() {
++        return Err(RenameRecoveryError::Incomplete { warnings });
++    }
++
++    clear_record(config, from, to).await?;
++    Ok(ConvergeReport {
++        memory_rows,
++        cron_jobs,
++        acp_sessions,
++        sessions_repointed,
++        workspace_moved,
++    })
++}
+diff --git a/crates/zeroclaw-runtime/src/lib.rs b/crates/zeroclaw-runtime/src/lib.rs
+index bcf02ca54..fc2198507 100644
+--- a/crates/zeroclaw-runtime/src/lib.rs
++++ b/crates/zeroclaw-runtime/src/lib.rs
+@@ -14,6 +14,7 @@ pub mod migration;
+ pub mod util;
+ 
+ pub mod agent;
++pub mod agent_rename_recovery;
+ pub mod approval;
+ pub mod browse;
+ pub mod calendar;
+diff --git a/crates/zeroclaw-runtime/src/rpc/dispatch.rs b/crates/zeroclaw-runtime/src/rpc/dispatch.rs
+index ecfa16d2b..24abe82e9 100644
+--- a/crates/zeroclaw-runtime/src/rpc/dispatch.rs
++++ b/crates/zeroclaw-runtime/src/rpc/dispatch.rs
+@@ -622,23 +622,19 @@ fn rename_error_to_rpc(
+     rpc_err(code, format!("{path}.{from}: {err}"))
+ }
+ 
+-async fn move_renamed_agent_workspace(
+-    old_workspace: &std::path::Path,
+-    new_workspace: &std::path::Path,
+-) -> Option<String> {
+-    if old_workspace == new_workspace || !old_workspace.exists() {
+-        return None;
+-    }
+-    if let Some(parent) = new_workspace.parent() {
+-        let _ = tokio::fs::create_dir_all(parent).await;
+-    }
+-    match tokio::fs::rename(old_workspace, new_workspace).await {
+-        Ok(()) => None,
+-        Err(err) => Some(format!(
+-            "workspace move {} -> {} failed: {err}",
+-            old_workspace.display(),
+-            new_workspace.display()
+-        )),
++fn recovery_error_to_rpc(
++    path: &str,
++    from: &str,
++    err: crate::agent_rename_recovery::RenameRecoveryError,
++) -> JsonRpcError {
++    use crate::agent_rename_recovery::RenameRecoveryError;
++    match err {
++        RenameRecoveryError::NotConfigured { .. } => rpc_err(
++            INVALID_PARAMS,
++            format!("{path}.{from}: alias not found: {from}"),
++        ),
++        RenameRecoveryError::UnsafeReuse { .. } => rpc_err(INVALID_PARAMS, err.to_string()),
++        other => rpc_err(INTERNAL_ERROR, other.to_string()),
+     }
+ }
+ 
+@@ -881,41 +877,6 @@ impl RpcDispatcher {
+         Ok(())
+     }
+ 
+-    async fn agent_rename_residue_exists(
+-        &self,
+-        config: &zeroclaw_config::schema::Config,
+-        from: &str,
+-    ) -> bool {
+-        if config.agent_workspace_dir(from).exists() {
+-            return true;
+-        }
+-        if crate::cron::list_jobs_by_agent(config, from)
+-            .map(|jobs| !jobs.is_empty())
+-            .unwrap_or(false)
+-        {
+-            return true;
+-        }
+-        if let Some(store) = self.ctx.acp_session_store.as_ref()
+-            && store
+-                .list_sessions_by_agent(from)
+-                .map(|sessions| !sessions.is_empty())
+-                .unwrap_or(false)
+-        {
+-            return true;
+-        }
+-        if let Some(mem) = self.ctx.memory.as_ref()
+-            && mem.count_agent(from).await.unwrap_or(0) > 0
+-        {
+-            return true;
+-        }
+-        if let Some(backend) = self.ctx.session_backend.as_ref()
+-            && backend.count_agent_attribution(from).unwrap_or(0) > 0
+-        {
+-            return true;
+-        }
+-        false
+-    }
+-
+     /// Read frames from transport, dispatch, repeat.
+     pub async fn run(&mut self, transport: &mut (dyn RpcTransport + Send)) {
+         while let Some(line) = transport.next_frame().await {
+@@ -4826,6 +4787,22 @@ impl RpcDispatcher {
+ 
+     async fn handle_config_map_key_create(&self, params: &Value) -> RpcResult {
+         let req: ConfigMapKeyCreateParams = parse_params(params)?;
++        if req.path == "agents" {
++            let data_dir = self.ctx.config.read().data_dir.clone();
++            match crate::agent_rename_recovery::alias_reuse_blocked(&data_dir, &req.key).await {
++                Ok(true) => {
++                    return Err(rpc_err(
++                        INVALID_PARAMS,
++                        format!(
++                            "alias `{}` is stranded by an unfinished agent rename and cannot be reused yet",
++                            req.key
++                        ),
++                    ));
++                }
++                Ok(false) => {}
++                Err(err) => return Err(recovery_error_to_rpc(&req.path, &req.key, err)),
++            }
++        }
+         let config_write_guard = Arc::clone(&self.ctx.config_write_lock).lock_owned().await;
+         let create = |config: &mut Config| -> Result<bool, JsonRpcError> {
+             // Shared guarded boundary: enforces the reserved-agent rule (the
+@@ -5061,16 +5038,26 @@ impl RpcDispatcher {
+             }
+ 
+             let mut working = self.ctx.config.read().clone();
+-            let old_workspace = is_agent.then(|| working.agent_workspace_dir(&req.from));
+-            // If a prior call saved config as `to` but crashed before side effects,
+-            // re-running `from -> to` should converge lagging owned state instead
+-            // of failing because `from` is no longer a config key.
+-            let resume_committed_to = is_agent
+-                && working.agent(&req.from).is_none()
+-                && working.agent(&req.to).is_some()
+-                && self.agent_rename_residue_exists(&working, &req.from).await;
+-
+-            if !resume_committed_to {
++            let old_workspace = working.agent_workspace_dir(&req.from);
++            let resume_agent = if is_agent {
++                let stores = crate::agent_rename_recovery::FollowerStores {
++                    memory: self.ctx.memory.as_deref(),
++                    session_backend: self.ctx.session_backend.as_deref(),
++                };
++                match crate::agent_rename_recovery::resolve_committed_rename(
++                    &working, &req.from, &req.to, &stores,
++                )
++                .await
++                {
++                    Ok(crate::agent_rename_recovery::RenameDisposition::Resume) => true,
++                    Ok(crate::agent_rename_recovery::RenameDisposition::Fresh { .. }) => false,
++                    Err(err) => return Err(recovery_error_to_rpc(&req.path, &req.from, err)),
++                }
++            } else {
++                false
++            };
++
++            if !resume_agent {
+                 let report = zeroclaw_config::alias_refs::rename_with_cascade(
+                     &mut working,
+                     &kind,
+@@ -5095,6 +5082,17 @@ impl RpcDispatcher {
+                     self.save_and_swap_config(working.clone(), &config_write_guard)
+                         .await?;
+                 }
++                if is_agent {
++                    let committed = self.ctx.config.read().clone();
++                    crate::agent_rename_recovery::arm_committed_rename(
++                        &committed,
++                        &req.from,
++                        &req.to,
++                        &old_workspace,
++                    )
++                    .await
++                    .map_err(|err| recovery_error_to_rpc(&req.path, &req.from, err))?;
++                }
+             }
+             // Config is committed (saved + swapped, or already committed by a
+             // prior crashed run). Release before the post-commit side effects
+@@ -5102,15 +5100,25 @@ impl RpcDispatcher {
+             // cascade can be slow or wedge, and holding the lock across them
+             // would stall every config-mutating RPC daemon-wide.
+             drop(config_write_guard);
+-            let new_workspace = is_agent.then(|| working.agent_workspace_dir(&req.to));
+ 
+             let mut warnings = Vec::new();
+-            if let (Some(old_workspace), Some(new_workspace)) = (old_workspace, new_workspace) {
+-                warnings.extend(move_renamed_agent_workspace(&old_workspace, &new_workspace).await);
+-                warnings.extend(
+-                    self.rename_agent_owned_state(&working, &req.from, &req.to)
+-                        .await,
+-                );
++            if is_agent {
++                let committed = self.ctx.config.read().clone();
++                let stores = crate::agent_rename_recovery::FollowerStores {
++                    memory: self.ctx.memory.as_deref(),
++                    session_backend: self.ctx.session_backend.as_deref(),
++                };
++                match crate::agent_rename_recovery::converge_committed_rename(
++                    &committed, &req.from, &req.to, &stores,
++                )
++                .await
++                {
++                    Ok(_) => {}
++                    Err(crate::agent_rename_recovery::RenameRecoveryError::Incomplete {
++                        warnings: lag,
++                    }) => warnings = lag,
++                    Err(err) => return Err(recovery_error_to_rpc(&req.path, &req.from, err)),
++                }
+             }
+ 
+             to_result(ConfigMapKeyRenameResult {
+@@ -5123,64 +5131,6 @@ impl RpcDispatcher {
+         })
+     }
+ 
+-    async fn rename_agent_owned_state(
+-        &self,
+-        config: &zeroclaw_config::schema::Config,
+-        from: &str,
+-        to: &str,
+-    ) -> Vec<String> {
+-        let mut warnings = Vec::new();
+-        let mut memory_rows = 0usize;
+-        let mut cron_jobs = 0usize;
+-        let mut acp_sessions = 0usize;
+-        let mut sessions_repointed = 0usize;
+-
+-        if let Some(mem) = &self.ctx.memory {
+-            match mem.rename_agent(from, to).await {
+-                Ok(n) => memory_rows = n,
+-                Err(e) => warnings.push(format!("memory rename: {e}")),
+-            }
+-        }
+-
+-        match crate::cron::rename_jobs_by_agent(config, from, to) {
+-            Ok(n) => cron_jobs = n,
+-            Err(e) => warnings.push(format!("cron rename: {e}")),
+-        }
+-
+-        match &self.ctx.acp_session_store {
+-            Some(store) => match store.rename_sessions_by_agent(from, to) {
+-                Ok(n) => acp_sessions = n,
+-                Err(e) => warnings.push(format!("acp rename: {e}")),
+-            },
+-            None => warnings.push("acp store unavailable".to_string()),
+-        }
+-
+-        if let Some(backend) = &self.ctx.session_backend {
+-            match backend.rename_agent_attribution(from, to) {
+-                Ok(n) => sessions_repointed = n,
+-                Err(e) => warnings.push(format!("session attribution rename: {e}")),
+-            }
+-        }
+-
+-        ::zeroclaw_log::record!(
+-            INFO,
+-            ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_attrs(
+-                ::serde_json::json!({
+-                    "from": from,
+-                    "to": to,
+-                    "memory": memory_rows,
+-                    "cron": cron_jobs,
+-                    "acp": acp_sessions,
+-                    "sessions": sessions_repointed,
+-                    "warnings": warnings.clone(),
+-                })
+-            ),
+-            "agent renamed with RPC owned-state cascade"
+-        );
+-
+-        warnings
+-    }
+-
+     fn handle_config_templates(&self) -> RpcResult {
+         use zeroclaw_config::schema::Config;
+         let templates: Vec<ConfigTemplateEntry> = Config::map_key_sections()
+diff --git a/src/alias_cli/mod.rs b/src/alias_cli/mod.rs
+index 4d69030b2..7bc7b1e0f 100644
+--- a/src/alias_cli/mod.rs
++++ b/src/alias_cli/mod.rs
+@@ -359,20 +359,11 @@ pub async fn handle_agents(cmd: AgentsCommands, config: &mut Config) -> Result<(
+     match cmd {
+         AgentsCommands::List => list_section(config, "agents"),
+         AgentsCommands::Create { alias } => {
++            ensure_agent_alias_reusable(config, &alias).await?;
+             create_entry(config, "agents", &alias)?;
+             save(config).await
+         }
+-        AgentsCommands::Rename { from, to } => {
+-            // Capture the workspace path while the `from` entry still exists
+-            // (custom paths are read off the entry, which the rename moves).
+-            let old_ws = config.agent_workspace_dir(&from);
+-            rename_config(config, &AliasKind::Agent, &from, &to)?;
+-            // Persist the config rename before the irreversible owned-state side
+-            // effects (workspace move + DB re-point), so a later failure can't
+-            // leave the config and owned state split.
+-            save(config).await?;
+-            agent_rename_owned_state(config, &from, &to, &old_ws).await
+-        }
++        AgentsCommands::Rename { from, to } => rename_agent(config, &from, &to).await,
+         AgentsCommands::Delete {
+             alias,
+             dry_run,
+@@ -556,40 +547,83 @@ async fn agent_delete_owned_state(
+ }
+ 
+ #[cfg(all(feature = "gateway", feature = "agent-runtime"))]
+-async fn agent_rename_owned_state(
+-    config: &Config,
+-    from: &str,
+-    to: &str,
+-    old_ws: &std::path::Path,
+-) -> Result<()> {
+-    // Move the workspace dir (default per-alias location only; a custom path is
+-    // alias-independent → old_ws == new_ws → skip).
+-    let new_ws = config.agent_workspace_dir(to);
+-    if old_ws != new_ws && old_ws.exists() {
+-        if let Some(parent) = new_ws.parent() {
+-            tokio::fs::create_dir_all(parent).await.ok();
+-        }
+-        if let Err(e) = tokio::fs::rename(old_ws, &new_ws).await {
+-            let es = e.to_string();
+-            eprintln!(
+-                "{}",
+-                mta(
+-                    "cli-alias-warn-workspace-move",
+-                    &[("error", es.as_str())],
+-                    "warning: workspace move failed: {$error}"
+-                )
+-            );
+-        }
++fn recovery_cli_error(
++    err: zeroclaw_runtime::agent_rename_recovery::RenameRecoveryError,
++) -> anyhow::Error {
++    use zeroclaw_runtime::agent_rename_recovery::RenameRecoveryError;
++    match err {
++        RenameRecoveryError::NotConfigured { path } => anyhow::Error::msg(mta(
++            "cli-alias-not-configured",
++            &[("path", path.as_str())],
++            "{$path} is not configured",
++        )),
++        RenameRecoveryError::UnsafeReuse { alias } => anyhow::Error::msg(mta(
++            "cli-alias-rename-recovery-reuse",
++            &[("alias", alias.as_str())],
++            "alias `{$alias}` is stranded by an unfinished agent rename and cannot be reused yet",
++        )),
++        RenameRecoveryError::Unreadable { store, detail } => anyhow::Error::msg(mta(
++            "cli-alias-rename-recovery-unreadable",
++            &[("store", store.as_str()), ("detail", detail.as_str())],
++            "committed agent rename could not read {$store}: {$detail}",
++        )),
++        RenameRecoveryError::Persist { detail } => anyhow::Error::msg(mta(
++            "cli-alias-rename-recovery-persist",
++            &[("detail", detail.as_str())],
++            "committed agent rename recovery could not be recorded: {$detail}",
++        )),
++        RenameRecoveryError::Incomplete { .. } => anyhow::Error::msg(mt(
++            "cli-alias-rename-recovery-incomplete",
++            "committed agent rename did not finish; retry the same rename to converge",
++        )),
+     }
++}
++
++#[cfg(all(feature = "gateway", feature = "agent-runtime"))]
++async fn ensure_agent_alias_reusable(config: &Config, alias: &str) -> Result<()> {
++    let blocked =
++        zeroclaw_runtime::agent_rename_recovery::alias_reuse_blocked(&config.data_dir, alias)
++            .await
++            .map_err(recovery_cli_error)?;
++    if blocked {
++        return Err(recovery_cli_error(
++            zeroclaw_runtime::agent_rename_recovery::RenameRecoveryError::UnsafeReuse {
++                alias: alias.to_string(),
++            },
++        ));
++    }
++    Ok(())
++}
++
++#[cfg(not(all(feature = "gateway", feature = "agent-runtime")))]
++async fn ensure_agent_alias_reusable(_config: &Config, _alias: &str) -> Result<()> {
++    Ok(())
++}
++
++#[cfg(all(feature = "gateway", feature = "agent-runtime"))]
++async fn rename_agent(config: &mut Config, from: &str, to: &str) -> Result<()> {
++    use zeroclaw_runtime::agent_rename_recovery::{self, FollowerStores, RenameDisposition};
+     let (mem, session_backend) = build_owned_state_handles(config)?;
+-    let report = crate::gateway::agent_owned_state::cascade_rename_agent(
+-        config,
+-        &mem,
+-        session_backend.as_ref(),
+-        from,
+-        to,
+-    )
+-    .await;
++    let stores = FollowerStores {
++        memory: Some(mem.as_ref()),
++        session_backend: session_backend.as_ref().map(|backend| backend.as_ref()),
++    };
++    // Captured before the config entry moves, so a custom workspace path is
++    // the one recovery will converge.
++    let old_workspace = config.agent_workspace_dir(from);
++    let disposition = agent_rename_recovery::resolve_committed_rename(config, from, to, &stores)
++        .await
++        .map_err(recovery_cli_error)?;
++    if matches!(disposition, RenameDisposition::Fresh { .. }) {
++        rename_config(config, &AliasKind::Agent, from, to)?;
++        save(config).await?;
++        agent_rename_recovery::arm_committed_rename(config, from, to, &old_workspace)
++            .await
++            .map_err(recovery_cli_error)?;
++    }
++    let report = agent_rename_recovery::converge_committed_rename(config, from, to, &stores)
++        .await
++        .map_err(recovery_cli_error)?;
+     let memory = report.memory_rows.to_string();
+     let cron = report.cron_jobs.to_string();
+     let acp = report.acp_sessions.to_string();
+@@ -607,26 +641,13 @@ async fn agent_rename_owned_state(
+             "owned-state re-pointed: memory {$memory} · cron {$cron} · acp {$acp} · sessions {$sessions}"
+         )
+     );
+-    for w in &report.warnings {
+-        eprintln!(
+-            "{}",
+-            mta(
+-                "cli-alias-warn",
+-                &[("warning", w.as_str())],
+-                "warning: {$warning}"
+-            )
+-        );
+-    }
+     Ok(())
+ }
+ 
+ #[cfg(not(all(feature = "gateway", feature = "agent-runtime")))]
+-async fn agent_rename_owned_state(
+-    _config: &Config,
+-    _from: &str,
+-    _to: &str,
+-    _old_ws: &std::path::Path,
+-) -> Result<()> {
++async fn rename_agent(config: &mut Config, from: &str, to: &str) -> Result<()> {
++    rename_config(config, &AliasKind::Agent, from, to)?;
++    save(config).await?;
+     warn_agent_owned_state();
+     Ok(())
+ }
