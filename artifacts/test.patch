@@ -1,0 +1,1035 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 28ac6f1c8..a4a551e4f 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -477,6 +477,10 @@ path = "tests/plugin_channel_runtime_e2e.rs"
+ name = "channel_egress_e2e"
+ path = "tests/channel_egress_e2e.rs"
+ 
++[[test]]
++name = "committed_agent_rename"
++path = "tests/committed_agent_rename.rs"
++
+ [[bench]]
+ name = "agent_benchmarks"
+ harness = false
+diff --git a/crates/zeroclaw-gateway/src/committed_rename_recovery_tests.rs b/crates/zeroclaw-gateway/src/committed_rename_recovery_tests.rs
+new file mode 100644
+index 000000000..faa472c16
+--- /dev/null
++++ b/crates/zeroclaw-gateway/src/committed_rename_recovery_tests.rs
+@@ -0,0 +1,477 @@
++//! Gateway and RPC coverage for committed agent-rename recovery.
++//!
++//! These tests call the public handlers and the public RPC dispatcher. They
++//! do not reach into the recovery module.
++
++use std::sync::Arc;
++
++use axum::extract::{Json, Query, State};
++use axum::http::{HeaderMap, StatusCode};
++use axum::response::Response;
++use http_body_util::BodyExt;
++use zeroclaw_config::alias_refs::{self, AliasKind};
++use zeroclaw_config::schema::{AliasedAgentConfig, Config};
++use zeroclaw_runtime::rpc::context::RpcContext;
++use zeroclaw_runtime::rpc::dispatch::RpcDispatcher;
++use zeroclaw_runtime::rpc::session::SessionStore;
++use zeroclaw_runtime::rpc::transport::RpcTransport;
++
++use crate::api::test_state;
++use crate::api_config::{MapKeyQuery, RenameMapKeyBody, handle_map_key, handle_rename_map_key};
++
++fn fixture(dir: &std::path::Path, alias: &str) -> Config {
++    let mut config = Config {
++        config_path: dir.join("config.toml"),
++        data_dir: dir.join("data"),
++        ..Config::default()
++    };
++    std::fs::create_dir_all(&config.data_dir).unwrap();
++    config.agents.insert(
++        alias.to_string(),
++        AliasedAgentConfig {
++            risk_profile: "default".into(),
++            ..AliasedAgentConfig::default()
++        },
++    );
++    config
++        .risk_profiles
++        .entry("default".into())
++        .or_default()
++        .allowed_commands = vec!["echo".into()];
++    config.runtime_profiles.entry("default".into()).or_default();
++    config
++}
++
++fn commit_alias(config: &mut Config, from: &str, to: &str) {
++    alias_refs::rename_with_cascade(config, &AliasKind::Agent, from, to).unwrap();
++}
++
++async fn response_json(response: Response) -> (StatusCode, serde_json::Value) {
++    let status = response.status();
++    let bytes = response
++        .into_body()
++        .collect()
++        .await
++        .expect("response body")
++        .to_bytes();
++    let json = serde_json::from_slice(&bytes).unwrap_or_else(
++        |_| serde_json::json!({ "raw": String::from_utf8_lossy(&bytes).to_string() }),
++    );
++    (status, json)
++}
++
++async fn rename(state: &crate::AppState, from: &str, to: &str) -> (StatusCode, serde_json::Value) {
++    let response = Box::pin(handle_rename_map_key(
++        State(state.clone()),
++        HeaderMap::new(),
++        Json(RenameMapKeyBody {
++            path: "agents".into(),
++            from: from.into(),
++            to: to.into(),
++        }),
++    ))
++    .await;
++    response_json(response).await
++}
++
++async fn create_agent(state: &crate::AppState, alias: &str) -> (StatusCode, serde_json::Value) {
++    let response = Box::pin(handle_map_key(
++        State(state.clone()),
++        HeaderMap::new(),
++        Query(MapKeyQuery {
++            path: "agents".into(),
++            key: alias.into(),
++        }),
++    ))
++    .await;
++    response_json(response).await
++}
++
++fn message_of(json: &serde_json::Value) -> String {
++    json["message"].as_str().unwrap_or("").to_string()
++}
++
++struct PipeTransport {
++    frames: std::collections::VecDeque<String>,
++    writer: tokio::sync::mpsc::Sender<String>,
++}
++
++#[async_trait::async_trait]
++impl RpcTransport for PipeTransport {
++    fn writer(&self) -> tokio::sync::mpsc::Sender<String> {
++        self.writer.clone()
++    }
++
++    async fn next_frame(&mut self) -> Option<String> {
++        self.frames.pop_front()
++    }
++
++    fn peer_label(&self) -> String {
++        "committed-rename-test".into()
++    }
++}
++
++fn rpc_frame(id: u64, method: &str, params: serde_json::Value) -> String {
++    serde_json::json!({
++        "jsonrpc": "2.0",
++        "id": id,
++        "method": method,
++        "params": params,
++    })
++    .to_string()
++}
++
++async fn rpc_roundtrip(
++    config: Config,
++    calls: Vec<(u64, String, serde_json::Value)>,
++) -> Vec<serde_json::Value> {
++    let sessions = Arc::new(SessionStore::new(
++        8,
++        Arc::new(zeroclaw_infra::session_queue::SessionActorQueue::new(
++            8, 30, 600,
++        )),
++    ));
++    let ctx = RpcContext::for_live_test(config, sessions);
++    let (tx, mut rx) = tokio::sync::mpsc::channel(32);
++    let mut dispatcher = RpcDispatcher::new(ctx, tx.clone(), "committed-rename-test".into());
++    let mut frames = std::collections::VecDeque::new();
++    frames.push_back(rpc_frame(
++        1,
++        "initialize",
++        serde_json::json!({ "protocol_version": 1 }),
++    ));
++    for (id, method, params) in calls {
++        frames.push_back(rpc_frame(id, &method, params));
++    }
++    let mut transport = PipeTransport { frames, writer: tx };
++    dispatcher.run(&mut transport).await;
++    let mut out = Vec::new();
++    while let Ok(line) = rx.try_recv() {
++        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
++            out.push(value);
++        }
++    }
++    out
++}
++
++fn rpc_by_id(messages: &[serde_json::Value], id: u64) -> serde_json::Value {
++    messages
++        .iter()
++        .find(|message| message["id"] == id)
++        .cloned()
++        .unwrap_or_else(|| panic!("missing rpc response {id}: {messages:?}"))
++}
++
++#[tokio::test]
++async fn committed_rename_unreadable_cron_fails_closed_and_blocks_reuse() {
++    let tmp = tempfile::tempdir().unwrap();
++    let mut config = fixture(tmp.path(), "agent_a");
++    commit_alias(&mut config, "agent_a", "agent_b");
++    let cron_db = config.data_dir.join("cron").join("jobs.db");
++    std::fs::create_dir_all(&cron_db).unwrap();
++
++    let state = test_state(config);
++    let (status, json) = rename(&state, "agent_a", "agent_b").await;
++    let message = message_of(&json);
++    assert_ne!(
++        status,
++        StatusCode::NOT_FOUND,
++        "an unreadable cron store must not look like a missing alias: {status} {json}"
++    );
++    assert!(
++        !message.contains("is not configured") && !message.contains("alias not found"),
++        "unreadable recovery must stay retryable, got {message}"
++    );
++
++    let (create_status, create_json) = create_agent(&state, "agent_a").await;
++    assert!(
++        !create_status.is_success(),
++        "the retired alias stays blocked while recovery is outstanding: {create_json}"
++    );
++}
++
++#[tokio::test]
++async fn committed_rename_blocked_workspace_refuses_alias_reuse_until_converged() {
++    let tmp = tempfile::tempdir().unwrap();
++    let config = fixture(tmp.path(), "agent_a");
++    let old_ws = config.agent_workspace_dir("agent_a");
++    std::fs::create_dir_all(&old_ws).unwrap();
++    std::fs::write(old_ws.join("marker"), b"keep").unwrap();
++    let blocker = tmp.path().join("agents").join("agent_b");
++    std::fs::create_dir_all(blocker.parent().unwrap()).unwrap();
++    std::fs::write(&blocker, b"x").unwrap();
++
++    let state = test_state(config);
++    let (status, json) = rename(&state, "agent_a", "agent_b").await;
++    assert!(
++        status.is_success(),
++        "the config commit is kept when only the workspace move lags: {json}"
++    );
++    assert!(
++        old_ws.join("marker").is_file(),
++        "failed workspace move leaves the marker in place"
++    );
++
++    let (blocked_status, blocked_json) = create_agent(&state, "agent_a").await;
++    assert!(
++        !blocked_status.is_success(),
++        "open recovery refuses the retired alias: {blocked_json}"
++    );
++    let (other_status, other_json) = create_agent(&state, "agent_c").await;
++    assert!(
++        other_status.is_success(),
++        "a different alias is not stranded: {other_json}"
++    );
++
++    std::fs::remove_file(&blocker).unwrap();
++    std::fs::remove_dir_all(&old_ws).unwrap();
++    let (still_status, still_json) = create_agent(&state, "agent_a").await;
++    assert!(
++        !still_status.is_success(),
++        "wiping residue out of band does not clear recovery: {still_json}"
++    );
++
++    let (retry_status, retry_json) = rename(&state, "agent_a", "agent_b").await;
++    assert!(
++        retry_status.is_success(),
++        "retry converges once followers are readable: {retry_json}"
++    );
++    let warnings = retry_json["warnings"]
++        .as_array()
++        .cloned()
++        .unwrap_or_default();
++    assert!(
++        warnings.is_empty(),
++        "a clean retry clears recovery, got {retry_json}"
++    );
++    let (freed_status, freed_json) = create_agent(&state, "agent_a").await;
++    assert!(
++        freed_status.is_success(),
++        "reuse is allowed after convergence: {freed_json}"
++    );
++}
++
++#[tokio::test]
++async fn committed_rename_sqlite_followers_converge_and_then_allow_reuse() {
++    use zeroclaw_memory::Memory;
++
++    let tmp = tempfile::tempdir().unwrap();
++    let mut config = fixture(tmp.path(), "agent_a");
++    let old_ws = config.agent_workspace_dir("agent_a");
++    std::fs::create_dir_all(&old_ws).unwrap();
++    std::fs::write(old_ws.join("marker"), b"ws").unwrap();
++    zeroclaw_runtime::cron::add_job(&config, "agent_a", "* * * * *", "echo hi").unwrap();
++
++    let memory = Arc::new(
++        zeroclaw_memory::SqliteMemory::new("agent_a", &config.data_dir).expect("sqlite memory"),
++    );
++    memory.ensure_agent_uuid("agent_a").await.unwrap();
++    let sessions = zeroclaw_infra::make_session_backend(&config.data_dir, "sqlite").unwrap();
++    sessions
++        .set_session_agent_alias("sess-1", "agent_a")
++        .unwrap();
++    {
++        let acp =
++            zeroclaw_infra::acp_session_store::AcpSessionStore::new(&config.data_dir).unwrap();
++        acp.create_session("acp-1", "agent_a", old_ws.to_str().unwrap_or("/tmp"))
++            .unwrap();
++    }
++
++    commit_alias(&mut config, "agent_a", "agent_b");
++    let mut state = test_state(config.clone());
++    state.mem = memory.clone();
++    state.session_backend = Some(sessions.clone());
++
++    let (status, json) = rename(&state, "agent_a", "agent_b").await;
++    assert!(status.is_success(), "committed residue resumes: {json}");
++    let warnings = json["warnings"].as_array().cloned().unwrap_or_default();
++    assert!(
++        warnings.is_empty(),
++        "followers converge without leftover warnings: {json}"
++    );
++    assert!(
++        state
++            .config
++            .read()
++            .agent_workspace_dir("agent_b")
++            .join("marker")
++            .is_file()
++    );
++    assert!(!old_ws.exists());
++    assert_eq!(memory.count_agent("agent_a").await.unwrap(), 0);
++    assert_eq!(memory.count_agent("agent_b").await.unwrap(), 1);
++    assert_eq!(
++        zeroclaw_runtime::cron::list_jobs_by_agent(&config, "agent_b")
++            .unwrap()
++            .len(),
++        1
++    );
++    assert!(
++        zeroclaw_runtime::cron::list_jobs_by_agent(&config, "agent_a")
++            .unwrap()
++            .is_empty()
++    );
++    let acp = zeroclaw_infra::acp_session_store::AcpSessionStore::new(&config.data_dir).unwrap();
++    assert_eq!(acp.list_sessions_by_agent("agent_b").unwrap().len(), 1);
++    assert!(acp.list_sessions_by_agent("agent_a").unwrap().is_empty());
++    assert_eq!(sessions.count_agent_attribution("agent_b").unwrap(), 1);
++    assert_eq!(sessions.count_agent_attribution("agent_a").unwrap(), 0);
++
++    let (again_status, again_json) = rename(&state, "agent_a", "agent_b").await;
++    assert_eq!(again_status, StatusCode::NOT_FOUND, "{again_json}");
++    assert!(
++        message_of(&again_json).contains("is not configured"),
++        "{again_json}"
++    );
++
++    let (created_status, created_json) = create_agent(&state, "agent_a").await;
++    assert!(created_status.is_success(), "{created_json}");
++    assert_eq!(memory.count_agent("agent_a").await.unwrap(), 0);
++    assert_eq!(memory.count_agent("agent_b").await.unwrap(), 1);
++}
++
++#[tokio::test]
++async fn committed_rename_unrelated_target_stays_not_configured() {
++    let tmp = tempfile::tempdir().unwrap();
++    let config = fixture(tmp.path(), "agent_b");
++    let state = test_state(config);
++    let (status, json) = rename(&state, "agent_a", "agent_b").await;
++    assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
++    assert!(message_of(&json).contains("is not configured"), "{json}");
++}
++
++#[tokio::test]
++async fn committed_rename_rpc_unreadable_cron_is_not_alias_not_found() {
++    let tmp = tempfile::tempdir().unwrap();
++    let mut config = fixture(tmp.path(), "agent_a");
++    commit_alias(&mut config, "agent_a", "agent_b");
++    config.save().await.unwrap();
++    std::fs::create_dir_all(config.data_dir.join("cron").join("jobs.db")).unwrap();
++    let saved = config.clone();
++
++    let messages = rpc_roundtrip(
++        config,
++        vec![(
++            2,
++            "config/map-key-rename".into(),
++            serde_json::json!({"path": "agents", "from": "agent_a", "to": "agent_b"}),
++        )],
++    )
++    .await;
++    let rename_msg = rpc_by_id(&messages, 2);
++    let err = rename_msg["error"]["message"].as_str().unwrap_or("");
++    assert!(
++        rename_msg.get("error").is_some(),
++        "unreadable cron fails the rpc rename: {rename_msg}"
++    );
++    assert!(
++        !err.contains("alias not found") && !err.contains("is not configured"),
++        "rpc must not report the alias missing when cron cannot be read: {err}"
++    );
++
++    let create_messages = rpc_roundtrip(
++        saved,
++        vec![(
++            2,
++            "config/map-key-create".into(),
++            serde_json::json!({"path": "agents", "key": "agent_a"}),
++        )],
++    )
++    .await;
++    let create_msg = rpc_by_id(&create_messages, 2);
++    assert!(
++        create_msg.get("error").is_some(),
++        "rpc create of the retired alias stays refused: {create_msg}"
++    );
++}
++
++#[tokio::test]
++async fn committed_rename_rpc_resumes_workspace_then_reports_alias_not_found() {
++    let tmp = tempfile::tempdir().unwrap();
++    let mut config = fixture(tmp.path(), "agent_a");
++    let old_ws = config.agent_workspace_dir("agent_a");
++    std::fs::create_dir_all(&old_ws).unwrap();
++    std::fs::write(old_ws.join("marker"), b"rpc").unwrap();
++    let new_ws = {
++        let mut preview = config.clone();
++        commit_alias(&mut preview, "agent_a", "agent_b");
++        preview.agent_workspace_dir("agent_b")
++    };
++    commit_alias(&mut config, "agent_a", "agent_b");
++    config.save().await.unwrap();
++
++    let messages = rpc_roundtrip(
++        config.clone(),
++        vec![(
++            2,
++            "config/map-key-rename".into(),
++            serde_json::json!({"path": "agents", "from": "agent_a", "to": "agent_b"}),
++        )],
++    )
++    .await;
++    let first = rpc_by_id(&messages, 2);
++    assert!(
++        first.get("result").is_some(),
++        "workspace residue resumes over rpc: {first}"
++    );
++    assert!(
++        new_ws.join("marker").is_file(),
++        "marker moved to the new workspace"
++    );
++    assert!(!old_ws.exists());
++
++    let second_messages = rpc_roundtrip(
++        config,
++        vec![(
++            2,
++            "config/map-key-rename".into(),
++            serde_json::json!({"path": "agents", "from": "agent_a", "to": "agent_b"}),
++        )],
++    )
++    .await;
++    let second = rpc_by_id(&second_messages, 2);
++    let err = second["error"]["message"].as_str().unwrap_or("");
++    assert!(
++        err.contains("alias not found"),
++        "a finished rename reports the alias missing on the next call: {second}"
++    );
++}
++
++#[tokio::test]
++async fn committed_rename_rpc_blocked_workspace_refuses_create() {
++    let tmp = tempfile::tempdir().unwrap();
++    let config = fixture(tmp.path(), "agent_a");
++    let old_ws = config.agent_workspace_dir("agent_a");
++    std::fs::create_dir_all(&old_ws).unwrap();
++    let blocker = tmp.path().join("agents").join("agent_b");
++    std::fs::create_dir_all(blocker.parent().unwrap()).unwrap();
++    std::fs::write(&blocker, b"x").unwrap();
++    config.save().await.unwrap();
++
++    let messages = rpc_roundtrip(
++        config.clone(),
++        vec![
++            (
++                2,
++                "config/map-key-rename".into(),
++                serde_json::json!({"path": "agents", "from": "agent_a", "to": "agent_b"}),
++            ),
++            (
++                3,
++                "config/map-key-create".into(),
++                serde_json::json!({"path": "agents", "key": "agent_a"}),
++            ),
++        ],
++    )
++    .await;
++    let renamed = rpc_by_id(&messages, 2);
++    assert!(
++        renamed.get("result").is_some(),
++        "blocked workspace still commits the rename: {renamed}"
++    );
++    let created = rpc_by_id(&messages, 3);
++    assert!(
++        created.get("error").is_some(),
++        "rpc refuses to recreate the retired alias while recovery is open: {created}"
++    );
++}
+diff --git a/crates/zeroclaw-gateway/src/lib.rs b/crates/zeroclaw-gateway/src/lib.rs
+index d76c0d8ee..e7d79c86d 100644
+--- a/crates/zeroclaw-gateway/src/lib.rs
++++ b/crates/zeroclaw-gateway/src/lib.rs
+@@ -57,6 +57,9 @@ pub mod ws;
+ pub mod ws_approval;
+ pub mod ws_sop_runs;
+ 
++#[cfg(test)]
++mod committed_rename_recovery_tests;
++
+ use anyhow::{Context, Result};
+ #[cfg(any(
+     feature = "channel-email",
+diff --git a/test.sh b/test.sh
+new file mode 100755
+index 000000000..d3c0fcbd7
+--- /dev/null
++++ b/test.sh
+@@ -0,0 +1,94 @@
++#!/usr/bin/env bash
++# Fail-to-pass harness for committed agent-rename recovery.
++# `base` is expected to exit non-zero. `new` is expected to exit zero.
++
++output_path=""
++mode=""
++while [[ $# -gt 0 ]]; do
++  case "$1" in
++    --output_path)
++      output_path="${2:-}"
++      shift 2
++      ;;
++    base|new)
++      mode="$1"
++      shift
++      ;;
++    *)
++      echo "unknown argument: $1" >&2
++      exit 2
++      ;;
++  esac
++done
++
++if [[ -z "$output_path" || -z "$mode" ]]; then
++  echo "usage: test.sh --output_path FILE {base|new}" >&2
++  exit 2
++fi
++
++mkdir -p "$(dirname "$output_path")"
++
++logs=""
++failed=0
++run_cargo() {
++  local label="$1"
++  shift
++  local log
++  log="$(mktemp)"
++  "$@" >"$log" 2>&1
++  local status=$?
++  cat "$log"
++  logs="${logs}"$'\n'"===== ${label} exit ${status} ====="$'\n'"$(cat "$log")"
++  if [[ $status -ne 0 ]]; then
++    failed=1
++  fi
++  rm -f "$log"
++}
++
++run_cargo "cli" cargo test --offline --test committed_agent_rename -- --test-threads=1
++run_cargo "gateway" cargo test --offline -p zeroclaw-gateway --lib committed_rename -- --test-threads=1
++
++log_file="$(mktemp)"
++printf '%s\n' "$logs" >"$log_file"
++python3 - "$output_path" "$mode" "$failed" "$log_file" <<'PY'
++import html
++import re
++import sys
++from pathlib import Path
++
++output_path, mode, failed, log_path = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
++log = Path(log_path).read_text(encoding="utf-8", errors="replace")
++cases = []
++seen = set()
++pattern = re.compile(r"^test (?P<name>\S+) \.\.\. (?P<status>ok|FAILED|ignored)", re.M)
++for match in pattern.finditer(log):
++    name = match.group("name")
++    status = match.group("status")
++    key = (name, status, match.start())
++    if key in seen:
++        continue
++    seen.add(key)
++    cases.append((name, status))
++
++failures = sum(1 for _, status in cases if status == "FAILED")
++if not cases and failed != "0":
++    cases.append(("cargo", "FAILED"))
++    failures = 1
++
++parts = [
++    '<?xml version="1.0" encoding="UTF-8"?>',
++    f'<testsuite name="committed-agent-rename" tests="{len(cases)}" failures="{failures}" mode="{html.escape(mode)}">',
++]
++for name, status in cases:
++    escaped = html.escape(name)
++    if status == "FAILED":
++        parts.append(f'  <testcase name="{escaped}"><failure message="FAILED"/></testcase>')
++    else:
++        parts.append(f'  <testcase name="{escaped}"/>')
++parts.append("</testsuite>")
++with open(output_path, "w", encoding="utf-8") as handle:
++    handle.write("\n".join(parts) + "\n")
++PY
++rm -f "$log_file"
++
++exit "$failed"
+diff --git a/tests/committed_agent_rename.rs b/tests/committed_agent_rename.rs
+new file mode 100644
+index 000000000..daffc4d08
+--- /dev/null
++++ b/tests/committed_agent_rename.rs
+@@ -0,0 +1,417 @@
++//! CLI and cross-surface coverage for committed agent-rename recovery.
++//!
++//! The binary and the public gateway handlers are the only surfaces these
++//! tests drive.
++
++use std::path::{Path, PathBuf};
++use std::process::{Command, Output};
++use std::sync::Arc;
++use std::time::Duration;
++
++use parking_lot::RwLock;
++use zeroclaw::gateway::{self, AppState};
++use zeroclaw_api::attribution::Attributable;
++use zeroclaw_config::alias_refs::{self, AliasKind};
++use zeroclaw_config::schema::{AliasedAgentConfig, Config};
++use zeroclaw_memory::{Memory, SqliteMemory};
++use zeroclaw_providers::ModelProvider;
++
++#[derive(Default)]
++struct MockModelProvider;
++
++#[async_trait::async_trait]
++impl ModelProvider for MockModelProvider {
++    async fn chat_with_system(
++        &self,
++        _system_prompt: Option<&str>,
++        _message: &str,
++        _model: &str,
++        _temperature: Option<f64>,
++    ) -> anyhow::Result<String> {
++        Ok("ok".into())
++    }
++}
++
++impl Attributable for MockModelProvider {
++    fn role(&self) -> zeroclaw_api::attribution::Role {
++        zeroclaw_api::attribution::Role::Provider(zeroclaw_api::attribution::ProviderKind::Model(
++            zeroclaw_api::attribution::ModelProviderKind::Custom,
++        ))
++    }
++
++    fn alias(&self) -> &str {
++        "MockModelProvider"
++    }
++}
++
++fn gateway_state(config: Config) -> AppState {
++    let memory: Arc<dyn zeroclaw_memory::Memory> =
++        Arc::new(zeroclaw_memory::NoneMemory::new("none"));
++    AppState {
++        config: Arc::new(RwLock::new(config)),
++        config_write_lock: Arc::new(tokio::sync::Mutex::new(())),
++        model_provider: Arc::new(MockModelProvider),
++        model: "test-model".into(),
++        temperature: None,
++        mem: memory.clone(),
++        memory_strategy: Arc::new(
++            zeroclaw_runtime::agent::memory_strategy::DefaultMemoryStrategy::with_config(
++                memory,
++                zeroclaw_config::schema::MemoryConfig::default(),
++                PathBuf::new(),
++            ),
++        ),
++        auto_save: false,
++        pairing: Arc::new(zeroclaw_runtime::security::PairingGuard::new(
++            false,
++            &[],
++            zeroclaw_config::pairing::PairingCodePolicy::default(),
++        )),
++        trust_forwarded_headers: false,
++        rate_limiter: Arc::new(gateway::GatewayRateLimiter::new(100, 100, 100)),
++        auth_limiter: Arc::new(gateway::auth_rate_limit::AuthRateLimiter::new()),
++        idempotency_store: Arc::new(gateway::IdempotencyStore::new(
++            Duration::from_secs(300),
++            1000,
++        )),
++        #[cfg(feature = "channel-whatsapp-cloud")]
++        whatsapp: std::collections::HashMap::new(),
++        #[cfg(feature = "channel-whatsapp-cloud")]
++        whatsapp_app_secret: std::collections::HashMap::new(),
++        #[cfg(feature = "channel-linq")]
++        linq: std::collections::HashMap::new(),
++        #[cfg(feature = "channel-linq")]
++        linq_signing_secrets: std::collections::HashMap::new(),
++        #[cfg(feature = "channel-nextcloud")]
++        nextcloud_talk: std::collections::HashMap::new(),
++        #[cfg(feature = "channel-nextcloud")]
++        nextcloud_talk_webhook_secret: std::collections::HashMap::new(),
++        #[cfg(feature = "channel-email")]
++        gmail_push: None,
++        observer: Arc::new(zeroclaw_runtime::observability::NoopObserver),
++        tools_registry: Arc::new(Vec::new()),
++        tools_registry_by_agent: Arc::new(std::collections::HashMap::new()),
++        cost_tracker: None,
++        event_tx: tokio::sync::broadcast::channel(16).0,
++        event_buffer: Arc::new(gateway::sse::EventBuffer::new(16)),
++        shutdown_tx: tokio::sync::watch::channel(false).0,
++        reload_tx: None,
++        node_registry: Arc::new(gateway::nodes::NodeRegistry::new(16)),
++        mdns_peer_registry: gateway::nodes::mdns::MdnsPeerRegistry::default(),
++        path_prefix: String::new(),
++        web_dist_dir: None,
++        session_backend: None,
++        session_queue: Arc::new(gateway::session_queue::SessionActorQueue::new(8, 30, 600)),
++        device_registry: None,
++        pending_pairings: None,
++        canvas_store: zeroclaw_runtime::tools::CanvasStore::new(),
++        #[cfg(feature = "webauthn")]
++        webauthn: None,
++        cancel_tokens: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
++        pending_reload: Arc::new(std::sync::atomic::AtomicBool::new(false)),
++        tui_registry: None,
++        sop_engine: None,
++        sop_audit: None,
++    }
++}
++
++fn fixture(dir: &Path) -> Config {
++    let mut config = Config {
++        config_path: dir.join("config.toml"),
++        data_dir: dir.join("data"),
++        ..Config::default()
++    };
++    std::fs::create_dir_all(&config.data_dir).unwrap();
++    config.agents.insert(
++        "agent_a".into(),
++        AliasedAgentConfig {
++            risk_profile: "default".into(),
++            ..AliasedAgentConfig::default()
++        },
++    );
++    config
++        .risk_profiles
++        .entry("default".into())
++        .or_default()
++        .allowed_commands = vec!["echo".into()];
++    config.runtime_profiles.entry("default".into()).or_default();
++    config
++}
++
++fn run_agents(config_dir: &Path, args: &[&str]) -> Output {
++    let mut command = Command::new(env!("CARGO_BIN_EXE_zeroclaw"));
++    command
++        .env("ZEROCLAW_CONFIG_DIR", config_dir)
++        .env_remove("ZEROCLAW_DATA_DIR")
++        .env_remove("ZEROCLAW_WORKSPACE")
++        .env("RUST_LOG", "off")
++        .arg("--config-dir")
++        .arg(config_dir)
++        .arg("agents")
++        .args(args);
++    command.output().expect("spawn zeroclaw")
++}
++
++fn text_of(output: &Output) -> String {
++    format!(
++        "{}{}",
++        String::from_utf8_lossy(&output.stdout),
++        String::from_utf8_lossy(&output.stderr)
++    )
++}
++
++async fn seed_followers(config: &Config) -> PathBuf {
++    let old_ws = config.agent_workspace_dir("agent_a");
++    std::fs::create_dir_all(&old_ws).unwrap();
++    std::fs::write(old_ws.join("marker"), b"owned").unwrap();
++    zeroclaw_runtime::cron::add_job(config, "agent_a", "* * * * *", "echo hi").unwrap();
++    {
++        let memory = SqliteMemory::new("agent_a", &config.data_dir).unwrap();
++        memory.ensure_agent_uuid("agent_a").await.unwrap();
++    }
++    {
++        let sessions = zeroclaw_infra::make_session_backend(&config.data_dir, "sqlite").unwrap();
++        sessions
++            .set_session_agent_alias("sess-1", "agent_a")
++            .unwrap();
++    }
++    {
++        let acp =
++            zeroclaw_infra::acp_session_store::AcpSessionStore::new(&config.data_dir).unwrap();
++        acp.create_session("acp-1", "agent_a", old_ws.to_string_lossy().as_ref())
++            .unwrap();
++    }
++    old_ws
++}
++
++async fn assert_followers_on(config: &Config, alias: &str, present: bool) {
++    let memory = SqliteMemory::new("probe", &config.data_dir).unwrap();
++    let memory_count = memory.count_agent(alias).await.unwrap();
++    let cron_count = zeroclaw_runtime::cron::list_jobs_by_agent(config, alias)
++        .unwrap()
++        .len();
++    let acp = zeroclaw_infra::acp_session_store::AcpSessionStore::new(&config.data_dir).unwrap();
++    let acp_count = acp.list_sessions_by_agent(alias).unwrap().len();
++    let sessions = zeroclaw_infra::make_session_backend(&config.data_dir, "sqlite").unwrap();
++    let session_count = sessions.count_agent_attribution(alias).unwrap();
++    if present {
++        assert_eq!(memory_count, 1, "memory rows for {alias}");
++        assert_eq!(cron_count, 1, "cron jobs for {alias}");
++        assert_eq!(acp_count, 1, "acp sessions for {alias}");
++        assert_eq!(session_count, 1, "session attribution for {alias}");
++    } else {
++        assert_eq!(memory_count, 0, "memory rows for {alias}");
++        assert_eq!(cron_count, 0, "cron jobs for {alias}");
++        assert_eq!(acp_count, 0, "acp sessions for {alias}");
++        assert_eq!(session_count, 0, "session attribution for {alias}");
++    }
++}
++
++#[tokio::test]
++async fn committed_rename_cli_resumes_followers_then_allows_reuse() {
++    let tmp = tempfile::tempdir().unwrap();
++    let mut config = fixture(tmp.path());
++    let old_ws = seed_followers(&config).await;
++    let new_ws = {
++        let mut preview = config.clone();
++        alias_refs::rename_with_cascade(&mut preview, &AliasKind::Agent, "agent_a", "agent_b")
++            .unwrap();
++        preview.agent_workspace_dir("agent_b")
++    };
++    alias_refs::rename_with_cascade(&mut config, &AliasKind::Agent, "agent_a", "agent_b").unwrap();
++    config.save().await.unwrap();
++
++    let first = run_agents(tmp.path(), &["rename", "agent_a", "agent_b"]);
++    let first_text = text_of(&first);
++    assert!(
++        first.status.success(),
++        "a committed rename with follower residue must resume, not report the alias missing: {first_text}"
++    );
++    assert!(new_ws.join("marker").is_file(), "workspace marker moved");
++    assert!(!old_ws.exists(), "old workspace removed");
++    assert_followers_on(&config, "agent_b", true).await;
++    assert_followers_on(&config, "agent_a", false).await;
++
++    let second = run_agents(tmp.path(), &["rename", "agent_a", "agent_b"]);
++    let second_text = text_of(&second);
++    assert!(
++        !second.status.success(),
++        "recovery is cleared after convergence: {second_text}"
++    );
++    assert!(
++        second_text.contains("is not configured"),
++        "a finished rename is not configured anymore: {second_text}"
++    );
++
++    let created = run_agents(tmp.path(), &["create", "agent_a"]);
++    assert!(
++        created.status.success(),
++        "reuse is allowed after convergence: {}",
++        text_of(&created)
++    );
++    assert_followers_on(&config, "agent_a", false).await;
++    assert_followers_on(&config, "agent_b", true).await;
++}
++
++#[tokio::test]
++async fn committed_rename_cli_unreadable_cron_stays_retryable_and_blocks_reuse() {
++    let tmp = tempfile::tempdir().unwrap();
++    let mut config = fixture(tmp.path());
++    alias_refs::rename_with_cascade(&mut config, &AliasKind::Agent, "agent_a", "agent_b").unwrap();
++    config.save().await.unwrap();
++    std::fs::create_dir_all(config.data_dir.join("cron").join("jobs.db")).unwrap();
++
++    let renamed = run_agents(tmp.path(), &["rename", "agent_a", "agent_b"]);
++    let renamed_text = text_of(&renamed);
++    assert!(!renamed.status.success(), "{renamed_text}");
++    assert!(
++        !renamed_text.contains("is not configured") && !renamed_text.contains("alias not found"),
++        "an unreadable cron store is not an absent alias: {renamed_text}"
++    );
++
++    let created = run_agents(tmp.path(), &["create", "agent_a"]);
++    assert!(
++        !created.status.success(),
++        "the retired alias cannot be recreated while recovery is outstanding: {}",
++        text_of(&created)
++    );
++}
++
++#[tokio::test]
++async fn committed_rename_cli_blocked_workspace_survives_out_of_band_wipe() {
++    let tmp = tempfile::tempdir().unwrap();
++    let config = fixture(tmp.path());
++    let old_ws = seed_followers(&config).await;
++    config.save().await.unwrap();
++    let blocker = tmp.path().join("agents").join("agent_b");
++    std::fs::create_dir_all(blocker.parent().unwrap()).unwrap();
++    std::fs::write(&blocker, b"x").unwrap();
++
++    let first = run_agents(tmp.path(), &["rename", "agent_a", "agent_b"]);
++    let first_text = text_of(&first);
++    assert!(
++        !first.status.success(),
++        "a failed follower converge must be retryable: {first_text}"
++    );
++    assert!(
++        !first_text.contains("is not configured"),
++        "the source alias was configured when the rename started: {first_text}"
++    );
++    assert!(
++        old_ws.join("marker").is_file(),
++        "marker stays when the move fails"
++    );
++
++    let blocked = run_agents(tmp.path(), &["create", "agent_a"]);
++    assert!(
++        !blocked.status.success(),
++        "open recovery blocks the retired alias: {}",
++        text_of(&blocked)
++    );
++    let other = run_agents(tmp.path(), &["create", "agent_c"]);
++    assert!(
++        other.status.success(),
++        "another alias can still be created: {}",
++        text_of(&other)
++    );
++
++    std::fs::remove_file(&blocker).unwrap();
++    std::fs::remove_dir_all(&old_ws).unwrap();
++    let still = run_agents(tmp.path(), &["create", "agent_a"]);
++    assert!(
++        !still.status.success(),
++        "deleting residue outside the rename does not finish recovery: {}",
++        text_of(&still)
++    );
++
++    let second = run_agents(tmp.path(), &["rename", "agent_a", "agent_b"]);
++    assert!(
++        second.status.success(),
++        "retry converges and clears recovery: {}",
++        text_of(&second)
++    );
++    let freed = run_agents(tmp.path(), &["create", "agent_a"]);
++    assert!(
++        freed.status.success(),
++        "reuse works after a clean converge: {}",
++        text_of(&freed)
++    );
++    assert_followers_on(&config, "agent_a", false).await;
++    assert_followers_on(&config, "agent_b", true).await;
++}
++
++#[tokio::test]
++async fn committed_rename_custom_workspace_is_not_residue() {
++    let tmp = tempfile::tempdir().unwrap();
++    let mut config = fixture(tmp.path());
++    let custom = tmp.path().join("custom-ws");
++    std::fs::create_dir_all(&custom).unwrap();
++    std::fs::write(custom.join("keep"), b"stay").unwrap();
++    config.agents.get_mut("agent_a").unwrap().workspace.path = Some(custom.clone());
++    alias_refs::rename_with_cascade(&mut config, &AliasKind::Agent, "agent_a", "agent_b").unwrap();
++    config.save().await.unwrap();
++
++    let renamed = run_agents(tmp.path(), &["rename", "agent_a", "agent_b"]);
++    let renamed_text = text_of(&renamed);
++    assert!(!renamed.status.success(), "{renamed_text}");
++    assert!(
++        renamed_text.contains("is not configured"),
++        "an alias-independent workspace is not stranded rename residue: {renamed_text}"
++    );
++    assert!(
++        custom.join("keep").is_file(),
++        "custom workspace was not moved"
++    );
++    assert!(custom.exists(), "custom workspace was not deleted");
++}
++
++#[tokio::test]
++async fn committed_rename_gateway_recovery_is_visible_to_the_cli() {
++    let tmp = tempfile::tempdir().unwrap();
++    let config = fixture(tmp.path());
++    let old_ws = config.agent_workspace_dir("agent_a");
++    std::fs::create_dir_all(&old_ws).unwrap();
++    std::fs::write(old_ws.join("marker"), b"cross").unwrap();
++    config.save().await.unwrap();
++    let blocker = tmp.path().join("agents").join("agent_b");
++    std::fs::create_dir_all(blocker.parent().unwrap()).unwrap();
++    std::fs::write(&blocker, b"x").unwrap();
++
++    let state = gateway_state(config);
++    let response = gateway::api_config::handle_rename_map_key(
++        axum::extract::State(state),
++        axum::http::HeaderMap::new(),
++        axum::Json(gateway::api_config::RenameMapKeyBody {
++            path: "agents".into(),
++            from: "agent_a".into(),
++            to: "agent_b".into(),
++        }),
++    )
++    .await;
++    assert!(
++        response.status().is_success(),
++        "gateway keeps the committed rename when the workspace move fails"
++    );
++
++    let blocked = run_agents(tmp.path(), &["create", "agent_a"]);
++    assert!(
++        !blocked.status.success(),
++        "cli create sees recovery armed by the gateway: {}",
++        text_of(&blocked)
++    );
++
++    std::fs::remove_file(&blocker).unwrap();
++    std::fs::remove_dir_all(&old_ws).unwrap();
++    let resumed = run_agents(tmp.path(), &["rename", "agent_a", "agent_b"]);
++    assert!(
++        resumed.status.success(),
++        "cli converges recovery the gateway armed: {}",
++        text_of(&resumed)
++    );
++    let freed = run_agents(tmp.path(), &["create", "agent_a"]);
++    assert!(
++        freed.status.success(),
++        "cli can reuse the alias after the shared recovery converges: {}",
++        text_of(&freed)
++    );
++}
