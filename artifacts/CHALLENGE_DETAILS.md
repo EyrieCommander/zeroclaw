@@ -2,7 +2,9 @@
 
 Upstream report: [zeroclaw-labs/zeroclaw#10373](https://github.com/zeroclaw-labs/zeroclaw/issues/10373).
 
-Pin: `c1e79a774b8d0a8539481b08838a3c818c97a6d0`.
+Original issue pin: `c1e79a774b8d0a8539481b08838a3c818c97a6d0`.
+
+Branch base: `fb116d612` (`origin/master`), one commit after that pin. Both patches still apply on this base.
 
 ## Contract
 

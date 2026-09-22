@@ -1,6 +1,15 @@
 # Harness verification
 
-Pin: `c1e79a774b8d0a8539481b08838a3c818c97a6d0`.
+Original issue pin: `c1e79a774b8d0a8539481b08838a3c818c97a6d0`.
+
+Resynced onto `origin/master` at `fb116d612` (`feat(log): add entry-count rotation and multi-segment log queries (#10214)`). That commit edits `crates/zeroclaw-runtime/src/rpc/dispatch.rs` only around the log-query handlers, not the rename handlers. On this base:
+
+```sh
+git apply --check artifacts/test.patch
+git apply --check artifacts/solution.patch
+```
+
+Both succeeded. The fail-to-pass runs below were executed on the original pin before this rebase.
 
 Path intersection of `solution.patch` and `test.patch` is empty.
 
